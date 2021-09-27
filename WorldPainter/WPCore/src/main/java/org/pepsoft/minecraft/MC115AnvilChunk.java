@@ -382,7 +382,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         } else if (biomes3d == null) {
             biomes3d = new int[1024];
         }
-        biomes3d[x + z * 4 + y * 16] = (byte) biome;
+        biomes3d[x + z * 4 + y * 16] = biome;
     }
 
     @Override
