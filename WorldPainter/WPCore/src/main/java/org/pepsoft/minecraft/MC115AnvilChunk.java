@@ -6,7 +6,6 @@
 package org.pepsoft.minecraft;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import org.jnbt.*;
 import org.pepsoft.minecraft.MC115AnvilChunk.Section.IncompleteSectionException;
 import org.pepsoft.worldpainter.exception.WPRuntimeException;
@@ -88,9 +87,12 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
                     biomes[i] = biomesArray[i] & 0xff;
                 }
             }
-            if ((biomes != null) && (biomes.length >= 1024)) {
-                biomes3d = biomes;
-                biomes = null;
+            if (biomes != null) {
+                fixNegativeValues(biomes);
+                if (biomes.length >= 1024) {
+                    biomes3d = biomes;
+                    biomes = null;
+                }
             }
             heightMaps = new HashMap<>();
             Map<String, Tag> heightMapTags = getMap(TAG_HEIGHT_MAPS);
@@ -369,7 +371,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
 
     @Override
     public int get3DBiome(int x, int y, int z) {
-        return biomes3d[x + z * 4 + y * 16] & 0xFF;
+        return biomes3d[x + z * 4 + y * 16];
     }
 
     @Override
@@ -395,24 +397,11 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         if (readOnly) {
             return;
         }
-        String[] statuses = {"empty",   // -> biomes reset; bottom part of chunks completely regenerated; spawn buried; no proper generation
-                "structure_starts",     // -> biomes reset; bottom part of chunks completely regenerated; spawn buried; no proper generation
-                "structure_references", // -> biomes reset; bottom part of chunks completely regenerated; spawn buried; no proper generation
-                "biomes",               // -> bottom part of chunks completely regenerated; no proper generation
-                "noise",                // -> no proper generation
-                "surface",              // -> no proper generation
-                "carvers",              // -> no proper generation
-                "liquid_carvers",       // -> no proper generation
-                "features",             // -> no generation
-                "light",                // -> no generation
-                "spawn",                // -> no generation
-                "heightmaps",           // -> no generation
-                "full"};                // -> no generation
         // TODO: this is a guess, is this useful?
         if (terrainPopulated) {
             status = STATUS_FULL;
         } else {
-            throw new UnsupportedOperationException("Terrain population not support for Minecraft 1.15");
+            throw new UnsupportedOperationException("Terrain population not supported for Minecraft 1.15+");
         }
     }
 
@@ -653,7 +642,18 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
     public MC115AnvilChunk clone() {
         throw new UnsupportedOperationException("MC113AnvilChunk.clone() not supported");
     }
-    
+
+    /**
+     * Fix negative values caused by an earlier bug where biomes ids were cast to a byte.
+     */
+    private void fixNegativeValues(int[] biomes) {
+        for (int i = 0; i < biomes.length; i++) {
+            if (biomes[i] < 0) {
+                biomes[i] = biomes[i] & 0xff;
+            }
+        }
+    }
+
     private int getDataByte(byte[] array, int x, int y, int z) {
         int blockOffset = blockOffset(x, y, z);
         byte dataByte = array[blockOffset / 2];
@@ -959,11 +959,4 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
             }
         }
     }
-
-    private static final Set<String> populatedStatuses = ImmutableSet.of(
-            // 1.14:
-            "features", "light", "full",
-
-            // 1.13:
-            "decorated", "fullchunk", "postprocessed");
 }
