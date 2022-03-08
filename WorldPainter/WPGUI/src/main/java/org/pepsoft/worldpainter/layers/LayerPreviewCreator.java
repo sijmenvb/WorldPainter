@@ -20,6 +20,7 @@ import org.pepsoft.worldpainter.layers.pockets.UndergroundPocketsLayer;
 import org.pepsoft.worldpainter.layers.tunnel.TunnelLayer;
 import org.pepsoft.worldpainter.objects.MinecraftWorldObject;
 import org.pepsoft.worldpainter.objects.WPObject;
+import org.pepsoft.worldpainter.platforms.Java1_15PostProcessor;
 import org.pepsoft.worldpainter.plugins.WPPluginManager;
 
 import javax.imageio.ImageIO;
@@ -32,7 +33,7 @@ import java.util.List;
 import java.util.*;
 
 import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
-import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_15;
+import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_17;
 
 /**
  * A utility class for generating previews of layers. It renders a layer to a
@@ -48,8 +49,8 @@ public class LayerPreviewCreator {
         long timestamp = System.currentTimeMillis();
         long seed = 0L;
         TileFactory tileFactory = subterranean
-                ? TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, previewHeight, 56, 62, false, true, 20f, 0.5)
-                : TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, previewHeight, 8, 14, false, true, 20f, 0.5);
+                ? TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, JAVA_ANVIL_1_17.minZ, previewHeight, 56, 62, false, true, 20f, 0.5)
+                : TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, JAVA_ANVIL_1_17.minZ, previewHeight, 8, 14, false, true, 20f, 0.5);
         Dimension dimension = new World2(DefaultPlugin.JAVA_MCREGION, seed, tileFactory, previewHeight).getDimension(DIM_NORMAL);
         dimension.setSubsurfaceMaterial(Terrain.STONE);
         MinecraftWorldObject minecraftWorldObject = new MinecraftWorldObject(layer.getName() + " Preview", new Box(-8, 136, -8, 136, 0, previewHeight), previewHeight, null, new Point3i(-64, -64, 0));
@@ -174,7 +175,7 @@ public class LayerPreviewCreator {
 
         // Phase three: generate terrain and render first pass layers, if any
         timestamp = now;
-        WorldPainterChunkFactory chunkFactory = new WorldPainterChunkFactory(dimension, pass1Exporters, JAVA_ANVIL_1_15, previewHeight);
+        WorldPainterChunkFactory chunkFactory = new WorldPainterChunkFactory(dimension, pass1Exporters, JAVA_ANVIL_1_17, previewHeight);
         for (int x = 0; x < 8; x++) {
             for (int y = 0; y < 8; y++) {
                 Chunk chunk = chunkFactory.createChunk(x, y).chunk;
@@ -191,7 +192,7 @@ public class LayerPreviewCreator {
             timestamp = now;
             Rectangle area = new Rectangle(128, 128);
             for (SecondPassLayerExporter exporter: pass2Exporters.values()) {
-                exporter.render(dimension, area, area, minecraftWorldObject, JAVA_ANVIL_1_15);
+                exporter.render(dimension, area, area, minecraftWorldObject, JAVA_ANVIL_1_17);
             }
             now = System.currentTimeMillis();
             if (logger.isDebugEnabled()) {
@@ -203,7 +204,7 @@ public class LayerPreviewCreator {
         timestamp = now;
         now = System.currentTimeMillis();
         try {
-            new Java1_15PostProcessor().postProcess(minecraftWorldObject, new Rectangle(-8, -8, 136, 136), null);
+            new Java1_15PostProcessor().postProcess(minecraftWorldObject, new Rectangle(-8, -8, 136, 136), null, null);
         } catch (ProgressReceiver.OperationCancelled e) {
             // Can't happen since we didn't pass in a progress receiver
             throw new InternalError();

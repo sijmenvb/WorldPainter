@@ -33,6 +33,7 @@ import java.util.*;
 
 import static org.pepsoft.worldpainter.Constants.*;
 import static org.pepsoft.worldpainter.Platform.Capability.*;
+import static org.pepsoft.worldpainter.util.BackupUtils.cleanUpBackups;
 
 /**
  *
@@ -191,6 +192,15 @@ public class MergeWorldDialog extends WorldPainterDialog {
 
         final boolean replaceChunks = radioButtonReplaceChunks.isSelected();
 
+        // Make sure the minimum free disk space is met
+        try {
+            if (! cleanUpBackups(levelDatFile.getParentFile().getParentFile(), null)) {
+                return;
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("I/O error while cleaning backups", e);
+        }
+
         fieldLevelDatFile.setEnabled(false);
         buttonSelectDirectory.setEnabled(false);
         buttonMerge.setEnabled(false);
@@ -295,7 +305,7 @@ public class MergeWorldDialog extends WorldPainterDialog {
         boolean levelDatSelected = file.isFile() && (file.getName().equalsIgnoreCase("level.dat"));
         if (levelDatSelected) {
             levelDatFile = file;
-            platform = PlatformManager.getInstance().identifyMap(file.getParentFile());
+            platform = PlatformManager.getInstance().identifyPlatform(file.getParentFile());
             if (platform != null) {
                 if (! (platform.capabilities.contains(BIOMES) || platform.capabilities.contains(BIOMES_3D))) {
                     if (radioButtonBiomes.isSelected()) {

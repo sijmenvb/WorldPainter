@@ -20,13 +20,14 @@ import java.util.*;
 import static java.util.stream.Collectors.toList;
 import static org.pepsoft.minecraft.Constants.*;
 import static org.pepsoft.minecraft.Material.AIR;
+import static org.pepsoft.minecraft.Material.WATERLOGGED;
 
 /**
  * An "Anvil" chunk for Minecraft 1.15 and higher.
  * 
  * @author pepijn
  */
-public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
+public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, MinecraftWorld {
     public MC115AnvilChunk(int xPos, int zPos, int maxHeight) {
         super(new CompoundTag(TAG_LEVEL, new HashMap<>()));
         this.xPos = xPos;
@@ -39,7 +40,6 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         tileEntities = new ArrayList<>();
         readOnly = false;
         lightPopulated = true;
-        liquidTicks = new ArrayList<>();
 
         setTerrainPopulated(true);
 
@@ -50,6 +50,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         this(tag, maxHeight, false);
     }
 
+    @SuppressWarnings("ConstantConditions") // Guaranteed by containsTag()
     public MC115AnvilChunk(CompoundTag tag, int maxHeight, boolean readOnly) {
         super((CompoundTag) tag.getTag(TAG_LEVEL));
         try {
@@ -121,7 +122,9 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
             status = getString(TAG_STATUS).intern();
             lightPopulated = getBoolean(TAG_LIGHT_POPULATED);
             inhabitedTime = getLong(TAG_INHABITED_TIME);
-            liquidTicks = getList(TAG_LIQUID_TICKS);
+            if (containsTag(TAG_LIQUID_TICKS)) {
+                liquidTicks.addAll(getList(TAG_LIQUID_TICKS));
+            }
 
             debugChunk = (xPos == (debugWorldX >> 4)) && (zPos == (debugWorldZ >> 4));
         } catch (Section.ExceptionParsingSectionException e) {
@@ -153,7 +156,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         return heightMaps;
     }
 
-    public void addLiquidTick(int x, int y, int z) {
+    private void addLiquidTick(int x, int y, int z) {
         // Liquid ticks are in world coordinates for some reason
         x = (xPos << 4) | x;
         z = (zPos << 4) | z;
@@ -165,11 +168,18 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
                 return;
             }
         }
+        String id;
+        Material material = getMaterial(x & 0xf, y, z & 0xf);
+        if (material.isNamed(MC_WATER) || material.is(WATERLOGGED)) {
+            id = MC_WATER;
+        } else {
+            id = material.name;
+        }
         liquidTicks.add(new CompoundTag("", ImmutableMap.<String, Tag>builder()
                 .put(TAG_X_, new IntTag(TAG_X_, x))
                 .put(TAG_Y_, new IntTag(TAG_Y_, y))
                 .put(TAG_Z_, new IntTag(TAG_Z_, z))
-                .put(TAG_I_, new StringTag(TAG_I_, getMaterial(x & 0xf, y, z & 0xf).name))
+                .put(TAG_I_, new StringTag(TAG_I_, id))
                 .put(TAG_P_, new IntTag(TAG_P_, 0))
                 .put(TAG_T_, new IntTag(TAG_T_, RANDOM.nextInt(30) + 1)).build()));
     }
@@ -218,6 +228,11 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         tag.setTag(TAG_LEVEL, super.toNBT());
         tag.setTag(TAG_DATA_VERSION, new IntTag(TAG_DATA_VERSION, DATA_VERSION_MC_1_15));
         return tag;
+    }
+
+    @Override
+    public int getMinHeight() {
+        return 0;
     }
 
     @Override
@@ -382,9 +397,19 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
         if (biomes != null) {
             throw new IllegalStateException("This chunk already has 2D biomes");
         } else if (biomes3d == null) {
-            biomes3d = new int[1024];
+            biomes3d = new int[16 * (maxHeight / 4)];
         }
         biomes3d[x + z * 4 + y * 16] = biome;
+    }
+
+    @Override
+    public void markForUpdateChunk(int x, int y, int z) {
+        Material material = getMaterial(x, y, z);
+        if (material.isNamedOneOf(MC_WATER, MC_LAVA) || material.containsWater()) {
+            addLiquidTick(x, y, z);
+        } else {
+            throw new UnsupportedOperationException("Don't know how to mark " + material + " for update");
+        }
     }
 
     @Override
@@ -484,7 +509,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
                 }
             }
         }
-        return -1;
+        return Integer.MIN_VALUE;
     }
 
     @Override
@@ -499,7 +524,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
                 }
             }
         }
-        return -1;
+        return Integer.MIN_VALUE;
     }
 
     // MinecraftWorld
@@ -702,7 +727,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
     long inhabitedTime;
     String status;
     final Map<String, long[]> heightMaps;
-    final List<CompoundTag> liquidTicks;
+    final List<CompoundTag> liquidTicks = new ArrayList<>();
     final boolean debugChunk;
 
     private static long debugWorldX, debugWorldZ, debugXInChunk, debugZInChunk;
@@ -710,7 +735,7 @@ public final class MC115AnvilChunk extends NBTChunk implements MinecraftWorld {
     private static final Random RANDOM = new Random();
     private static final Logger logger = LoggerFactory.getLogger(MC115AnvilChunk.class);
 
-    public static class Section extends AbstractNBTItem {
+    public static class Section extends AbstractNBTItem implements SectionedChunk.Section {
         Section(CompoundTag tag) {
             super(tag);
             try {

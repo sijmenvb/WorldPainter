@@ -11,7 +11,9 @@
 
 package org.pepsoft.worldpainter;
 
+import org.pepsoft.minecraft.MapGenerator;
 import org.pepsoft.minecraft.Material;
+import org.pepsoft.minecraft.SeededGenerator;
 import org.pepsoft.util.MathUtils;
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.mdc.MDCThreadPoolExecutor;
@@ -24,7 +26,7 @@ import org.pepsoft.worldpainter.layers.Layer;
 import org.pepsoft.worldpainter.layers.Resources;
 import org.pepsoft.worldpainter.layers.exporters.CavernsExporter.CavernsSettings;
 import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
-import org.pepsoft.worldpainter.layers.exporters.ResourcesExporter;
+import org.pepsoft.worldpainter.layers.exporters.ResourcesExporter.ResourcesExporterSettings;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.pepsoft.worldpainter.themes.SimpleTheme;
 import org.pepsoft.worldpainter.themes.TerrainListCellRenderer;
@@ -39,11 +41,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static java.util.Arrays.stream;
 import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL;
 import static org.pepsoft.minecraft.Material.LAVA;
 import static org.pepsoft.minecraft.Material.WATER;
 import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_17;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
+import static org.pepsoft.worldpainter.Generator.DEFAULT;
+import static org.pepsoft.worldpainter.Generator.LARGE_BIOMES;
 import static org.pepsoft.worldpainter.Platform.Capability.SEED;
 import static org.pepsoft.worldpainter.Terrain.*;
 import static org.pepsoft.worldpainter.util.MinecraftUtil.blocksToWalkingTime;
@@ -188,7 +194,7 @@ public class NewWorldDialog extends WorldPainterDialog {
         if ((defaultTileFactory instanceof HeightMapTileFactory) && (((HeightMapTileFactory) defaultTileFactory).getTheme() instanceof SimpleTheme)) {
             theme = (SimpleTheme) ((HeightMapTileFactory) defaultTileFactory).getTheme().clone();
         } else {
-            theme = SimpleTheme.createDefault((Terrain) comboBoxSurfaceMaterial.getSelectedItem(), Integer.parseInt((String) comboBoxMaxHeight.getSelectedItem()), (Integer) spinnerWaterLevel.getValue());
+            theme = SimpleTheme.createDefault((Terrain) comboBoxSurfaceMaterial.getSelectedItem(), platform.minZ, Integer.parseInt((String) comboBoxMaxHeight.getSelectedItem()), (Integer) spinnerWaterLevel.getValue());
         }
 
         scaleToUI();
@@ -273,16 +279,6 @@ public class NewWorldDialog extends WorldPainterDialog {
         // Export settings
         final Configuration config = Configuration.getInstance();
         world.setCreateGoodiesChest(config.isDefaultCreateGoodiesChest());
-        Generator generator = config.getDefaultGenerator();
-        if (minecraft11Only && (generator == Generator.LARGE_BIOMES)) {
-            generator = Generator.DEFAULT;
-        } else if ((! minecraft11Only) && ((dimension.getMinecraftSeed() == World2.DEFAULT_OCEAN_SEED) || (dimension.getMinecraftSeed() == World2.DEFAULT_LAND_SEED)) && (generator == Generator.DEFAULT)) {
-            generator = Generator.LARGE_BIOMES;
-        }
-        world.setGenerator(generator);
-        if (generator == Generator.FLAT) {
-            world.setGeneratorOptions(config.getDefaultGeneratorOptions());
-        }
         world.setMapFeatures(config.isDefaultMapFeatures());
         world.setGameType(config.getDefaultGameType());
         world.setAllowCheats(config.isDefaultAllowCheats());
@@ -345,12 +341,13 @@ public class NewWorldDialog extends WorldPainterDialog {
         if (radioButtonCustomSeed.isSelected()) {
             worldpainterSeed = minecraftSeed;
         }
-        int waterHeight = (Integer) spinnerWaterLevel.getValue();
+        final int waterHeight = (Integer) spinnerWaterLevel.getValue();
 
         final TileFactory tileFactory = createTileFactory(worldpainterSeed);
-        
-        int maxHeight = (Integer) comboBoxMaxHeight.getSelectedItem();
-        final Dimension dimension = new Dimension(world, minecraftSeed, tileFactory, dim, maxHeight);
+
+        final int maxHeight = (Integer) comboBoxMaxHeight.getSelectedItem();
+        final boolean minecraft11Only = maxHeight != DEFAULT_MAX_HEIGHT_ANVIL;
+        final Dimension dimension = new Dimension(world, minecraftSeed, tileFactory, dim, platform.minZ, maxHeight);
         dimension.setEventsInhibited(true);
         try {
             ExecutorService executorService = MDCThreadPoolExecutor.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
@@ -482,8 +479,9 @@ public class NewWorldDialog extends WorldPainterDialog {
             }
 
             if (dim == DIM_NORMAL_CEILING) {
-                ResourcesExporter.ResourcesExporterSettings resourcesSettings = new ResourcesExporter.ResourcesExporterSettings(maxHeight);
+                ResourcesExporterSettings resourcesSettings = ResourcesExporterSettings.defaultSettings(platform, DIM_NORMAL, maxHeight);
                 // Invert min and max levels:
+                // TODOMC118 is this correct for platforms with minZ < 0?
                 int maxZ = maxHeight - 1;
                 for (Material material: resourcesSettings.getMaterials()) {
                     int low = resourcesSettings.getMinLevel(material);
@@ -526,6 +524,13 @@ public class NewWorldDialog extends WorldPainterDialog {
                 for (Map.Entry<Layer, ExporterSettings> entry: defaults.getAllLayerSettings().entrySet()) {
                     dimension.setLayerSettings(entry.getKey(), entry.getValue().clone());
                 }
+                MapGenerator generator = config.getDefaultGenerator();
+                if (minecraft11Only && (generator.getType() == Generator.LARGE_BIOMES)) {
+                    generator = new SeededGenerator(DEFAULT, dimension.getMinecraftSeed());
+                } else if ((! minecraft11Only) && ((dimension.getMinecraftSeed() == World2.DEFAULT_OCEAN_SEED) || (dimension.getMinecraftSeed() == World2.DEFAULT_LAND_SEED)) && (generator.getType() == Generator.DEFAULT)) {
+                    generator = new SeededGenerator(LARGE_BIOMES, dimension.getMinecraftSeed());
+                }
+                dimension.setGenerator(generator); // TODOMC118 do we need to set the generator for Nether and End?
             }
             dimension.setBorderLevel(waterHeight);
             dimension.setCoverSteepTerrain(defaults.isCoverSteepTerrain());
@@ -610,17 +615,18 @@ public class NewWorldDialog extends WorldPainterDialog {
         double scale = ((Integer) spinnerScale.getValue()) / 100.0;
         boolean floodWithLava = checkBoxLava.isSelected();
         boolean beaches = checkBoxBeaches.isSelected();
+        int minHeight = platform.minZ;
         int maxHeight = (Integer) comboBoxMaxHeight.getSelectedItem();
         
         HeightMapTileFactory tileFactory;
         if ("true".equals(System.getProperty("org.pepsoft.worldpainter.fancyworlds"))) {
-            tileFactory = TileFactoryFactory.createFancyTileFactory(seed, terrain, maxHeight, baseHeight, waterHeight, floodWithLava, range, scale);
+            tileFactory = TileFactoryFactory.createFancyTileFactory(seed, terrain, minHeight, maxHeight, baseHeight, waterHeight, floodWithLava, range, scale);
         } else {
     //        HeightMapTileFactory tileFactory = new ExperimentalTileFactory(maxHeight);
             if (radioButtonHilly.isSelected()) {
-                tileFactory = TileFactoryFactory.createNoiseTileFactory(seed, terrain, maxHeight, baseHeight, waterHeight, floodWithLava, beaches, range, scale);
+                tileFactory = TileFactoryFactory.createNoiseTileFactory(seed, terrain, minHeight, maxHeight, baseHeight, waterHeight, floodWithLava, beaches, range, scale);
             } else {
-                tileFactory = TileFactoryFactory.createFlatTileFactory(seed, terrain, maxHeight, baseHeight, waterHeight, floodWithLava, beaches);
+                tileFactory = TileFactoryFactory.createFlatTileFactory(seed, terrain, minHeight, maxHeight, baseHeight, waterHeight, floodWithLava, beaches);
             }
             if (radioButtonAdvancedTerrain.isSelected()) {
                 theme.setWaterHeight((Integer) spinnerWaterLevel.getValue());
@@ -703,27 +709,19 @@ public class NewWorldDialog extends WorldPainterDialog {
         }
         updateWalkingTimes();
 
-        int minExponent = (int) Math.ceil(Math.log(platform.minMaxHeight)/Math.log(2));
-        int maxExponent = (int) Math.floor(Math.log(platform.maxMaxHeight)/Math.log(2));
-        List<Integer> maxHeights = new ArrayList<>();
-        for (int i = minExponent; i <= maxExponent; i++) {
-            maxHeights.add((int) Math.pow(2, i));
-        }
-        int minMaxHeight = maxHeights.get(0);
-        int maxMaxHeight = maxHeights.get(maxHeights.size() - 1);
         Integer currentMaxHeight = (Integer) comboBoxMaxHeight.getSelectedItem();
         boolean atDefault = (currentMaxHeight == null) || (currentMaxHeight == previousPlatform.standardMaxHeight);
-        comboBoxMaxHeight.setModel(new DefaultComboBoxModel<>(maxHeights.toArray(new Integer[maxHeights.size()])));
+        comboBoxMaxHeight.setModel(new DefaultComboBoxModel<>(stream(platform.maxHeights).boxed().toArray(Integer[]::new)));
         if (atDefault) {
             comboBoxMaxHeight.setSelectedItem(platform.standardMaxHeight);
-        } else if (currentMaxHeight < minMaxHeight){
-            comboBoxMaxHeight.setSelectedItem(minMaxHeight);
-        } else if (currentMaxHeight > maxMaxHeight) {
-            comboBoxMaxHeight.setSelectedItem(maxMaxHeight);
+        } else if (currentMaxHeight < platform.minMaxHeight){
+            comboBoxMaxHeight.setSelectedItem(platform.minMaxHeight);
+        } else if (currentMaxHeight > platform.maxMaxHeight) {
+            comboBoxMaxHeight.setSelectedItem(platform.maxMaxHeight);
         } else {
             comboBoxMaxHeight.setSelectedItem(currentMaxHeight);
         }
-        comboBoxMaxHeight.setEnabled(maxHeights.size() > 1);
+        comboBoxMaxHeight.setEnabled(platform.maxHeights.length > 1);
         maxHeightChanged(true);
 
         if ((platform == JAVA_MCREGION)) {
@@ -749,6 +747,10 @@ public class NewWorldDialog extends WorldPainterDialog {
             ((SpinnerNumberModel) spinnerWaterLevel.getModel()).setMaximum(maxHeight - 1);
 
             if ((platform == JAVA_MCREGION) && (exp != 7)) {
+                labelWarning.setText("Only with mods!");
+                labelWarning.setVisible(true);
+            } else if ((platform == JAVA_ANVIL_1_17) && (maxHeight > 320)) {
+                labelWarning.setText("May impact performance");
                 labelWarning.setVisible(true);
             } else {
                 labelWarning.setVisible(false);

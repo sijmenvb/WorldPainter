@@ -5,9 +5,9 @@
 
 package org.pepsoft.worldpainter.exporting;
 
-import org.jnbt.StringTag;
 import org.pepsoft.minecraft.ChunkFactory;
-import org.pepsoft.minecraft.Level;
+import org.pepsoft.minecraft.JavaLevel;
+import org.pepsoft.minecraft.SuperflatGenerator;
 import org.pepsoft.minecraft.SuperflatPreset;
 import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.ProgressReceiver;
@@ -16,12 +16,11 @@ import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.history.HistoryEntry;
 import org.pepsoft.worldpainter.util.FileInUseException;
 import org.pepsoft.worldpainter.vo.EventVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.*;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
 import static org.pepsoft.minecraft.Constants.*;
@@ -29,9 +28,7 @@ import static org.pepsoft.minecraft.SuperflatPreset.Structure.*;
 import static org.pepsoft.worldpainter.Constants.*;
 import static org.pepsoft.worldpainter.DefaultPlugin.*;
 import static org.pepsoft.worldpainter.Dimension.Border.ENDLESS_WATER;
-import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_15Biomes.BIOME_VOID;
-import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_OCEAN;
-import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_PLAINS;
+import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_18Biomes.*;
 
 /**
  *
@@ -42,7 +39,9 @@ public class JavaWorldExporter extends AbstractWorldExporter { // TODO can this 
         super(world, world.getPlatform());
         if ((! (platform == JAVA_ANVIL))
                 && (! (platform == JAVA_MCREGION))
-                && (! (platform == JAVA_ANVIL_1_15))) {
+                && (! (platform == JAVA_ANVIL_1_15))
+                && (! (platform == JAVA_ANVIL_1_17))
+                && (! (platform == JAVA_ANVIL_1_18))) {
             throw new IllegalArgumentException("Unsupported platform " + platform);
         }
     }
@@ -57,10 +56,7 @@ public class JavaWorldExporter extends AbstractWorldExporter { // TODO can this 
         if ((selectedTiles == null) && (selectedDimensions != null)) {
             throw new IllegalArgumentException("Exporting a subset of dimensions not supported");
         }
-        if ((world.getGenerator() == Generator.CUSTOM) && ((world.getGeneratorOptions() == null) || world.getGeneratorOptions().trim().isEmpty())) {
-            throw new IllegalArgumentException("Custom world generator name not set");
-        }
-        
+
         // Backup existing level
         File worldDir = new File(baseDir, FileUtils.sanitiseName(name));
         logger.info("Exporting world " + world.getName() + " to map at " + worldDir + " in " + platform.displayName + " format");
@@ -80,7 +76,7 @@ public class JavaWorldExporter extends AbstractWorldExporter { // TODO can this 
         
         // Export dimensions
         Dimension dim0 = world.getDimension(0);
-        Level level = new Level(world.getMaxHeight(), platform);
+        JavaLevel level = JavaLevel.create(platform, world.getMaxHeight());
         level.setSeed(dim0.getMinecraftSeed());
         level.setName(name);
         Point spawnPoint = world.getSpawnPoint();
@@ -126,36 +122,18 @@ public class JavaWorldExporter extends AbstractWorldExporter { // TODO can this 
                     }
                     break;
                 case ENDLESS_VOID:
-                    superflatPresetBuilder = SuperflatPreset.builder((platform == JAVA_ANVIL_1_15) ? BIOME_VOID : BIOME_PLAINS);
+                    superflatPresetBuilder = SuperflatPreset.builder(((platform == JAVA_ANVIL_1_15) || (platform == JAVA_ANVIL_1_17) || (platform == JAVA_ANVIL_1_18) /* TODO make dynamic */) ? BIOME_THE_VOID : BIOME_PLAINS);
                     superflatPresetBuilder.addLayer(MC_AIR, 1);
                     break;
                 default:
                     throw new InternalError();
             }
-            if (platform != JAVA_ANVIL_1_15) {
-                level.setGeneratorOptions(new StringTag(TAG_GENERATOR_OPTIONS_, superflatPresetBuilder.build().toMinecraft1_12_2()));
-            } else {
-                level.setGeneratorOptions(superflatPresetBuilder.build().toMinecraft1_15_2());
-            }
-            level.setGenerator(Generator.FLAT);
+            level.setGenerator(DIM_NORMAL, new SuperflatGenerator(superflatPresetBuilder.build()));
         } else {
-            if (world.getGenerator() == Generator.CUSTOM) {
-                level.setGeneratorName(world.getGeneratorOptions());
-            } else {
-                level.setGenerator(world.getGenerator());
-            }
+            level.setGenerator(DIM_NORMAL, dim0.getGenerator());
         }
         level.setMapFeatures(world.isMapFeatures());
         if ((platform != JAVA_MCREGION)) {
-            if ((! endlessBorder) && (world.getGenerator() == Generator.FLAT) && ((world.getGeneratorOptions() != null) || (world.getSuperflatPreset() != null))) {
-                if (world.getSuperflatPreset() != null) {
-                    level.setGeneratorOptions((platform == JAVA_ANVIL)
-                            ? new StringTag(TAG_GENERATOR_OPTIONS_, world.getSuperflatPreset().toMinecraft1_12_2())
-                            : world.getSuperflatPreset().toMinecraft1_15_2());
-                } else {
-                    level.setGeneratorOptions(new StringTag(TAG_GENERATOR_OPTIONS_, world.getGeneratorOptions()));
-                }
-            }
             World2.BorderSettings borderSettings = world.getBorderSettings();
             level.setBorderCenterX(borderSettings.getCentreX());
             level.setBorderCenterZ(borderSettings.getCentreY());
@@ -170,81 +148,90 @@ public class JavaWorldExporter extends AbstractWorldExporter { // TODO can this 
         // Save the level.dat file. This will also create a session.lock file, hopefully kicking out any Minecraft
         // instances which may have the map open:
         level.save(worldDir);
-        Map<Integer, ChunkFactory.Stats> stats = new HashMap<>();
-        int selectedDimension;
-        if (selectedTiles == null) {
-            selectedDimension = -1;
-            boolean first = true;
-            for (Dimension dimension: world.getDimensions()) {
-                if (dimension.getDim() < 0) {
-                    // This dimension will be exported as part of another
-                    // dimension, so skip it
-                    continue;
-                }
-                if (first) {
-                    first = false;
-                } else if (progressReceiver != null) {
-                    progressReceiver.reset();
-                }
-                stats.put(dimension.getDim(), exportDimension(worldDir, dimension, progressReceiver));
-            }
-        } else {
-            selectedDimension = selectedDimensions.iterator().next();
-            stats.put(selectedDimension, exportDimension(worldDir, world.getDimension(selectedDimension), progressReceiver));
-        }
-        
-        // Update the session.lock file, hopefully kicking out any Minecraft instances which may have tried to open the
-        // map in the mean time:
-        File sessionLockFile = new File(worldDir, "session.lock");
-        try (DataOutputStream sessionOut = new DataOutputStream(new FileOutputStream(sessionLockFile))) {
-            sessionOut.writeLong(System.currentTimeMillis());
-        }
 
-        // Record the export in the world history
-        if (selectedTiles == null) {
-            world.addHistoryEntry(HistoryEntry.WORLD_EXPORTED_FULL, name, worldDir);
-        } else {
-            world.addHistoryEntry(HistoryEntry.WORLD_EXPORTED_PARTIAL, name, worldDir, world.getDimension(selectedDimension).getName());
-        }
+        // Lock the level.dat file, to keep Minecraft out until we are done
+        File levelDatFile = new File(worldDir, "level.dat");
+        // We need to load the level.dat file later when creating chunk stores, so keep that working even though the
+        // file is exclusively locked:
+        JavaLevel.setCachedLevel(levelDatFile, level);
+        try (RandomAccessFile lockedFile = new RandomAccessFile(levelDatFile, "rw")) {
+            lockedFile.getChannel().lock();
 
-        // Log an event
-        Configuration config = Configuration.getInstance();
-        if (config != null) {
-            EventVO event = new EventVO(EVENT_KEY_ACTION_EXPORT_WORLD).duration(System.currentTimeMillis() - start);
-            event.setAttribute(EventVO.ATTRIBUTE_TIMESTAMP, new Date(start));
-            event.setAttribute(ATTRIBUTE_KEY_MAX_HEIGHT, world.getMaxHeight());
-            event.setAttribute(ATTRIBUTE_KEY_PLATFORM, platform.displayName);
-            event.setAttribute(ATTRIBUTE_KEY_MAP_FEATURES, world.isMapFeatures());
-            event.setAttribute(ATTRIBUTE_KEY_GAME_TYPE_NAME, world.getGameType().name());
-            event.setAttribute(ATTRIBUTE_KEY_ALLOW_CHEATS, world.isAllowCheats());
-            event.setAttribute(ATTRIBUTE_KEY_GENERATOR, world.getGenerator().name());
-            if ((platform == JAVA_ANVIL) && (world.getGenerator() == Generator.FLAT) && (world.getGeneratorOptions() != null)) {
-                event.setAttribute(ATTRIBUTE_KEY_GENERATOR_OPTIONS, world.getGeneratorOptions());
+            Map<Integer, ChunkFactory.Stats> stats = new HashMap<>();
+            int selectedDimension;
+            if (selectedTiles == null) {
+                selectedDimension = -1;
+                boolean first = true;
+                for (Dimension dimension: world.getDimensions()) {
+                    if (dimension.getDim() < 0) {
+                        // This dimension will be exported as part of another
+                        // dimension, so skip it
+                        continue;
+                    }
+                    if (first) {
+                        first = false;
+                    } else if (progressReceiver != null) {
+                        progressReceiver.reset();
+                    }
+                    stats.put(dimension.getDim(), exportDimension(worldDir, dimension, progressReceiver));
+                }
+            } else {
+                selectedDimension = selectedDimensions.iterator().next();
+                stats.put(selectedDimension, exportDimension(worldDir, world.getDimension(selectedDimension), progressReceiver));
             }
-            Dimension dimension = world.getDimension(0);
-            event.setAttribute(ATTRIBUTE_KEY_TILES, dimension.getTiles().size());
-            logLayers(dimension, event, "");
-            dimension = world.getDimension(1);
-            if (dimension != null) {
-                event.setAttribute(ATTRIBUTE_KEY_NETHER_TILES, dimension.getTiles().size());
-                logLayers(dimension, event, "nether.");
+
+            // Update the session.lock file, hopefully kicking out any Minecraft instances which may have tried to open the
+            // map in the mean time:
+            File sessionLockFile = new File(worldDir, "session.lock");
+            try (DataOutputStream sessionOut = new DataOutputStream(new FileOutputStream(sessionLockFile))) {
+                sessionOut.writeLong(System.currentTimeMillis());
             }
-            dimension = world.getDimension(2);
-            if (dimension != null) {
-                event.setAttribute(ATTRIBUTE_KEY_END_TILES, dimension.getTiles().size());
-                logLayers(dimension, event, "end.");
+
+            // Record the export in the world history
+            if (selectedTiles == null) {
+                world.addHistoryEntry(HistoryEntry.WORLD_EXPORTED_FULL, name, worldDir);
+            } else {
+                world.addHistoryEntry(HistoryEntry.WORLD_EXPORTED_PARTIAL, name, worldDir, world.getDimension(selectedDimension).getName());
             }
-            if (selectedDimension != -1) {
-                event.setAttribute(ATTRIBUTE_KEY_EXPORTED_DIMENSION, selectedDimension);
-                event.setAttribute(ATTRIBUTE_KEY_EXPORTED_DIMENSION_TILES, selectedTiles.size());
+
+            // Log an event
+            Configuration config = Configuration.getInstance();
+            if (config != null) {
+                EventVO event = new EventVO(EVENT_KEY_ACTION_EXPORT_WORLD).duration(System.currentTimeMillis() - start);
+                event.setAttribute(EventVO.ATTRIBUTE_TIMESTAMP, new Date(start));
+                event.setAttribute(ATTRIBUTE_KEY_MAX_HEIGHT, world.getMaxHeight());
+                event.setAttribute(ATTRIBUTE_KEY_PLATFORM, platform.displayName);
+                event.setAttribute(ATTRIBUTE_KEY_MAP_FEATURES, world.isMapFeatures());
+                event.setAttribute(ATTRIBUTE_KEY_GAME_TYPE_NAME, world.getGameType().name());
+                event.setAttribute(ATTRIBUTE_KEY_ALLOW_CHEATS, world.isAllowCheats());
+                event.setAttribute(ATTRIBUTE_KEY_GENERATOR, dim0.getGenerator().getType().name());
+                Dimension dimension = world.getDimension(0);
+                event.setAttribute(ATTRIBUTE_KEY_TILES, dimension.getTiles().size());
+                logLayers(dimension, event, "");
+                dimension = world.getDimension(1);
+                if (dimension != null) {
+                    event.setAttribute(ATTRIBUTE_KEY_NETHER_TILES, dimension.getTiles().size());
+                    logLayers(dimension, event, "nether.");
+                }
+                dimension = world.getDimension(2);
+                if (dimension != null) {
+                    event.setAttribute(ATTRIBUTE_KEY_END_TILES, dimension.getTiles().size());
+                    logLayers(dimension, event, "end.");
+                }
+                if (selectedDimension != -1) {
+                    event.setAttribute(ATTRIBUTE_KEY_EXPORTED_DIMENSION, selectedDimension);
+                    event.setAttribute(ATTRIBUTE_KEY_EXPORTED_DIMENSION_TILES, selectedTiles.size());
+                }
+                if (world.getImportedFrom() != null) {
+                    event.setAttribute(ATTRIBUTE_KEY_IMPORTED_WORLD, true);
+                }
+                config.logEvent(event);
             }
-            if (world.getImportedFrom() != null) {
-                event.setAttribute(ATTRIBUTE_KEY_IMPORTED_WORLD, true);
-            }
-            config.logEvent(event);
+
+            return stats;
+        } finally {
+            JavaLevel.setCachedLevel(null, null);
         }
-        
-        return stats;
     }
 
     protected ChunkFactory.Stats exportDimension(File worldDir, Dimension dimension, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
@@ -311,6 +298,6 @@ public class JavaWorldExporter extends AbstractWorldExporter { // TODO can this 
         return collectedStats;
     }
 
-    private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(JavaWorldExporter.class);
-    private static final String DEFAULT_GENERATOR_OPTIONS = "village,mineshaft(chance=0.01),stronghold(distance=32 count=3 spread=3),biome_1(distance=32),dungeon,decoration,lake,lava_lake,oceanmonument(spacing=32 separation=5)";
+
+    private static final Logger logger = LoggerFactory.getLogger(JavaWorldExporter.class);
 }

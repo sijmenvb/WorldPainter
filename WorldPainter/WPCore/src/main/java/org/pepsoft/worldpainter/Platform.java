@@ -5,10 +5,7 @@ import com.google.common.collect.Sets;
 
 import java.io.ObjectStreamException;
 import java.io.Serializable;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * A descriptor for a WorldPainter-supported map storage format. Implements the
@@ -18,24 +15,33 @@ import java.util.Set;
  * <p>Created by Pepijn on 11-12-2016.
  */
 public final class Platform implements Serializable {
-    public Platform(String id, String displayName, int minMaxHeight, int standardMaxHeight,
-                    int maxMaxHeight, int minX, int maxX, int minY, int maxY, List<GameType> supportedGameTypes,
-                    List<Generator> supportedGenerators, List<Integer> supportedDimensions, Set<Capability> capabilities) {
+    public Platform(String id, String displayName, int minMaxHeight, int standardMaxHeight, int maxMaxHeight, int minX,
+                    int maxX, int minY, int maxY, List<GameType> supportedGameTypes,
+                    List<Generator> supportedGenerators, List<Integer> supportedDimensions,
+                    Set<Capability> capabilities) {
+        this(id, displayName, defaultMaxHeightsFromTo(minMaxHeight, maxMaxHeight), standardMaxHeight, minX, maxX, minY, maxY, 0, supportedGameTypes, supportedGenerators, supportedDimensions, capabilities);
+    }
+
+    public Platform(String id, String displayName, int[] maxHeights, int standardMaxHeight, int minX, int maxX,
+                    int minY, int maxY, int minZ, List<GameType> supportedGameTypes, List<Generator> supportedGeneratorTypes,
+                    List<Integer> supportedDimensions, Set<Capability> capabilities) {
         synchronized (ALL_PLATFORMS) {
             if (ALL_PLATFORMS.containsKey(id)) {
                 throw new IllegalStateException("There is already a platform with ID " + id);
             }
             this.id = id;
             this.displayName = displayName;
-            this.minMaxHeight = minMaxHeight;
+            this.minMaxHeight = maxHeights[0];
+            this.maxHeights = maxHeights;
             this.standardMaxHeight = standardMaxHeight;
-            this.maxMaxHeight = maxMaxHeight;
+            this.maxMaxHeight = maxHeights[maxHeights.length - 1];
             this.minX = minX;
             this.maxX = maxX;
             this.minY = minY;
             this.maxY = maxY;
+            this.minZ = minZ;
             this.supportedGameTypes = ImmutableList.copyOf(supportedGameTypes);
-            this.supportedGenerators = ImmutableList.copyOf(supportedGenerators);
+            this.supportedGenerators = ImmutableList.copyOf(supportedGeneratorTypes);
             this.supportedDimensions = ImmutableList.copyOf(supportedDimensions);
             this.capabilities = Sets.immutableEnumSet(capabilities);
             ALL_PLATFORMS.put(id, this);
@@ -51,6 +57,9 @@ public final class Platform implements Serializable {
      * this platform.
      */
     public boolean isCompatible(World2 world) {
+        if (world.getPlatform().minZ < minZ) {
+            return false;
+        }
         if ((world.getMaxHeight() < minMaxHeight)
                 || (world.getMaxHeight() > maxMaxHeight)) {
             return false;
@@ -166,14 +175,35 @@ public final class Platform implements Serializable {
      */
     public final Set<Capability> capabilities;
 
+    /**
+     * The list of maxHeights to present to the user. The plugin <em>may</em> support other maxHeights, or may not, but
+     * if it is in this list it must be supported. The list must be in ascending order.
+     */
+    public final int[] maxHeights;
+
+    /**
+     * The lowest possible Z coordinate (height; in blocks) for this platform.
+     */
+    public final int minZ;
+
     private static final Map<String, Platform> ALL_PLATFORMS = new HashMap<>();
 
     private static final long serialVersionUID = 1L;
 
+    private static int[] defaultMaxHeightsFromTo(int minMaxHeight, int maxMaxHeight) {
+        int minExponent = (int) Math.ceil(Math.log(minMaxHeight)/Math.log(2));
+        int maxExponent = (int) Math.floor(Math.log(maxMaxHeight)/Math.log(2));
+        List<Integer> maxHeights = new ArrayList<>();
+        for (int i = minExponent; i <= maxExponent; i++) {
+            maxHeights.add((int) Math.pow(2, i));
+        }
+        return maxHeights.stream().mapToInt(Integer::intValue).toArray();
+    }
+
     public enum Capability {
         /**
          * Has the concept of a 2D, per-column biome, identified by a number. This is mutually exclusive with
-         * {@link #BIOMES_3D}.
+         * {@link #BIOMES_3D} and {@link #NAMED_BIOMES}.
          */
         BIOMES,
 
@@ -213,8 +243,14 @@ public final class Platform implements Serializable {
 
         /**
          * Has the concept of a 3D, per-4x4x4-cube biome, identified by a number. This is mutually exclusive with
-         * {@link #BIOMES}.
+         * {@link #BIOMES} and {@link #NAMED_BIOMES}.
          */
-        BIOMES_3D
+        BIOMES_3D,
+
+        /**
+         * Has the concept of named, namespaced biomes, stored per 4x4x4 cube of blocks (like {@link #BIOMES_3D},
+         * identified by a string. This is mutually exclusive with {@link #BIOMES} and {@link #BIOMES_3D}.
+         */
+        NAMED_BIOMES
     }
 }

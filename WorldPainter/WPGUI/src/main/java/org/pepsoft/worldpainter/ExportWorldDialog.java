@@ -11,6 +11,9 @@
 
 package org.pepsoft.worldpainter;
 
+import org.pepsoft.minecraft.CustomGenerator;
+import org.pepsoft.minecraft.SeededGenerator;
+import org.pepsoft.minecraft.SuperflatGenerator;
 import org.pepsoft.minecraft.SuperflatPreset;
 import org.pepsoft.util.DesktopUtils;
 import org.pepsoft.util.IconUtils;
@@ -27,20 +30,21 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.io.File;
+import java.io.IOException;
 import java.util.List;
 import java.util.*;
 
 import static java.util.stream.Collectors.toSet;
-import static org.pepsoft.minecraft.Constants.*;
+import static org.pepsoft.minecraft.Constants.DIFFICULTY_HARD;
+import static org.pepsoft.minecraft.Constants.DIFFICULTY_PEACEFUL;
 import static org.pepsoft.worldpainter.Constants.*;
-import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_15;
-import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
+import static org.pepsoft.worldpainter.DefaultPlugin.*;
 import static org.pepsoft.worldpainter.GameType.*;
 import static org.pepsoft.worldpainter.Generator.CUSTOM;
 import static org.pepsoft.worldpainter.Generator.DEFAULT;
 import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
 import static org.pepsoft.worldpainter.Platform.Capability.POPULATE;
-import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_PLAINS;
+import static org.pepsoft.worldpainter.util.BackupUtils.cleanUpBackups;
 import static org.pepsoft.worldpainter.util.MaterialUtils.gatherBlocksWithoutIds;
 
 /**
@@ -54,8 +58,9 @@ public class ExportWorldDialog extends WorldPainterDialog {
         this.world = world;
         selectedTiles = world.getTilesToExport();
         selectedDimension = (selectedTiles != null) ? world.getDimensionsToExport().iterator().next() : DIM_NORMAL;
-        generatorOptions = world.getGeneratorOptions();
-        superflatPreset = world.getSuperflatPreset();
+        final Dimension dim0 = world.getDimension(0);
+        dim0GeneratorName = (dim0.getGenerator() instanceof CustomGenerator) ? (((CustomGenerator) dim0.getGenerator()).getName()) : null;
+        dim0SuperflatPreset = (dim0.getGenerator() instanceof SuperflatGenerator) ? (((SuperflatGenerator) dim0.getGenerator()).getSettings()) : null;
         this.colourScheme = colourScheme;
         this.hiddenLayers = hiddenLayers;
         this.contourLines = contourLines;
@@ -91,7 +96,6 @@ public class ExportWorldDialog extends WorldPainterDialog {
 
         nameOnlyMaterials = gatherBlocksWithoutIds(world, platform);
 
-        Dimension dim0 = world.getDimension(0);
         surfacePropertiesEditor.setColourScheme(colourScheme);
         surfacePropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
         surfacePropertiesEditor.setDimension(dim0);
@@ -176,7 +180,7 @@ public class ExportWorldDialog extends WorldPainterDialog {
             comboBoxMinecraftVersion.setEnabled(false);
         }
         comboBoxGenerator.setModel(new DefaultComboBoxModel<>(platform.supportedGenerators.toArray(new Generator[platform.supportedGenerators.size()])));
-        comboBoxGenerator.setSelectedItem(world.getGenerator());
+        comboBoxGenerator.setSelectedItem(dim0.getGenerator().getType());
         updateGeneratorButtonTooltip();
         comboBoxGenerator.setEnabled(comboBoxGenerator.getItemCount() > 1);
         comboBoxGenerator.setRenderer(new EnumListCellRenderer());
@@ -274,10 +278,11 @@ dims:   for (Dimension dim: world.getDimensions()) {
             DesktopUtils.beep();
             JOptionPane.showMessageDialog(this, String.format(/* language=HTML */ "<html>" +
                     "<p>The world cannot be exported in format %s because it is not compatible, for one of these reasons:" +
-                    "<ul><li>The format does not support the world height of %d blocks" +
+                    "<ul><li>The format does not support the world depth of %d blocks" +
+                    "<li>The format does not support the world height of %d blocks" +
                     "<li>The format does not support one or more of the dimensions in this world" +
                     "</ul>" +
-                    "</html>", platform.displayName, world.getMaxHeight()), "Map Format Not Compatible", JOptionPane.ERROR_MESSAGE);
+                    "</html>", platform.displayName, -world.getPlatform().minZ, world.getMaxHeight()), "Map Format Not Compatible", JOptionPane.ERROR_MESSAGE);
             comboBoxMinecraftVersion.requestFocusInWindow();
             return false;
         }
@@ -304,7 +309,7 @@ dims:   for (Dimension dim: world.getDimensions()) {
             JOptionPane.showMessageDialog(this, "No tiles have been selected for export.", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        if ((comboBoxGenerator.getSelectedItem() == CUSTOM) && ((generatorOptions == null) || generatorOptions.trim().isEmpty())) {
+        if ((comboBoxGenerator.getSelectedItem() == CUSTOM) && ((dim0GeneratorName == null) || dim0GeneratorName.trim().isEmpty())) {
             buttonGeneratorOptions.requestFocusInWindow();
             DesktopUtils.beep();
             JOptionPane.showMessageDialog(this, "The custom world generator name has not been set.\nUse the [...] button to set it.", "Error", JOptionPane.ERROR_MESSAGE);
@@ -319,26 +324,32 @@ dims:   for (Dimension dim: world.getDimensions()) {
         StringBuilder sb = new StringBuilder("<html>Please confirm that you want to export the world<br>notwithstanding the following warnings:<br><ul>");
         boolean showWarning = false;
         Configuration config = Configuration.getInstance();
-        if ((platform == JAVA_ANVIL_1_15) && (! config.isBeta113WarningDisplayed())) {
-            sb.append("<li><strong>Minecraft 1.15 support is still in beta!</strong><br>" +
+        if ((platform == JAVA_ANVIL_1_18) && (! config.isBeta118WarningDisplayed())) {
+            sb.append("<li><strong>Minecraft 1.18 support is still in preview!</strong><br>" +
                     "Be careful and keep backups. If you encounter<br>" +
                     "problems, please report them on GitHub:<br>" +
                     "https://www.worldpainter.net/issues<br>" +
                     "This warning will only be displayed once.");
             showWarning = true;
         }
-        Generator generator = Generator.values()[comboBoxGenerator.getSelectedIndex()];
+        Generator generatorType = Generator.values()[comboBoxGenerator.getSelectedIndex()];
+        final Dimension dim0 = world.getDimension(DIM_NORMAL);
         if ((surfacePropertiesEditor.isPopulateSelected()
-                || world.getDimension(DIM_NORMAL).getAllLayers(true).contains(Populate.INSTANCE))
-                && (!platform.capabilities.contains(POPULATE))) {
+                || dim0.getAllLayers(true).contains(Populate.INSTANCE))
+                && (! platform.capabilities.contains(POPULATE))) {
             sb.append("<li>Population and not supported for<br>map format " + platform.displayName + "; it will not have an effect");
             showWarning = true;
         } else if ((! radioButtonExportSelection.isSelected()) || (selectedDimension == DIM_NORMAL)) {
             // The surface dimension is going to be exported
-            if ((generator == Generator.FLAT) && (surfacePropertiesEditor.isPopulateSelected() || world.getDimension(DIM_NORMAL).getAllLayers(true).contains(Populate.INSTANCE))) {
+            if ((generatorType == Generator.FLAT) && (surfacePropertiesEditor.isPopulateSelected() || dim0.getAllLayers(true).contains(Populate.INSTANCE))) {
                 sb.append("<li>The Superflat world type is selected and Populate is in use.<br>Minecraft will <em>not</em> populate generated chunks for Superflat maps.");
                 showWarning = true;
             }
+        }
+        if (! platform.supportedGenerators.contains(generatorType)) {
+            sb.append("<li>Map format " + platform.displayName + " does not support world type " + generatorType.getDisplayName() + ".<br>The world type will be reset to " + platform.supportedGenerators.get(0).getDisplayName() + ".");
+            generatorType = platform.supportedGenerators.get(0);
+            showWarning = true;
         }
         if (radioButtonExportSelection.isSelected()) {
             if (selectedDimension == DIM_NORMAL) {
@@ -399,6 +410,15 @@ dims:   for (Dimension dim: world.getDimensions()) {
         File baseDir = new File(fieldDirectory.getText().trim());
         String name = fieldName.getText().trim();
 
+        // Make sure the minimum free disk space is met
+        try {
+            if (! cleanUpBackups(baseDir, null)) {
+                return;
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("I/O error while cleaning backups", e);
+        }
+
         if (! surfacePropertiesEditor.saveSettings()) {
             jTabbedPane1.setSelectedIndex(0);
             return;
@@ -439,14 +459,24 @@ dims:   for (Dimension dim: world.getDimensions()) {
         world.setGameType((GameType) comboBoxGameType.getSelectedItem());
         world.setAllowCheats(checkBoxAllowCheats.isSelected());
         if (! endlessBorder) {
-            world.setGenerator(generator);
-            world.setMapFeatures(checkBoxMapFeatures.isSelected());
-            if ((generatorOptions != null) && (! generatorOptions.trim().isEmpty())) {
-                world.setGeneratorOptions(generatorOptions.trim());
-            } else {
-                world.setGeneratorOptions(null);
+            switch (generatorType) {
+                case FLAT:
+                    dim0.setGenerator(new SuperflatGenerator(dim0SuperflatPreset));
+                    break;
+                case DEFAULT:
+                case LARGE_BIOMES:
+                case BUFFET:
+                case CUSTOMIZED:
+                    dim0.setGenerator(new SeededGenerator(generatorType, dim0.getMinecraftSeed()));
+                    break;
+                case CUSTOM:
+                    dim0.setGenerator(new CustomGenerator(dim0GeneratorName.trim()));
+                    break;
+                case UNKNOWN:
+                    // Do nothing
+                    break;
             }
-            world.setSuperflatPreset(superflatPreset);
+            world.setMapFeatures(checkBoxMapFeatures.isSelected());
         }
         if (radioButtonExportEverything.isSelected()) {
             world.setDimensionsToExport(null);
@@ -478,8 +508,8 @@ dims:   for (Dimension dim: world.getDimensions()) {
         comboBoxDifficulty.setEnabled(false);
 
         config.setExportDirectory(world.getPlatform(), baseDir);
-        if (platform == JAVA_ANVIL_1_15) {
-            config.setBeta113WarningDisplayed(true);
+        if (platform == JAVA_ANVIL_1_18) {
+            config.setBeta118WarningDisplayed(true);
         }
 
         ExportProgressDialog dialog = new ExportProgressDialog(this, world, baseDir, name);
@@ -862,7 +892,7 @@ dims:   for (Dimension dim: world.getDimensions()) {
             nameOnlyMaterials = gatherBlocksWithoutIds(world, newPlatform);
 
             // Temporary workaround TODO make the chest work again
-            if (newPlatform == JAVA_ANVIL_1_15) {
+            if ((newPlatform == JAVA_ANVIL_1_15) || (newPlatform == JAVA_ANVIL_1_17) || (newPlatform == JAVA_ANVIL_1_18)) {
                 checkBoxGoodies.setEnabled(false);
                 checkBoxGoodies.setSelected(false);
             } else {
@@ -892,27 +922,25 @@ dims:   for (Dimension dim: world.getDimensions()) {
 
     private void buttonGeneratorOptionsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonGeneratorOptionsActionPerformed
         if (comboBoxGenerator.getSelectedItem() == CUSTOM) {
-            String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the custom world generator name:", generatorOptions);
+            String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the custom world generator name:", dim0GeneratorName);
             if (editedGeneratorOptions != null) {
-                generatorOptions = editedGeneratorOptions;
+                dim0GeneratorName = editedGeneratorOptions;
             }
         } else {
-            if (generatorOptions != null) {
-                String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the Superflat mode preset:", generatorOptions);
+            if (dim0GeneratorName != null) {
+                String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the Superflat mode preset:", dim0GeneratorName);
                 if (editedGeneratorOptions != null) {
-                    generatorOptions = editedGeneratorOptions;
+                    dim0GeneratorName = editedGeneratorOptions;
                 }
             } else {
-                SuperflatPreset mySuperflatPreset = (superflatPreset != null)
-                        ? superflatPreset
-                        : SuperflatPreset.builder(BIOME_PLAINS)
-                            .addLayer(MC_BEDROCK, 1)
-                            .addLayer(MC_DIRT, 2)
-                            .addLayer((comboBoxMinecraftVersion.getSelectedItem() == JAVA_ANVIL_1_15) ? MC_GRASS_BLOCK : "minecraft:grass", 1).build();
+                Platform platform = (Platform) comboBoxMinecraftVersion.getSelectedItem();
+                SuperflatPreset mySuperflatPreset = (dim0SuperflatPreset != null)
+                        ? dim0SuperflatPreset
+                        : SuperflatPreset.defaultPreset(platform);
                 EditSuperflatPresetDialog dialog = new EditSuperflatPresetDialog(this, world.getPlatform(), mySuperflatPreset);
                 dialog.setVisible(true);
                 if (! dialog.isCancelled()) {
-                    superflatPreset = mySuperflatPreset;
+                    dim0SuperflatPreset = mySuperflatPreset;
                 }
             }
         }
@@ -968,8 +996,8 @@ dims:   for (Dimension dim: world.getDimensions()) {
     private int selectedDimension, savedGenerator;
     private Set<Point> selectedTiles;
     private boolean disableTileSelectionWarning, disableDisabledLayersWarning, endlessBorder, savedMapFeatures;
-    private String generatorOptions;
-    private SuperflatPreset superflatPreset; // TODO: finish
+    private String dim0GeneratorName;
+    private SuperflatPreset dim0SuperflatPreset; // TODO: finish
     private Map<String, Set<String>> nameOnlyMaterials = new HashMap<>();
 
     private static final Icon WARNING_ICON = IconUtils.loadScaledIcon("org/pepsoft/worldpainter/icons/error.png");
