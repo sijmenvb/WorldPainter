@@ -6,8 +6,6 @@ package org.pepsoft.minecraft;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import org.json.simple.parser.JSONParser;
-import org.json.simple.parser.ParseException;
 import org.pepsoft.util.CSVDataSource;
 import org.pepsoft.worldpainter.Platform;
 import org.slf4j.Logger;
@@ -26,6 +24,7 @@ import static org.pepsoft.minecraft.Block.BLOCK_TYPE_NAMES;
 import static org.pepsoft.minecraft.Constants.*;
 import static org.pepsoft.minecraft.HorizontalOrientationScheme.CARDINAL_DIRECTIONS;
 import static org.pepsoft.minecraft.HorizontalOrientationScheme.STAIR_CORNER;
+import static org.pepsoft.util.ObjectMapperHolder.OBJECT_MAPPER;
 import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
 
 /**
@@ -343,10 +342,10 @@ public final class Material implements Serializable {
      *                 which to get the value.
      * @param <T> The property type.
      * @return The value of the specified property transformed to the specified
-     * type.
+     * type, or {@code null} if the property is not set.
      */
     public <T> T getProperty(Property<T> property) {
-        return (identity.properties != null) ? property.fromString(identity.properties.get(property.name)) : null;
+        return getProperty(property, null);
     }
 
     /**
@@ -361,15 +360,10 @@ public final class Material implements Serializable {
      *                     is not set on the material.
      * @param <T> The property type.
      * @return The value of the specified property transformed to the specified
-     * type.
+     * type, or {@code defaultValue} if the property is not set.
      */
     public <T> T getProperty(Property<T> property, T defaultValue) {
-        if (identity.properties != null) {
-            String value = identity.properties.get(property.name);
-            return (value != null) ? property.fromString(value) : defaultValue;
-        } else {
-            return defaultValue;
-        }
+        return hasProperty(property) ? property.fromString(identity.properties.get(property.name)) : defaultValue;
     }
 
     /**
@@ -1368,7 +1362,7 @@ public final class Material implements Serializable {
         // Read legacy MC block database
         try (Reader in = new InputStreamReader(Material.class.getResourceAsStream("legacy-mc-blocks.json"), UTF_8)) {
             @SuppressWarnings("unchecked") // Guaranteed by contents of file
-            List<Object> items = (List<Object>) new JSONParser().parse(in);
+            List<Object> items = (List<Object>) OBJECT_MAPPER.readValue(in, List.class);
             for (Object item: items) {
                 if ((item instanceof String) && (((String) item).trim().startsWith("#"))) {
                     // Skip comment
@@ -1386,8 +1380,6 @@ public final class Material implements Serializable {
             }
         } catch (IOException e) {
             throw new RuntimeException("I/O error while reading Minecraft block database legacy-mc-blocks.json from classpath", e);
-        } catch (ParseException e) {
-            throw new RuntimeException("JSON parsing error while reading Minecraft block database legacy-mc-blocks.json from classpath", e);
         }
 
         // Read MC materials database
@@ -1753,6 +1745,20 @@ public final class Material implements Serializable {
      * Sweet Berry Bush with age 0. For older Sweet Berry Bush, set the "age" property up to 3.
      */
     public static final Material SWEET_BERRY_BUSH = get(MC_SWEET_BERRY_BUSH, MC_AGE, 0);
+    public static final Material OAK_SIGN = get(MC_OAK_SIGN);
+    public static final Material DEEPSLATE_Y = get(MC_DEEPSLATE, MC_AXIS, "y");
+    public static final Material DEEPSLATE_COAL_ORE = get(MC_DEEPSLATE_COAL_ORE);
+    public static final Material DEEPSLATE_COPPER_ORE = get(MC_DEEPSLATE_COPPER_ORE);
+    public static final Material DEEPSLATE_LAPIS_ORE = get(MC_DEEPSLATE_LAPIS_ORE);
+    public static final Material DEEPSLATE_IRON_ORE = get(MC_DEEPSLATE_IRON_ORE);
+    public static final Material DEEPSLATE_GOLD_ORE = get(MC_DEEPSLATE_GOLD_ORE);
+    public static final Material DEEPSLATE_REDSTONE_ORE = get(MC_DEEPSLATE_REDSTONE_ORE);
+    public static final Material DEEPSLATE_DIAMOND_ORE = get(MC_DEEPSLATE_DIAMOND_ORE);
+    public static final Material DEEPSLATE_EMERALD_ORE = get(MC_DEEPSLATE_EMERALD_ORE);
+    public static final Material TUFF = get(MC_TUFF);
+    public static final Material COPPER_ORE = get(MC_COPPER_ORE);
+    public static final Material NETHER_GOLD_ORE = get(MC_NETHER_GOLD_ORE);
+    public static final Material ANCIENT_DEBRIS = get(MC_ANCIENT_DEBRIS);
 
     // Namespaces
 

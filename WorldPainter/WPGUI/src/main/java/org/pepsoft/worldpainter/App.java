@@ -11,6 +11,7 @@ import org.jetbrains.annotations.NonNls;
 import org.jetbrains.annotations.NotNull;
 import org.pepsoft.minecraft.Direction;
 import org.pepsoft.minecraft.Material;
+import org.pepsoft.minecraft.SeededGenerator;
 import org.pepsoft.util.*;
 import org.pepsoft.util.ProgressReceiver.OperationCancelled;
 import org.pepsoft.util.swing.ProgressDialog;
@@ -58,9 +59,10 @@ import org.pepsoft.worldpainter.threedeeview.ThreeDeeFrame;
 import org.pepsoft.worldpainter.tools.BiomesViewerFrame;
 import org.pepsoft.worldpainter.tools.RespawnPlayerDialog;
 import org.pepsoft.worldpainter.tools.scripts.ScriptRunner;
-import org.pepsoft.worldpainter.util.BackupUtil;
+import org.pepsoft.worldpainter.util.BackupUtils;
 import org.pepsoft.worldpainter.util.BetterAction;
 import org.pepsoft.worldpainter.util.LayoutUtils;
+import org.pepsoft.worldpainter.util.LazyLoadingIconToggleButton;
 import org.pepsoft.worldpainter.vo.AttributeKeyVO;
 import org.pepsoft.worldpainter.vo.EventVO;
 import org.pepsoft.worldpainter.vo.UsageVO;
@@ -110,6 +112,7 @@ import static org.pepsoft.util.GUIUtils.getUIScaleInt;
 import static org.pepsoft.util.swing.ProgressDialog.NOT_CANCELABLE;
 import static org.pepsoft.util.swing.ProgressDialog.NO_FOCUS_STEALING;
 import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.worldpainter.Generator.LARGE_BIOMES;
 import static org.pepsoft.worldpainter.Platform.Capability.*;
 import static org.pepsoft.worldpainter.Terrain.*;
 import static org.pepsoft.worldpainter.TileRenderer.FLUIDS_AS_LAYER;
@@ -624,6 +627,8 @@ public final class App extends JFrame implements RadiusControl,
             for (Tile tile: dimension.getTiles()) {
                 tile.addListener(this);
             }
+
+            biomesPanel.loadBiomes(world.getPlatform(), selectedColourScheme);
         } else {
             view.setDimension(null);
             setTitle("WorldPainter"); // NOI18N
@@ -804,11 +809,11 @@ public final class App extends JFrame implements RadiusControl,
         return view.getZoom();
     }
 
-    public final int getMaxRadius() {
+    public int getMaxRadius() {
         return maxRadius;
     }
 
-    public final void setMaxRadius(int maxRadius) {
+    public void setMaxRadius(int maxRadius) {
         this.maxRadius = maxRadius;
         if (radius > maxRadius) {
             radius = maxRadius;
@@ -1342,10 +1347,11 @@ public final class App extends JFrame implements RadiusControl,
     @Override
     public void setSeed(long seed, Generator generator) {
         if (world != null) {
-            world.setGenerator(generator);
-            Dimension dim0 = world.getDimension(DIM_NORMAL);
-            if (dim0 != null) {
-                dim0.setMinecraftSeed(seed);
+            for (Dimension dimension: world.getDimensions()) {
+                dimension.setMinecraftSeed(seed);
+                if (dimension.getGenerator() instanceof SeededGenerator) {
+                    ((SeededGenerator) dimension.getGenerator()).setSeed(seed);
+                }
             }
         }
     }
@@ -2127,6 +2133,7 @@ public final class App extends JFrame implements RadiusControl,
                 }
             }
 
+            Configuration config = Configuration.getInstance();
             ProgressDialog.executeTask(this, new ProgressTask<java.lang.Void>() {
                 @Override
                 public String getName() {
@@ -2135,30 +2142,45 @@ public final class App extends JFrame implements RadiusControl,
 
                 @Override
                 public java.lang.Void execute(ProgressReceiver progressReceiver) throws OperationCancelled {
+                    File tempFile = new File (normalisedFile.getParentFile(), normalisedFile.getName() + ".tmp");
+                    if (tempFile.exists()) {
+                        throw new RuntimeException("Temporary file " + tempFile.getName() + " already exists; delete it and try again");
+                    }
                     try {
-                        Configuration config = Configuration.getInstance();
-                        if ((config.getWorldFileBackups() > 0) && normalisedFile.isFile()) {
-                            progressReceiver.setMessage(strings.getString("creating.backup.s"));
-                            for (int i = config.getWorldFileBackups(); i > 0; i--) {
-                                File nextBackupFile = (i > 1) ? BackupUtil.getBackupFile(normalisedFile, i - 1) : normalisedFile;
-                                if (nextBackupFile.isFile()) {
-                                    File backupFile = BackupUtil.getBackupFile(normalisedFile, i);
-                                    if (backupFile.isFile()) {
-                                        if (!backupFile.delete()) {
-                                            throw new RuntimeException("Could not delete old backup file " + backupFile);
-                                        }
-                                    }
-                                    if (!nextBackupFile.renameTo(backupFile)) {
-                                        throw new RuntimeException("Could not move " + nextBackupFile + " to " + backupFile);
-                                    }
-                                }
-                            }
-                            progressReceiver.setMessage(null);
-                        }
-
+                        // Save the world to a temporary file first, to ensure that there is enough space
                         world.addHistoryEntry(HistoryEntry.WORLD_SAVED, normalisedFile);
                         WorldIO worldIO = new WorldIO(world);
-                        worldIO.save(new FileOutputStream(normalisedFile));
+                        worldIO.save(new FileOutputStream(tempFile));
+
+                        // If that succeeded, move the existing file out of the way by rotating (if enabled) or deleting
+                        // it
+                        if (normalisedFile.isFile()) {
+                            if (config.getWorldFileBackups() > 0) {
+                                progressReceiver.setMessage(strings.getString("creating.backup.s"));
+                                for (int i = config.getWorldFileBackups(); i > 0; i--) {
+                                    File nextBackupFile = (i > 1) ? BackupUtils.getBackupFile(normalisedFile, i - 1) : normalisedFile;
+                                    if (nextBackupFile.isFile()) {
+                                        File backupFile = BackupUtils.getBackupFile(normalisedFile, i);
+                                        if (backupFile.isFile()) {
+                                            if (! backupFile.delete()) {
+                                                throw new RuntimeException("Could not delete old backup file " + backupFile.getName());
+                                            }
+                                        }
+                                        if (! nextBackupFile.renameTo(backupFile)) {
+                                            throw new RuntimeException("Could not move " + nextBackupFile.getName() + " to " + backupFile.getName());
+                                        }
+                                    }
+                                }
+                                progressReceiver.setMessage(null);
+                            } else if (! normalisedFile.delete()) {
+                                throw new RuntimeException("Could not delete existing file " + normalisedFile.getName() + "; world is saved as " + tempFile.getName());
+                            }
+                        }
+
+                        // Finally, move the temporary file to the final location
+                        if (! tempFile.renameTo(normalisedFile)) {
+                            throw new RuntimeException("Could not move " + tempFile.getName() + " to " + normalisedFile.getName() + "; world is saved as " + tempFile.getName());
+                        }
 
                         Map<String, byte[]> layoutData = config.getJideLayoutData();
                         if (layoutData == null) {
@@ -2175,28 +2197,25 @@ public final class App extends JFrame implements RadiusControl,
             }, NOT_CANCELABLE);
 
             // Log an event
-            Configuration config = Configuration.getInstance();
-            if (config != null) {
-                EventVO event = new EventVO(EVENT_KEY_ACTION_SAVE_WORLD).addTimestamp();
-                event.setAttribute(ATTRIBUTE_KEY_MAX_HEIGHT, world.getMaxHeight());
-                Dimension loadedDimension = world.getDimension(0);
-                event.setAttribute(ATTRIBUTE_KEY_TILES, loadedDimension.getTiles().size());
-                logLayers(loadedDimension, event, "");
-                loadedDimension = world.getDimension(1);
-                if (loadedDimension != null) {
-                    event.setAttribute(ATTRIBUTE_KEY_NETHER_TILES, loadedDimension.getTiles().size());
-                    logLayers(loadedDimension, event, "nether.");
-                }
-                loadedDimension = world.getDimension(2);
-                if (loadedDimension != null) {
-                    event.setAttribute(ATTRIBUTE_KEY_END_TILES, loadedDimension.getTiles().size());
-                    logLayers(loadedDimension, event, "end.");
-                }
-                if (world.getImportedFrom() != null) {
-                    event.setAttribute(ATTRIBUTE_KEY_IMPORTED_WORLD, true);
-                }
-                config.logEvent(event);
+            EventVO event = new EventVO(EVENT_KEY_ACTION_SAVE_WORLD).addTimestamp();
+            event.setAttribute(ATTRIBUTE_KEY_MAX_HEIGHT, world.getMaxHeight());
+            Dimension loadedDimension = world.getDimension(0);
+            event.setAttribute(ATTRIBUTE_KEY_TILES, loadedDimension.getTiles().size());
+            logLayers(loadedDimension, event, "");
+            loadedDimension = world.getDimension(1);
+            if (loadedDimension != null) {
+                event.setAttribute(ATTRIBUTE_KEY_NETHER_TILES, loadedDimension.getTiles().size());
+                logLayers(loadedDimension, event, "nether.");
             }
+            loadedDimension = world.getDimension(2);
+            if (loadedDimension != null) {
+                event.setAttribute(ATTRIBUTE_KEY_END_TILES, loadedDimension.getTiles().size());
+                logLayers(loadedDimension, event, "end.");
+            }
+            if (world.getImportedFrom() != null) {
+                event.setAttribute(ATTRIBUTE_KEY_IMPORTED_WORLD, true);
+            }
+            config.logEvent(event);
 
             if (currentUndoManager != null) {
                 currentUndoManager.armSavePoint();
@@ -2213,7 +2232,7 @@ public final class App extends JFrame implements RadiusControl,
             lastSelectedFile = file;
             addRecentlyUsedWorld(file);
 
-            Configuration.getInstance().setWorldDirectory(file.getParentFile());
+            config.setWorldDirectory(file.getParentFile());
 
             return true;
         } finally {
@@ -2330,7 +2349,10 @@ public final class App extends JFrame implements RadiusControl,
         } catch (RuntimeException | Error e) {
             logger.error("An exception occurred while trying to autosave world", e);
             DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, "An error occurred while trying to autosave the world.\nIt has not been autosaved. If this keeps happening,\nplease report it to the author.", "Autosave Failed", JOptionPane.WARNING_MESSAGE);
+            JOptionPane.showMessageDialog(this, "An error occurred while trying to autosave the world.\n" +
+                    "One possibility is that the disk is full; please make space.\n" +
+                    "It has not been autosaved. If this keeps happening,\n" +
+                    "please report it to the author.", "Autosave Failed", JOptionPane.WARNING_MESSAGE);
         }
     }
 
@@ -2552,8 +2574,8 @@ public final class App extends JFrame implements RadiusControl,
 
         dockingManager.addFrame(new DockableFrameBuilder(createTerrainPanel(), "Terrain", DOCK_SIDE_WEST, 3).build());
 
-        biomesPanel = new DockableFrameBuilder(createBiomesPanel(), "Biomes", DOCK_SIDE_WEST, 3).build();
-        dockingManager.addFrame(biomesPanel);
+        biomesPanelFrame = new DockableFrameBuilder(createBiomesPanelContainer(), "Biomes", DOCK_SIDE_WEST, 3).build();
+        dockingManager.addFrame(biomesPanelFrame);
 
         dockingManager.addFrame(new DockableFrameBuilder(createAnnotationsPanel(), "Annotations", DOCK_SIDE_WEST, 3).build());
 
@@ -2972,9 +2994,9 @@ public final class App extends JFrame implements RadiusControl,
         return layerPanel;
     }
 
-    private JPanel createBiomesPanel() {
-        final JPanel biomesPanel = new JPanel();
-        biomesPanel.setLayout(new GridBagLayout());
+    private JPanel createBiomesPanelContainer() {
+        final JPanel biomesPanelContainer = new JPanel();
+        biomesPanelContainer.setLayout(new GridBagLayout());
         GridBagConstraints constraints = new GridBagConstraints();
         constraints.insets = new Insets(1, 1, 1, 1);
 
@@ -2995,7 +3017,7 @@ public final class App extends JFrame implements RadiusControl,
         if (! config.isEasyMode()) {
             constraints.gridwidth = 1;
             constraints.weightx = 0.0;
-            biomesPanel.add(checkBox, constraints);
+            biomesPanelContainer.add(checkBox, constraints);
         }
 
         JCheckBox soloCheckBox = new JCheckBox("Solo:");
@@ -3005,20 +3027,21 @@ public final class App extends JFrame implements RadiusControl,
         layerSoloCheckBoxes.put(Biome.INSTANCE, soloCheckBox);
         if (! config.isEasyMode()) {
             constraints.gridwidth = GridBagConstraints.REMAINDER;
-            biomesPanel.add(soloCheckBox, constraints);
+            biomesPanelContainer.add(soloCheckBox, constraints);
         }
 
-        biomesPanel.add(new BiomesPanel(defaultColourScheme, customBiomeManager, biomeId -> {
+        biomesPanel = new BiomesPanel(defaultColourScheme, customBiomeManager, biomeId -> {
             paintUpdater = () -> {
                 paint = PaintFactory.createDiscreteLayerPaint(Biome.INSTANCE, biomeId);
                 paintChanged();
             };
             paintUpdater.updatePaint();
-        }, paintButtonGroup), constraints);
+        }, paintButtonGroup);
+        biomesPanelContainer.add(biomesPanel, constraints);
 
         layerControls.put(Biome.INSTANCE, new LayerControls(Biome.INSTANCE, checkBox, soloCheckBox, null));
 
-        return biomesPanel;
+        return biomesPanelContainer;
     }
 
     private JPanel createAnnotationsPanel() {
@@ -3473,24 +3496,13 @@ public final class App extends JFrame implements RadiusControl,
         int desiredBrushRotation = (activeOperation instanceof PaintOperation) ? brushRotation : toolBrushRotation;
         if (desiredBrushRotation != previousBrushRotation) {
 //            long start = System.currentTimeMillis();
-            if (desiredBrushRotation == 0) {
-                for (Map.Entry<Brush, JToggleButton> entry: brushButtons.entrySet()) {
-                    Brush brush = entry.getKey();
-                    JToggleButton button = entry.getValue();
-                    if (button.isSelected() && (activeOperation instanceof BrushOperation)) {
-                        button.setIcon(createBrushIcon(brush, 0));
-                        ((BrushOperation) activeOperation).setBrush(brush);
-                    }
-                }
-            } else {
-                for (Map.Entry<Brush, JToggleButton> entry: brushButtons.entrySet()) {
-                    Brush brush = entry.getKey();
-                    JToggleButton button = entry.getValue();
-                    if (button.isSelected() && (activeOperation instanceof BrushOperation)) {
-                        button.setIcon(createBrushIcon(brush, desiredBrushRotation));
-                        Brush rotatedBrush = RotatedBrush.rotate(brush, desiredBrushRotation);
-                        ((BrushOperation) activeOperation).setBrush(rotatedBrush);
-                    }
+            if (activeOperation instanceof BrushOperation) {
+                Brush brush = (activeOperation instanceof PaintOperation) ? this.brush : this.toolBrush;
+                if (desiredBrushRotation == 0) {
+                    ((BrushOperation) activeOperation).setBrush(brush);
+                } else {
+                    Brush rotatedBrush = RotatedBrush.rotate(brush, desiredBrushRotation);
+                    ((BrushOperation) activeOperation).setBrush(rotatedBrush);
                 }
             }
             view.setBrushRotation(desiredBrushRotation);
@@ -3499,13 +3511,6 @@ public final class App extends JFrame implements RadiusControl,
 //            }
             previousBrushRotation = desiredBrushRotation;
         }
-    }
-
-    /**
-     * Update the image of a single brush button
-     */
-    private void updateBrushRotation(Brush brush, JToggleButton button) {
-        button.setIcon(createBrushIcon(brush, button.isSelected() ? ((activeOperation instanceof PaintOperation) ? brushRotation : toolBrushRotation) : 0));
     }
 
     private void registerCustomLayer(final CustomLayer layer, boolean activate) {
@@ -4363,7 +4368,7 @@ public final class App extends JFrame implements RadiusControl,
             } else {
                 int preferredAlgorithm = -1;
                 if ((dimension != null) && (dimension.getDim() == DIM_NORMAL) && (dimension.getMaxHeight() == DEFAULT_MAX_HEIGHT_ANVIL)) {
-                    if (world.getGenerator() == Generator.LARGE_BIOMES) {
+                    if (dimension.getGenerator().getType() == LARGE_BIOMES) {
                         preferredAlgorithm = BIOME_ALGORITHM_1_7_LARGE;
                     } else {
                         preferredAlgorithm = BIOME_ALGORITHM_1_7_DEFAULT;
@@ -5035,7 +5040,7 @@ public final class App extends JFrame implements RadiusControl,
     private JToggleButton createTerrainButton(final Terrain terrain) {
         final JToggleButton button = new JToggleButton();
         button.setMargin(App.BUTTON_INSETS);
-        button.setIcon(new ImageIcon(terrain.getIcon(defaultColourScheme)));
+        button.setIcon(new ImageIcon(terrain.getScaledIcon(16, defaultColourScheme)));
         button.setToolTipText(terrain.getName() + ": " + terrain.getDescription());
         button.addItemListener(event -> {
             if (event.getStateChange() == ItemEvent.SELECTED) {
@@ -5127,7 +5132,6 @@ public final class App extends JFrame implements RadiusControl,
                 JToggleButton button = entry.getValue();
                 if (button.isSelected()) {
                     button.setSelected(false);
-                    updateBrushRotation(entry.getKey(), button);
                     break;
                 }
             }
@@ -5136,12 +5140,11 @@ public final class App extends JFrame implements RadiusControl,
     }
 
     private JComponent createBrushButton(final Brush brush) {
-        final JToggleButton button = new JToggleButton(createBrushIcon(brush, 0));
+        final JToggleButton button = new LazyLoadingIconToggleButton((int) (32 * getUIScale()), () -> createBrushIcon(brush));
         button.setMargin(new Insets(2, 2, 2, 2));
         button.setToolTipText(brush.getName());
         button.addItemListener(e -> {
             if (! programmaticChange) {
-                updateBrushRotation(brush, button);
                 if (e.getStateChange() == ItemEvent.SELECTED) {
                     int effectiveRotation;
                     if (activeOperation instanceof PaintOperation) {
@@ -5169,12 +5172,8 @@ public final class App extends JFrame implements RadiusControl,
         return button;
     }
     
-    private Icon createBrushIcon(Brush brush, int degrees) {
-        brush = brush.clone();
+    private Icon createBrushIcon(Brush brush) {
         brush.setRadius((int) (16 * getUIScale()) - 1);
-        if (degrees != 0) {
-            brush = RotatedBrush.rotate(brush, degrees);
-        }
         return new ImageIcon(createBrushImage(brush));
     }
 
@@ -5246,7 +5245,7 @@ public final class App extends JFrame implements RadiusControl,
                 case DIM_NORMAL_CEILING:
                     setSpawnPointToggleButton.setEnabled(platform.capabilities.contains(SET_SPAWN_POINT));
                     ACTION_MOVE_TO_SPAWN.setEnabled(platform.capabilities.contains(SET_SPAWN_POINT));
-                    biomesPanel.setEnabled(biomesSupported);
+                    biomesPanelFrame.setEnabled(biomesSupported);
                     layerControls.get(Biome.INSTANCE).setEnabled(biomesSupported);
                     break;
                 default:
@@ -5255,7 +5254,7 @@ public final class App extends JFrame implements RadiusControl,
                     }
                     setSpawnPointToggleButton.setEnabled(false);
                     ACTION_MOVE_TO_SPAWN.setEnabled(false);
-                    biomesPanel.setEnabled(biomesSupported);
+                    biomesPanelFrame.setEnabled(biomesSupported);
                     layerControls.get(Biome.INSTANCE).setEnabled(biomesSupported);
                     break;
             }
@@ -5616,11 +5615,12 @@ public final class App extends JFrame implements RadiusControl,
                             // by *far* the most time goes into actually writing
                             // the file, and we can't report progress for that
                             try {
-                                BufferedImage image = new BufferedImage(dimension.getWidth() * TILE_SIZE, dimension.getHeight() * TILE_SIZE, ((dimension.getMaxHeight() <= 256) && (! highRes)) ? BufferedImage.TYPE_BYTE_GRAY : BufferedImage.TYPE_USHORT_GRAY);
-                                WritableRaster raster = image.getRaster();
+                                final int minHeight = dimension.getMinHeight(), totalHeight = dimension.getMaxHeight() - dimension.getMinHeight();
+                                final BufferedImage image = new BufferedImage(dimension.getWidth() * TILE_SIZE, dimension.getHeight() * TILE_SIZE, ((totalHeight <= 256) && (! highRes)) ? BufferedImage.TYPE_BYTE_GRAY : BufferedImage.TYPE_USHORT_GRAY);
+                                final WritableRaster raster = image.getRaster();
                                 for (Tile tile: dimension.getTiles()) {
-                                    int tileOffsetX = (tile.getX() - dimension.getLowestX()) * TILE_SIZE;
-                                    int tileOffsetY = (tile.getY() - dimension.getLowestY()) * TILE_SIZE;
+                                    final int tileOffsetX = (tile.getX() - dimension.getLowestX()) * TILE_SIZE;
+                                    final int tileOffsetY = (tile.getY() - dimension.getLowestY()) * TILE_SIZE;
                                     if (highRes) {
                                         for (int dx = 0; dx < TILE_SIZE; dx++) {
                                             for (int dy = 0; dy < TILE_SIZE; dy++) {
@@ -5630,7 +5630,7 @@ public final class App extends JFrame implements RadiusControl,
                                     } else {
                                         for (int dx = 0; dx < TILE_SIZE; dx++) {
                                             for (int dy = 0; dy < TILE_SIZE; dy++) {
-                                                raster.setSample(tileOffsetX + dx, tileOffsetY + dy, 0, tile.getIntHeight(dx, dy));
+                                                raster.setSample(tileOffsetX + dx, tileOffsetY + dy, 0, tile.getIntHeight(dx, dy) - minHeight);
                                             }
                                         }
                                     }
@@ -6924,7 +6924,8 @@ public final class App extends JFrame implements RadiusControl,
     private ThreeDeeFrame threeDeeFrame;
     private BiomesViewerFrame biomesViewerFrame;
     private MapDragControl mapDragControl;
-    private DockableFrame biomesPanel;
+    private BiomesPanel biomesPanel;
+    private DockableFrame biomesPanelFrame;
     private final boolean alwaysEnableReadOnly = ! "false".equalsIgnoreCase(System.getProperty("org.pepsoft.worldpainter.alwaysEnableReadOnly")); // NOI18N
 //    private JScrollPane scrollPane = new JScrollPane();
     private Filter filter, toolFilter;
