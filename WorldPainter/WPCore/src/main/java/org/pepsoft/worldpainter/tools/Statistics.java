@@ -6,7 +6,7 @@ package org.pepsoft.worldpainter.tools;
 
 import org.pepsoft.minecraft.ChunkStore;
 import org.pepsoft.minecraft.JavaLevel;
-import org.pepsoft.worldpainter.AbstractMain;
+import org.pepsoft.worldpainter.AbstractTool;
 import org.pepsoft.worldpainter.Platform;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 
@@ -23,7 +23,7 @@ import static org.pepsoft.worldpainter.Constants.*;
  *
  * @author pepijn
  */
-public class Statistics extends AbstractMain {
+public class Statistics extends AbstractTool {
     @SuppressWarnings("unchecked") // Java limitation
     public static void main(String[] args) throws IOException {
         initialisePlatform();
@@ -36,13 +36,12 @@ public class Statistics extends AbstractMain {
             throw new UnsupportedOperationException("Level format version " + level.getVersion() + " not supported");
         }
         final int maxHeight = level.getMaxHeight();
-        final int maxY = maxHeight - 1;
+        final int minY = level.getMinHeight(), maxY = maxHeight - 1;
 
 //        int totalBlockCount = 0, totalBlocksPerLevel = 0;
         System.out.println("Scanning " + worldDir);
         final PlatformManager platformManager = PlatformManager.getInstance();
         final Platform platform = platformManager.identifyPlatform(worldDir);
-        final int minY = platform.minZ;
         final Map<String, AtomicInteger>[] blockTypeCounts = new Map[(maxHeight - minY) >> 4];
         for (int i = 0; i < blockTypeCounts.length; i++) {
             blockTypeCounts[i] = new HashMap<>();

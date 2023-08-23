@@ -1,23 +1,23 @@
 package org.pepsoft.worldpainter.exporting;
 
-import org.jetbrains.annotations.NotNull;
 import org.pepsoft.minecraft.*;
 import org.pepsoft.util.Box;
 import org.pepsoft.util.ParallelProgressManager;
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.ProgressReceiver.OperationCancelled;
 import org.pepsoft.util.SubProgressReceiver;
+import org.pepsoft.util.mdc.MDCCapturingRuntimeException;
 import org.pepsoft.util.mdc.MDCThreadPoolExecutor;
+import org.pepsoft.util.undo.UndoManager;
 import org.pepsoft.worldpainter.Dimension;
-import org.pepsoft.worldpainter.Platform;
-import org.pepsoft.worldpainter.Tile;
-import org.pepsoft.worldpainter.World2;
+import org.pepsoft.worldpainter.Dimension.Anchor;
+import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.gardenofeden.GardenExporter;
 import org.pepsoft.worldpainter.gardenofeden.Seed;
-import org.pepsoft.worldpainter.layers.CombinedLayer;
-import org.pepsoft.worldpainter.layers.CustomLayer;
-import org.pepsoft.worldpainter.layers.GardenCategory;
-import org.pepsoft.worldpainter.layers.Layer;
+import org.pepsoft.worldpainter.layers.*;
+import org.pepsoft.worldpainter.layers.pockets.UndergroundPocketsLayer;
+import org.pepsoft.worldpainter.layers.tunnel.TunnelLayer;
+import org.pepsoft.worldpainter.platforms.JavaExportSettings;
 import org.pepsoft.worldpainter.plugins.BlockBasedPlatformProvider;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.pepsoft.worldpainter.vo.AttributeKeyVO;
@@ -39,11 +39,23 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+import static java.util.function.Function.identity;
+import static java.util.stream.Collectors.toMap;
 import static org.pepsoft.minecraft.Constants.*;
 import static org.pepsoft.minecraft.Material.AIR;
+import static org.pepsoft.util.ExceptionUtils.chainContains;
+import static org.pepsoft.util.mdc.MDCUtils.doWithMdcContext;
 import static org.pepsoft.worldpainter.Constants.*;
-import static org.pepsoft.worldpainter.DefaultPlugin.*;
+import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL;
+import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.Dimension.Role.MASTER;
+import static org.pepsoft.worldpainter.Platform.Capability.POPULATE;
+import static org.pepsoft.worldpainter.exporting.WorldExportSettings.Step.*;
+import static org.pepsoft.worldpainter.layers.tunnel.TunnelLayer.Mode.CUSTOM_DIMENSION;
+import static org.pepsoft.worldpainter.util.ThreadUtils.chooseThreadCount;
 
 /**
  * An abstract {@link WorldExporter} for block based platforms.
@@ -51,18 +63,17 @@ import static org.pepsoft.worldpainter.DefaultPlugin.*;
  * <p>Created by Pepijn on 11-12-2016.
  */
 public abstract class AbstractWorldExporter implements WorldExporter {
-    protected AbstractWorldExporter(World2 world, Platform platform) {
+    protected AbstractWorldExporter(World2 world, WorldExportSettings worldExportSettings, Platform platform) {
         if (world == null) {
             throw new NullPointerException();
         }
         this.world = world;
         this.platform = platform;
+        this.worldExportSettings = (worldExportSettings != null)
+                ? worldExportSettings
+                : (world.getExportSettings() != null ? world.getExportSettings() : new WorldExportSettings());
         platformProvider = (BlockBasedPlatformProvider) PlatformManager.getInstance().getPlatformProvider(platform);
-        this.selectedTiles = world.getTilesToExport();
-        this.selectedDimensions = world.getDimensionsToExport();
-        if ((selectedTiles != null) && (selectedDimensions.size() != 1)) {
-            throw new IllegalArgumentException("When a tile selection is present exactly one dimension must be selected");
-        }
+        populateSupported = platform.capabilities.contains(POPULATE);
     }
 
     @Override
@@ -106,38 +117,27 @@ public abstract class AbstractWorldExporter implements WorldExporter {
 
         long start = System.currentTimeMillis();
 
-        final Dimension ceiling;
-        switch (dimension.getDim()) {
-            case DIM_NORMAL:
-                ceiling = dimension.getWorld().getDimension(DIM_NORMAL_CEILING);
-                break;
-            case DIM_NETHER:
-                ceiling = dimension.getWorld().getDimension(DIM_NETHER_CEILING);
-                break;
-            case DIM_END:
-                ceiling = dimension.getWorld().getDimension(DIM_END_CEILING);
-                break;
-            default:
-                throw new IllegalArgumentException("Dimension " + dimension.getDim() + " not supported");
-        }
+        final Anchor anchor = dimension.getAnchor();
+        final int dim = anchor.dim;
+        final Dimension ceiling = dimension.getWorld().getDimension(new Anchor(dim, anchor.role, true, 0));
+        final Dimension master = dimension.getWorld().getDimension(new Anchor(dim, MASTER, false, 0));
+        final Dimension combined = (master != null) ? new FlatteningDimension(dimension, new ScaledDimension(master, 16.0f)) : dimension;
 
         final ChunkFactory.Stats collectedStats = new ChunkFactory.Stats();
-        dimension.rememberChanges();
-        if (ceiling != null) {
-            ceiling.rememberChanges();
-        }
+        final boolean tilesSelected = worldExportSettings.getTilesToExport() != null;
+        final Set<Point> selectedTiles = tilesSelected ? worldExportSettings.getTilesToExport() : null;
+        // TODO is it too late to do this now because we already created the combined dimension:
+        final Map<Dimension, Object> savedSettings = world.getDimensions().stream()
+                .filter(d -> d.getAnchor().dim == dim)
+                .collect(toMap(identity(), d -> setupDimensionForExport(d, selectedTiles)));
         try {
-            final Map<Layer, LayerExporter> exporters = setupDimensionForExport(dimension);
-            final Map<Layer, LayerExporter> ceilingExporters = (ceiling != null) ? setupDimensionForExport(ceiling) : null;
-
             // Determine regions to export
             int lowestRegionX = Integer.MAX_VALUE, highestRegionX = Integer.MIN_VALUE, lowestRegionZ = Integer.MAX_VALUE, highestRegionZ = Integer.MIN_VALUE;
             final Set<Point> regions = new HashSet<>(), exportedRegions = new HashSet<>();
-            final boolean tileSelection = selectedTiles != null;
-            if (tileSelection) {
+            if (tilesSelected) {
                 // Sanity check
-                assert selectedDimensions.size() == 1;
-                assert selectedDimensions.contains(dimension.getDim());
+                assert worldExportSettings.getDimensionsToExport().size() == 1;
+                assert worldExportSettings.getDimensionsToExport().contains(dim);
                 for (Point tile: selectedTiles) {
                     int regionX = tile.x >> 2;
                     int regionZ = tile.y >> 2;
@@ -156,15 +156,14 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                     }
                 }
             } else {
-                for (Tile tile: dimension.getTiles()) {
-                    // Also add regions for any bedrock wall and/or border
-                    // tiles, if present
+                for (Point tileCoords: combined.getTileCoords()) {
+                    // Also add regions for any bedrock wall and/or border tiles, if present
                     int r = (((dimension.getBorder() != null) && (! dimension.getBorder().isEndless())) ? dimension.getBorderSize() : 0)
-                            + (((dimension.getBorder() == null) || (! dimension.getBorder().isEndless())) && dimension.isBedrockWall() ? 1 : 0);
+                            + (((dimension.getBorder() == null) || (! dimension.getBorder().isEndless())) && (dimension.getWallType() != null) ? 1 : 0);
                     for (int dx = -r; dx <= r; dx++) {
                         for (int dy = -r; dy <= r; dy++) {
-                            int regionX = (tile.getX() + dx) >> 2;
-                            int regionZ = (tile.getY() + dy) >> 2;
+                            int regionX = (tileCoords.x + dx) >> 2;
+                            int regionZ = (tileCoords.y + dy) >> 2;
                             regions.add(new Point(regionX, regionZ));
                             if (regionX < lowestRegionX) {
                                 lowestRegionX = regionX;
@@ -182,9 +181,9 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                     }
                 }
                 if (ceiling != null) {
-                    for (Tile tile: ceiling.getTiles()) {
-                        int regionX = tile.getX() >> 2;
-                        int regionZ = tile.getY() >> 2;
+                    for (Point tileCoords: ceiling.getTileCoords()) {
+                        int regionX = tileCoords.x >> 2;
+                        int regionZ = tileCoords.y >> 2;
                         regions.add(new Point(regionX, regionZ));
                         if (regionX < lowestRegionX) {
                             lowestRegionX = regionX;
@@ -227,57 +226,39 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                 }
             }
 
-            final WorldPainterChunkFactory chunkFactory = new WorldPainterChunkFactory(dimension, exporters, platform, world.getMaxHeight());
-            final WorldPainterChunkFactory ceilingChunkFactory = (ceiling != null) ? new WorldPainterChunkFactory(ceiling, ceilingExporters, platform, world.getMaxHeight()) : null;
-
-            Runtime runtime = Runtime.getRuntime();
-            runtime.gc();
-            long totalMemory = runtime.totalMemory();
-            long freeMemory = runtime.freeMemory();
-            long memoryInUse = totalMemory - freeMemory;
-            long maxMemory = runtime.maxMemory();
-            long maxMemoryAvailable = maxMemory - memoryInUse;
-            int maxThreadsByMem = (int) (maxMemoryAvailable / 250000000L);
-            int threads;
-            if (System.getProperty("org.pepsoft.worldpainter.threads") != null) {
-                threads = Math.max(Math.min(Integer.parseInt(System.getProperty("org.pepsoft.worldpainter.threads")), sortedRegions.size()), 1);
-            } else {
-                threads = Math.max(Math.min(Math.min(maxThreadsByMem, runtime.availableProcessors()), sortedRegions.size()), 1);
-            }
-            logger.info("Using " + threads + " thread(s) for export (cores: " + runtime.availableProcessors() + ", available memory: " + (maxMemoryAvailable / 1048576L) + " MB)");
-
             final Map<Point, List<Fixup>> fixups = new HashMap<>();
-            ExecutorService executor = MDCThreadPoolExecutor.newFixedThreadPool(threads, new ThreadFactory() {
-                @Override
-                public synchronized Thread newThread(Runnable r) {
-                    Thread thread = new Thread(threadGroup, r, "Exporter-" + nextID++);
-                    thread.setPriority(Thread.MIN_PRIORITY);
-                    return thread;
-                }
-
-                private final ThreadGroup threadGroup = new ThreadGroup("Exporters");
-                private int nextID = 1;
-            });
+            final ExecutorService executor = createExecutorService("exporting", sortedRegions.size());
             final RuntimeException[] exception = new RuntimeException[1];
             final ParallelProgressManager parallelProgressManager = (progressReceiver != null) ? new ParallelProgressManager(progressReceiver, regions.size()) : null;
+            final AtomicBoolean abort = new AtomicBoolean();
             try {
                 // Export each individual region
                 for (Point region: sortedRegions) {
                     final Point regionCoords = region;
                     executor.execute(() -> {
+                        if (abort.get()) {
+                            return;
+                        }
                         ProgressReceiver progressReceiver1 = (parallelProgressManager != null) ? parallelProgressManager.createProgressReceiver() : null;
                         if (progressReceiver1 != null) {
                             try {
                                 progressReceiver1.checkForCancellation();
                             } catch (OperationCancelled e) {
+                                abort.set(true);
                                 return;
                             }
                         }
                         try {
-                            WorldRegion worldRegion = new WorldRegion(regionCoords.x, regionCoords.y, dimension.getMaxHeight(), platform);
+                            final int minHeight = dimension.getMinHeight(), maxHeight = dimension.getMaxHeight();
+                            final Map<Layer, LayerExporter> exporters = getExportersForRegion(combined, regionCoords);
+                            final Map<Layer, LayerExporter> ceilingExporters = (ceiling != null) ? getExportersForRegion(ceiling, region) : null;
+                            final WorldPainterChunkFactory chunkFactory = new WorldPainterChunkFactory(combined, exporters, platform, maxHeight);
+                            final WorldPainterChunkFactory ceilingChunkFactory = (ceiling != null) ? new WorldPainterChunkFactory(ceiling, ceilingExporters, platform, maxHeight) : null;
+
+                            WorldRegion worldRegion = new WorldRegion(regionCoords.x, regionCoords.y, minHeight, maxHeight, platform);
                             ExportResults exportResults = null;
                             try {
-                                exportResults = exportRegion(worldRegion, dimension, ceiling, regionCoords, tileSelection, exporters, ceilingExporters, chunkFactory, ceilingChunkFactory, (progressReceiver1 != null) ? new SubProgressReceiver(progressReceiver1, 0.0f, 0.9f) : null);
+                                exportResults = exportRegion(worldRegion, combined, ceiling, regionCoords, tilesSelected, exporters, ceilingExporters, chunkFactory, ceilingChunkFactory, (progressReceiver1 != null) ? new SubProgressReceiver(progressReceiver1, 0.0f, 0.9f) : null);
                                 if (logger.isDebugEnabled()) {
                                     logger.debug("Generated region " + regionCoords.x + "," + regionCoords.y);
                                 }
@@ -291,7 +272,7 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                             } finally {
                                 if ((exportResults != null) && exportResults.chunksGenerated) {
                                     long saveStart = System.currentTimeMillis();
-                                    worldRegion.save(worldDir, dimension.getDim());
+                                    worldRegion.save(worldDir, dim);
                                     if (logger.isDebugEnabled()) {
                                         logger.debug("Saving region took {} ms", System.currentTimeMillis() - saveStart);
                                     }
@@ -303,16 +284,20 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                                 }
                                 exportedRegions.add(regionCoords);
                             }
-                            performFixupsIfNecessary(worldDir, dimension, regions, fixups, exportedRegions, progressReceiver1);
+                            performFixupsIfNecessary(worldDir, combined, regions, fixups, exportedRegions, progressReceiver1);
                         } catch (Throwable t) {
+                            if (chainContains(t, OperationCancelled.class)) {
+                                logger.debug("Operation cancelled on thread {} (message: \"{}\")", Thread.currentThread().getName(), t.getMessage());
+                            } else {
+                                logger.error(t.getClass().getSimpleName() + " while exporting region {},{} (message: \"{}\")", region.x, region.y, t.getMessage(), t);
+                            }
+                            abort.set(true);
                             if (progressReceiver1 != null) {
                                 progressReceiver1.exceptionThrown(t);
                             } else {
-                                logger.error(t.getClass().getSimpleName() + " while exporting region {},{}", region.x, region.y, t);
                                 if (exception[0] == null) {
                                     exception[0] = new RuntimeException(t.getClass().getSimpleName() + " while exporting region" + region.x + "," + region.y, exception[0]);
                                 }
-                                executor.shutdownNow();
                             }
                         }
                     });
@@ -322,26 +307,27 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                 try {
                     executor.awaitTermination(366, TimeUnit.DAYS);
                 } catch (InterruptedException e) {
-                    throw new RuntimeException("Thread interrupted while waiting for all tasks to finish", e);
+                    throw new MDCCapturingRuntimeException("Thread interrupted while waiting for all tasks to finish", e);
                 }
             }
 
-            // If there is a progress receiver then we have reported any
-            // exceptions to it, but if not then we should rethrow the recorded
-            // exception, if any
+            // If there is a progress receiver then we have reported any exceptions to it, but if not then we should
+            // rethrow the recorded exception, if any
             if (exception[0] != null) {
                 throw exception[0];
             }
 
-            // It's possible for there to be fixups left, if thread A was
-            // performing fixups and thread B added new ones and then quit
-            synchronized (fixups) {
-                if (! fixups.isEmpty()) {
-                    if (progressReceiver != null) {
-                        progressReceiver.setMessage("Doing remaining fixups for " + dimension.getName());
-                        progressReceiver.reset();
+            if (! abort.get()) {
+                // It's possible for there to be fixups left, if thread A was performing fixups and thread B added new
+                // ones and then quit
+                synchronized (fixups) {
+                    if (! fixups.isEmpty()) {
+                        if (progressReceiver != null) {
+                            progressReceiver.setMessage("Doing remaining fixups for " + dimension.getName());
+                            progressReceiver.reset();
+                        }
+                        performFixups(worldDir, combined, progressReceiver, fixups);
                     }
-                    performFixups(worldDir, dimension, progressReceiver, fixups);
                 }
             }
 
@@ -354,22 +340,7 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         } finally {
 
             // Undo any changes we made (such as applying any combined layers)
-            if (dimension.undoChanges()) {
-                // TODO: some kind of cleverer undo mechanism (undo history
-                // cloning?) so we don't mess up the user's redo history
-                dimension.clearRedo();
-                dimension.armSavePoint();
-            }
-
-            if (ceiling != null) {
-                // Undo any changes we made (such as applying any combined layers)
-                if (ceiling.undoChanges()) {
-                    // TODO: some kind of cleverer undo mechanism (undo history
-                    // cloning?) so we don't mess up the user's redo history
-                    ceiling.clearRedo();
-                    ceiling.armSavePoint();
-                }
-            }
+            savedSettings.forEach(this::restoreDimensionAfterExport);
         }
 
         return collectedStats;
@@ -388,21 +359,55 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         }
     }
 
-    @NotNull
-    protected Map<Layer, LayerExporter> setupDimensionForExport(Dimension dimension) {
-        // Gather all layers used on the map
-        final Map<Layer, LayerExporter> exporters = new HashMap<>();
-        Set<Layer> allLayers = dimension.getAllLayers(false);
+    protected Object setupDimensionForExport(Dimension dimension, Set<Point> selectedTiles) {
+        final Map<String, Object> savedSettings = new HashMap<>();
+
+        // Make sure that an undo manager is installed so all data changes can be rolled back
+        if (! dimension.isUndoAvailable()) {
+            final UndoManager undoManager = new UndoManager(2);
+            dimension.registerUndoManager(undoManager);
+            savedSettings.put("undoManager", undoManager);
+        }
+        dimension.rememberChanges();
+
+        // Make all leaves persistent if directed by the world export settings
+        if ((worldExportSettings.getStepsToSkip() != null) && worldExportSettings.getStepsToSkip().contains(LEAVES)) {
+            ExportSettings exportSettings = dimension.getExportSettings();
+            savedSettings.put("exportSettings", exportSettings);
+            if (exportSettings == null) {
+                exportSettings = platformProvider.getDefaultExportSettings(platform);
+            }
+            if (exportSettings instanceof JavaExportSettings) {
+                exportSettings = ((JavaExportSettings) exportSettings).withMakeAllLeavesPersistent(true);
+                dimension.setExportSettings(exportSettings);
+            }
+        }
+
+        // Gather all layers used on the map/selected tiles
+        final Set<Layer> allLayers;
+        if (selectedTiles == null) {
+            allLayers = dimension.getAllLayers(false);
+        } else {
+            allLayers = new HashSet<>();
+            for (Point coords: selectedTiles) {
+                final Tile tile = dimension.getTile(coords);
+                // The tile could be null if e.g. this is the ceiling dimension, which doesn't have to have tiles
+                // everywhere the surface does
+                if (tile != null) {
+                    allLayers.addAll(tile.getLayers());
+                }
+            }
+        }
         allLayers.addAll(dimension.getMinimumLayers());
-        // If there are combined layers, apply them and gather any newly
-        // added layers, recursively
+
+        // If there are combined layers, apply them and gather any newly added layers, recursively
         boolean done;
         do {
             done = true;
             for (Layer layer: new HashSet<>(allLayers)) {
                 if ((layer instanceof CombinedLayer) && ((CombinedLayer) layer).isExport()) {
                     // Apply the combined layer
-                    Set<Layer> addedLayers = ((CombinedLayer) layer).apply(dimension);
+                    final Set<Layer> addedLayers = ((CombinedLayer) layer).apply(dimension, selectedTiles);
                     // Remove the combined layer from the list
                     allLayers.remove(layer);
                     // Add any layers it might have added
@@ -415,15 +420,84 @@ public abstract class AbstractWorldExporter implements WorldExporter {
             }
         } while (! done);
 
-        // Remove layers which have been excluded for export
-        allLayers.removeIf(layer -> (layer instanceof CustomLayer) && (!((CustomLayer) layer).isExport()));
+        // Update the floor dimensions, if any, of all TunnelLayers
+        for (CustomLayer customLayer: dimension.getCustomLayers()) {
+            if ((customLayer instanceof TunnelLayer) && (((TunnelLayer) customLayer).getFloorMode() == CUSTOM_DIMENSION)) {
+                ((TunnelLayer) customLayer).updateFloorDimensionTiles(dimension);
+            }
+        }
 
-        // Load all layer settings into the exporters
+        return savedSettings;
+    }
+
+    /**
+     * Restores changes that were performed by {@link #setupDimensionForExport(Dimension, Set)}.
+     *
+     * @param dimension     The dimension to restore.
+     * @param savedSettings The object that was returned from {@link #setupDimensionForExport(Dimension, Set)}.
+     */
+    @SuppressWarnings("unchecked") // Responsibility of caller
+    protected void restoreDimensionAfterExport(Dimension dimension, Object savedSettings) {
+        final Map<String, Object> map = (Map<String, Object>) savedSettings;
+        if ((map != null) && map.containsKey("exportSettings")) {
+            dimension.setExportSettings((ExportSettings) map.get("exportSettings"));
+        }
+
+        if (dimension.undoChanges()) {
+            // TODO: some kind of cleverer undo mechanism (undo history cloning?) so we don't mess up the user's redo
+            //  history
+            dimension.clearRedo();
+            dimension.armSavePoint();
+        }
+
+        if ((map != null) && map.containsKey("undoManager")) {
+            dimension.unregisterUndoManager();
+        }
+    }
+
+    protected Map<Layer, LayerExporter> getExportersForRegion(Dimension dimension, Point regionCoords) {
+        // Gather all layers used in the region TODO this should only be the tiles that will actually be exported, taking tile selection and Read Only layer into account
+        final Map<Layer, LayerExporter> exporters = new HashMap<>();
+        final Set<Layer> allLayers = new HashSet<>(dimension.getMinimumLayers());
+        // Include an extra ring of tiles TODO why?
+        final int tileX1 = (regionCoords.x << 2) - 1, tileX2 = tileX1 + 5, tileY1 = (regionCoords.y << 2) - 1, tileY2 = tileY1 + 5;
+        for (int tileX = tileX1; tileX <= tileX2; tileX++) {
+            for (int tileY = tileY1; tileY <= tileY2; tileY++) {
+                final Tile tile = dimension.getTile(tileX, tileY);
+                if (tile != null) {
+                    allLayers.addAll(tile.getLayers());
+                }
+            }
+        }
+
+        // If there are combined layers, replace them with their constituent layers, recursively
+        boolean done;
+        do {
+            done = true;
+            for (Layer layer: new HashSet<>(allLayers)) {
+                if ((layer instanceof CombinedLayer) && ((CombinedLayer) layer).isExport()) {
+                    // Remove the combined layer from the list
+                    allLayers.remove(layer);
+                    // Add any layers it contains
+                    allLayers.addAll(((CombinedLayer) layer).getLayers());
+                    // Signal that we have to go around at least once more,
+                    // in case any of the newly added layers are themselves
+                    // combined layers
+                    done = false;
+                }
+            }
+        } while (! done);
+
+        // Remove layers which have been excluded for export
+        allLayers.removeIf(layer -> (layer instanceof CustomLayer) && (! ((CustomLayer) layer).isExport()));
+
+        // Remove layers which should be disabled due to the world export settings
+        applyWorldExportSettings(allLayers);
+
+        // Create all the exporters
         for (Layer layer: allLayers) {
-            @SuppressWarnings("unchecked")
-            LayerExporter exporter = layer.getExporter();
+            final LayerExporter exporter = layer.getExporter(dimension, platform, dimension.getLayerSettings(layer));
             if (exporter != null) {
-                exporter.setSettings(dimension.getLayerSettings(layer));
                 exporters.put(layer, exporter);
             }
         }
@@ -441,20 +515,20 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                 progressReceiver.setMessage("Generating landscape");
             }
         }
-        int lowestChunkX = (regionCoords.x << 5) - 1;
-        int highestChunkX = (regionCoords.x << 5) + 32;
-        int lowestChunkY = (regionCoords.y << 5) - 1;
-        int highestChunkY = (regionCoords.y << 5) + 32;
-        int lowestRegionChunkX = lowestChunkX + 1;
-        int highestRegionChunkX = highestChunkX - 1;
-        int lowestRegionChunkY = lowestChunkY + 1;
-        int highestRegionChunkY = highestChunkY - 1;
-        ExportResults exportResults = new ExportResults();
+        final int lowestChunkX = (regionCoords.x << 5) - 1;
+        final int highestChunkX = (regionCoords.x << 5) + 32;
+        final int lowestChunkY = (regionCoords.y << 5) - 1;
+        final int highestChunkY = (regionCoords.y << 5) + 32;
+        final int lowestRegionChunkX = lowestChunkX + 1;
+        final int highestRegionChunkX = highestChunkX - 1;
+        final int lowestRegionChunkY = lowestChunkY + 1;
+        final int highestRegionChunkY = highestChunkY - 1;
+        final ExportResults exportResults = new ExportResults();
         int chunkNo = 0;
-        int ceilingDelta = dimension.getMaxHeight() - dimension.getCeilingHeight();
+        final int ceilingDelta = dimension.getMaxHeight() - dimension.getCeilingHeight();
         for (int chunkX = lowestChunkX; chunkX <= highestChunkX; chunkX++) {
             for (int chunkY = lowestChunkY; chunkY <= highestChunkY; chunkY++) {
-                ChunkFactory.ChunkCreationResult chunkCreationResult = createChunk(dimension, chunkFactory, tiles, chunkX, chunkY, tileSelection, exporters, ceiling);
+                final ChunkFactory.ChunkCreationResult chunkCreationResult = createChunk(dimension, chunkFactory, tiles, chunkX, chunkY, tileSelection, exporters, ceiling);
                 if (chunkCreationResult != null) {
                     if ((chunkX >= lowestRegionChunkX) && (chunkX <= highestRegionChunkX) && (chunkY >= lowestRegionChunkY) && (chunkY <= highestRegionChunkY)) {
                         exportResults.chunksGenerated = true;
@@ -463,10 +537,10 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                         exportResults.stats.waterArea += chunkCreationResult.stats.waterArea;
                     }
                     if (ceiling) {
-                        Chunk invertedChunk = new InvertedChunk(chunkCreationResult.chunk, ceilingDelta, platform);
+                        final Chunk invertedChunk = new InvertedChunk(chunkCreationResult.chunk, ceilingDelta, platform);
                         Chunk existingChunk = minecraftWorld.getChunkForEditing(chunkX, chunkY);
                         if (existingChunk == null) {
-                            existingChunk = platformProvider.createChunk(platform, chunkX, chunkY, world.getMaxHeight());
+                            existingChunk = platformProvider.createChunk(platform, chunkX, chunkY, dimension.getMinHeight(), dimension.getMaxHeight());
                             minecraftWorld.addChunk(existingChunk);
                         }
                         mergeChunks(invertedChunk, existingChunk);
@@ -487,77 +561,89 @@ public abstract class AbstractWorldExporter implements WorldExporter {
     }
 
     protected List<Fixup> secondPass(List<Layer> secondaryPassLayers, Dimension dimension, MinecraftWorld minecraftWorld, Map<Layer, LayerExporter> exporters, Collection<Tile> tiles, Point regionCoords, ProgressReceiver progressReceiver) throws OperationCancelled {
-        // Apply other secondary pass layers
         if (logger.isDebugEnabled()) {
             logger.debug("Start of second pass for region {},{}", regionCoords.x, regionCoords.y);
         }
-        int layerCount = secondaryPassLayers.size(), counter = 0;
-        Rectangle area = new Rectangle((regionCoords.x << 9) - 16, (regionCoords.y << 9) - 16, 544, 544);
-        Rectangle exportedArea = new Rectangle((regionCoords.x << 9), (regionCoords.y << 9), 512, 512);
-        List<Fixup> fixups = new ArrayList<>();
-//        boolean frost = false;
-        for (Layer layer: secondaryPassLayers) {
-//            if (layer instanceof Frost) {
-//                frost = true;
-//                continue;
-//            }
-            @SuppressWarnings("unchecked")
-            SecondPassLayerExporter exporter = (SecondPassLayerExporter) exporters.get(layer);
+        final int stageCount = secondaryPassLayers.stream().mapToInt(layer -> {
+            final SecondPassLayerExporter exporter = (SecondPassLayerExporter) exporters.get(layer);
+            if (exporter == null) {
+                throw new IllegalStateException("Exporter missing for layer " + layer + " of type " + layer.getClass().getSimpleName());
+            }
+            return exporter.getStages().size();
+        }).sum();
+
+        // Garden / seeds first pass
+        final GardenExporter gardenExporter = new GardenExporter();
+        final Set<Seed> firstPassProcessedSeeds = new HashSet<>();
+        tiles.stream().filter(tile -> tile.getLayers().contains(GardenCategory.INSTANCE)).forEach(tile -> {
+            gardenExporter.firstPass(dimension, tile, platform, minecraftWorld, firstPassProcessedSeeds);
+        });
+
+        int counter = 0;
+        final Rectangle area = new Rectangle((regionCoords.x << 9) - 16, (regionCoords.y << 9) - 16, 544, 544);
+        final Rectangle exportedArea = new Rectangle((regionCoords.x << 9), (regionCoords.y << 9), 512, 512);
+        final List<Fixup> fixups = new ArrayList<>();
+        for (SecondPassLayerExporter.Stage stage: SecondPassLayerExporter.Stage.values()) {
             if (logger.isDebugEnabled()) {
-                logger.debug("Exporting layer {} for region {},{}", layer, regionCoords.x, regionCoords.y);
+                logger.debug("Start of {} stage for region {},{}", stage, regionCoords.x, regionCoords.y);
             }
-            if (progressReceiver != null) {
-                if (minecraftWorld instanceof InvertedWorld) {
-                    progressReceiver.setMessage("Exporting layer " + layer + " for ceiling");
-                } else {
-                    progressReceiver.setMessage("Exporting layer " + layer);
+            for (Layer layer: secondaryPassLayers) {
+                final SecondPassLayerExporter exporter = (SecondPassLayerExporter) exporters.get(layer);
+                if (! exporter.getStages().contains(stage)) {
+                    continue;
                 }
-            }
-            List<Fixup> layerFixups = exporter.render(dimension, area, exportedArea, minecraftWorld, platform);
-            if (layerFixups != null) {
-                fixups.addAll(layerFixups);
-            }
-            if (progressReceiver != null) {
-                counter++;
-                progressReceiver.setProgress((float) counter / layerCount);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Stage {} for layer {} for region {},{}", stage, layer, regionCoords.x, regionCoords.y);
+                }
+                if (progressReceiver != null) {
+                    if (minecraftWorld instanceof InvertedWorld) {
+                        progressReceiver.setMessage("Exporting layer " + layer + " for ceiling (" + stage.name().toLowerCase() + " stage)");
+                    } else {
+                        progressReceiver.setMessage("Exporting layer " + layer + " (" + stage.name().toLowerCase() + " stage)");
+                    }
+                }
+                final List<Fixup> layerFixups;
+                switch (stage) {
+                    case CARVE:
+                        layerFixups = exporter.carve(area, exportedArea, minecraftWorld);
+                        break;
+                    case ADD_FEATURES:
+                        layerFixups = exporter.addFeatures(area, exportedArea, minecraftWorld);
+                        break;
+                    default:
+                        throw new InternalError();
+                }
+                if (layerFixups != null) {
+                    fixups.addAll(layerFixups);
+                }
+                if (progressReceiver != null) {
+                    counter++;
+                    progressReceiver.setProgress((float) counter / stageCount);
+                }
             }
         }
 
         // Garden / seeds first and second pass
-        GardenExporter gardenExporter = new GardenExporter();
-        Set<Seed> firstPassProcessedSeeds = new HashSet<>();
-        Set<Seed> secondPassProcessedSeeds = new HashSet<>();
+        final Set<Seed> secondPassProcessedSeeds = new HashSet<>();
         tiles.stream().filter(tile -> tile.getLayers().contains(GardenCategory.INSTANCE)).forEach(tile -> {
-            gardenExporter.firstPass(dimension, tile, minecraftWorld, firstPassProcessedSeeds);
-            gardenExporter.secondPass(dimension, tile, minecraftWorld, secondPassProcessedSeeds);
+            gardenExporter.secondPass(dimension, tile, platform, minecraftWorld, secondPassProcessedSeeds);
         });
 
-        // Apply frost layer
-        // TODO: why did we used to do this in a separate step? There must have been a reason...
-//        if (frost) {
-//            @SuppressWarnings("unchecked")
-//            SecondPassLayerExporter<Layer> exporter = (SecondPassLayerExporter<Layer>) exporters.get(Frost.INSTANCE);
-//            exporter.render(dimension, area, exportedArea, minecraftWorld);
-//            if (progressReceiver != null) {
-//                counter++;
-//                progressReceiver.setProgress((float) counter / layerCount);
-//            }
-//        }
-
-        // TODO: trying to do this for every region should work but is not very
-        //  elegant
-        if ((platform != JAVA_ANVIL_1_15) && (platform != JAVA_ANVIL_1_17) && (platform != JAVA_ANVIL_1_18) /* TODO make dynamic */ && (dimension.getDim() == 0) && world.isCreateGoodiesChest()) { // Temporary workaround TODO make the chest work again
-            Point goodiesPoint = (Point) world.getSpawnPoint().clone();
+        // TODO: trying to do this for every region should work but is not very elegant
+        if ((dimension.getAnchor().dim == DIM_NORMAL) && world.isCreateGoodiesChest()) {
+            final Point goodiesPoint = (Point) world.getSpawnPoint().clone();
             goodiesPoint.translate(3, 3);
-            int height = Math.min(dimension.getIntHeightAt(goodiesPoint) + 1, dimension.getMaxHeight() - 1);
-            minecraftWorld.setMaterialAt(goodiesPoint.x, goodiesPoint.y, height, Material.CHEST_NORTH);
-            Chunk chunk = minecraftWorld.getChunk(goodiesPoint.x >> 4, goodiesPoint.y >> 4);
-            if ((chunk != null) && (chunk.getTileEntities() != null)) {
-                Chest goodiesChest = createGoodiesChest();
-                goodiesChest.setX(goodiesPoint.x);
-                goodiesChest.setY(height);
-                goodiesChest.setZ(goodiesPoint.y);
-                chunk.getTileEntities().add(goodiesChest);
+            final int height = getIntHeightAt(DIM_NORMAL, goodiesPoint.x, goodiesPoint.y) + 1;
+            if ((height >= dimension.getMinHeight()) && (height < dimension.getMaxHeight())) {
+                final Chunk chunk = minecraftWorld.getChunk(goodiesPoint.x >> 4, goodiesPoint.y >> 4);
+                if (chunk != null) {
+                    chunk.setMaterial(goodiesPoint.x & 0xf, height, goodiesPoint.y & 0xf, Material.CHEST_NORTH);
+                    Chest goodiesChest = createGoodiesChest(platform);
+                    goodiesChest.setX(goodiesPoint.x);
+                    goodiesChest.setY(height);
+                    goodiesChest.setZ(goodiesPoint.y);
+                    chunk.getTileEntities().add(goodiesChest);
+                }
             }
         }
 
@@ -567,14 +653,28 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         return fixups;
     }
 
-    protected void lightingPass(MinecraftWorld minecraftWorld, Point regionCoords, ProgressReceiver progressReceiver) throws OperationCancelled {
-        if (progressReceiver != null) {
-            progressReceiver.setMessage("Calculating primary light");
+    protected void blockPropertiesPass(MinecraftWorld minecraftWorld, Point regionCoords, BlockBasedExportSettings exportSettings, ProgressReceiver progressReceiver) throws OperationCancelled {
+        float maxIterations = 0;
+        final StringBuilder nounsBuilder = new StringBuilder();
+        if (exportSettings.isCalculateSkyLight() || exportSettings.isCalculateBlockLight()) {
+            nounsBuilder.append("lighting");
+            maxIterations = 16;
         }
-        LightingCalculator lightingVolume = new LightingCalculator(minecraftWorld, platform);
+        if (exportSettings.isCalculateLeafDistance()) {
+            if (nounsBuilder.length() > 0) {
+                nounsBuilder.append(" and ");
+            }
+            nounsBuilder.append("leaf distances");
+            maxIterations = Math.max(maxIterations, 7);
+        }
+        final String nouns = nounsBuilder.toString();
+        if (progressReceiver != null) {
+            progressReceiver.setMessage("Calculating initial " + nouns);
+        }
+        BlockPropertiesCalculator calculator = new BlockPropertiesCalculator(minecraftWorld, platform, worldExportSettings, exportSettings);
 
         // Calculate primary light
-        int lightingLowMark = Integer.MAX_VALUE, lightingHighMark = Integer.MIN_VALUE;
+        int lowMark = Integer.MAX_VALUE, highMark = Integer.MIN_VALUE;
         int lowestChunkX = (regionCoords.x << 5) - 1;
         int highestChunkX = (regionCoords.x << 5) + 32;
         int lowestChunkY = (regionCoords.y << 5) - 1;
@@ -584,12 +684,12 @@ public abstract class AbstractWorldExporter implements WorldExporter {
             for (int chunkY = lowestChunkY; chunkY <= highestChunkY; chunkY++) {
                 Chunk chunk = minecraftWorld.getChunk(chunkX, chunkY);
                 if (chunk != null) {
-                    int[] levels = lightingVolume.calculatePrimaryLight(chunk);
-                    if (levels[0] < lightingLowMark) {
-                        lightingLowMark = levels[0];
+                    int[] levels = calculator.firstPass(chunk);
+                    if (levels[0] < lowMark) {
+                        lowMark = levels[0];
                     }
-                    if (levels[1] > lightingHighMark) {
-                        lightingHighMark = levels[1];
+                    if (levels[1] > highMark) {
+                        highMark = levels[1];
                     }
                 }
             }
@@ -598,21 +698,20 @@ public abstract class AbstractWorldExporter implements WorldExporter {
             }
         }
 
-        if (lightingLowMark != Integer.MAX_VALUE) {
+        if (lowMark != Integer.MAX_VALUE) {
             if (progressReceiver != null) {
-                progressReceiver.setMessage("Propagating light");
+                progressReceiver.setMessage("Propagating " + nouns);
             }
 
             // Calculate secondary light
-            Box originalDirtyArea = new Box((regionCoords.x << 9) - 16, ((regionCoords.x + 1) << 9) + 16, lightingLowMark, lightingHighMark + 1, (regionCoords.y << 9) - 16, ((regionCoords.y + 1) << 9) + 16);
-            int originalVolume = originalDirtyArea.getVolume();
-            Box dirtyArea = originalDirtyArea.clone();
-            lightingVolume.setDirtyArea(dirtyArea);
-            while (lightingVolume.calculateSecondaryLight()) {
+            calculator.setDirtyArea(new Box((regionCoords.x << 9) - 16, ((regionCoords.x + 1) << 9) + 16, lowMark, highMark + 1, (regionCoords.y << 9) - 16, ((regionCoords.y + 1) << 9) + 16));
+            int iteration = 1;
+            while (calculator.secondPass()) {
                 if (progressReceiver != null) {
-                    progressReceiver.setProgress(0.2f + 0.8f * (originalVolume - dirtyArea.getVolume()) / originalVolume);
+                    progressReceiver.setProgress(0.2f + 0.8f * (iteration++ / maxIterations));
                 }
             }
+            calculator.finalise();
         }
 
         if (progressReceiver != null) {
@@ -620,48 +719,42 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         }
     }
 
-    protected ExportResults exportRegion(MinecraftWorld minecraftWorld, Dimension dimension, Dimension ceiling, Point regionCoords, boolean tileSelection, Map<Layer, LayerExporter> exporters, Map<Layer, LayerExporter> ceilingExporters, ChunkFactory chunkFactory, ChunkFactory ceilingChunkFactory, ProgressReceiver progressReceiver) throws OperationCancelled, IOException {
-        try {
+    protected ExportResults exportRegion(MinecraftWorld minecraftWorld,
+                                         Dimension dimension, Dimension ceiling,
+                                         Point regionCoords,
+                                         boolean tileSelection,
+                                         Map<Layer, LayerExporter> exporters, Map<Layer, LayerExporter> ceilingExporters,
+                                         ChunkFactory chunkFactory, ChunkFactory ceilingChunkFactory,
+                                         ProgressReceiver progressReceiver) {
+        return doWithMdcContext(() -> {
             if (progressReceiver != null) {
                 progressReceiver.setMessage("Exporting region " + regionCoords.x + "," + regionCoords.y + " of " + dimension.getName());
             }
-            int lowestTileX = (regionCoords.x << 2) - 1;
-            int highestTileX = lowestTileX + 5;
-            int lowestTileY = (regionCoords.y << 2) - 1;
-            int highestTileY = lowestTileY + 5;
-            Map<Point, Tile> tiles = new HashMap<>(), ceilingTiles = new HashMap<>();
+            final int lowestTileX = (regionCoords.x << 2) - 1;
+            final int highestTileX = lowestTileX + 5;
+            final int lowestTileY = (regionCoords.y << 2) - 1;
+            final int highestTileY = lowestTileY + 5;
+            final Map<Point, Tile> tiles = new HashMap<>(), ceilingTiles = new HashMap<>();
             for (int tileX = lowestTileX; tileX <= highestTileX; tileX++) {
                 for (int tileY = lowestTileY; tileY <= highestTileY; tileY++) {
-                    Point tileCoords = new Point(tileX, tileY);
+                    final Point tileCoords = new Point(tileX, tileY);
                     Tile tile = dimension.getTile(tileCoords);
-                    if ((tile != null) && ((!tileSelection) || dimension.getWorld().getTilesToExport().contains(tileCoords))) {
+                    if ((tile != null) && ((! tileSelection) || worldExportSettings.getTilesToExport().contains(tileCoords))) {
                         tiles.put(tileCoords, tile);
                     }
                     if (ceiling != null) {
                         tile = ceiling.getTile(tileCoords);
-                        if ((tile != null) && ((!tileSelection) || dimension.getWorld().getTilesToExport().contains(tileCoords))) {
+                        if ((tile != null) && ((! tileSelection) || worldExportSettings.getTilesToExport().contains(tileCoords))) {
                             ceilingTiles.put(tileCoords, tile);
                         }
                     }
                 }
             }
 
-            Set<Layer> allLayers = new HashSet<>(), allCeilingLayers = new HashSet<>();
-            for (Tile tile: tiles.values()) {
-                allLayers.addAll(tile.getLayers());
-            }
-
-            // Add layers that have been configured to be applied everywhere
-            Set<Layer> minimumLayers = dimension.getMinimumLayers(), ceilingMinimumLayers = (ceiling != null) ? ceiling.getMinimumLayers() : null;
-            allLayers.addAll(minimumLayers);
-
-            // Remove layers which have been excluded for export
-            allLayers.removeIf(layer -> (layer instanceof CustomLayer) && (!((CustomLayer) layer).isExport()));
-
-            List<Layer> secondaryPassLayers = new ArrayList<>(), ceilingSecondaryPassLayers = new ArrayList<>();
-            for (Layer layer: allLayers) {
-                LayerExporter exporter = layer.getExporter();
-                if (exporter instanceof SecondPassLayerExporter) {
+            final List<Layer> secondaryPassLayers = new ArrayList<>(), ceilingSecondaryPassLayers = new ArrayList<>();
+            for (Layer layer: exporters.keySet()) {
+                final Class<? extends LayerExporter> exporterType = layer.getExporterType();
+                if ((exporterType != null) && SecondPassLayerExporter.class.isAssignableFrom(exporterType)) {
                     secondaryPassLayers.add(layer);
                 }
             }
@@ -669,18 +762,9 @@ public abstract class AbstractWorldExporter implements WorldExporter {
 
             // Set up export of ceiling
             if (ceiling != null) {
-                for (Tile tile: ceilingTiles.values()) {
-                    allCeilingLayers.addAll(tile.getLayers());
-                }
-
-                allCeilingLayers.addAll(ceilingMinimumLayers);
-
-                // Remove layers which have been excluded for export
-                allCeilingLayers.removeIf(layer -> (layer instanceof CustomLayer) && (!((CustomLayer) layer).isExport()));
-
-                for (Layer layer: allCeilingLayers) {
-                    LayerExporter exporter = layer.getExporter();
-                    if (exporter instanceof SecondPassLayerExporter) {
+                for (Layer layer: ceilingExporters.keySet()) {
+                    final Class<? extends LayerExporter> exporterType = layer.getExporterType();
+                    if ((exporterType != null) && SecondPassLayerExporter.class.isAssignableFrom(exporterType)) {
                         ceilingSecondaryPassLayers.add(layer);
                     }
                 }
@@ -688,40 +772,40 @@ public abstract class AbstractWorldExporter implements WorldExporter {
             }
 
             long t1 = System.currentTimeMillis();
-            // First pass. Create terrain and apply layers which don't need access
-            // to neighbouring chunks
-            ExportResults exportResults = firstPass(minecraftWorld, dimension, regionCoords, tiles, tileSelection, exporters, chunkFactory, false, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.0f, ((ceiling != null) ? 0.225f : 0.45f)) : null);
+            // First pass. Create terrain and apply layers which don't need access to neighbouring chunks
+            ExportResults exportResults = firstPass(minecraftWorld, dimension, regionCoords, tiles, tileSelection, exporters, chunkFactory, false, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.0f, ((ceiling != null) ? 0.225f : 0.45f) /* TODO why doesn't this work? */) : null);
 
             ExportResults ceilingExportResults = null;
             if (ceiling != null) {
-                // First pass for the ceiling. Create terrain and apply layers which
-                // don't need access to neighbouring chunks
+                // First pass for the ceiling. Create terrain and apply layers which don't need access to neighbouring
+                // chunks
                 ceilingExportResults = firstPass(minecraftWorld, ceiling, regionCoords, ceilingTiles, tileSelection, ceilingExporters, ceilingChunkFactory, true, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.225f, 0.225f) : null);
             }
 
             if (exportResults.chunksGenerated || ((ceiling != null) && ceilingExportResults.chunksGenerated)) {
-                // Second pass. Apply layers which need information from or apply
-                // changes to neighbouring chunks
+                // Second pass. Apply layers which need information from or apply changes to neighbouring chunks
                 long t2 = System.currentTimeMillis();
                 List<Fixup> myFixups = secondPass(secondaryPassLayers, dimension, minecraftWorld, exporters, tiles.values(), regionCoords, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.45f, (ceiling != null) ? 0.05f : 0.1f) : null);
-                if ((myFixups != null) && (!myFixups.isEmpty())) {
+                if ((myFixups != null) && (! myFixups.isEmpty())) {
                     exportResults.fixups = myFixups;
                 }
 
                 if (ceiling != null) {
-                    // Second pass for ceiling. Apply layers which need information
-                    // from or apply changes to neighbouring chunks. Fixups are not
-                    // supported for the ceiling for now. TODO: implement
+                    // Second pass for ceiling. Apply layers which need information from or apply changes to
+                    // neighbouring chunks. Fixups are not supported for the ceiling for now. TODO: implement
                     secondPass(ceilingSecondaryPassLayers, ceiling, new InvertedWorld(minecraftWorld, ceiling.getMaxHeight() - ceiling.getCeilingHeight(), platform), ceilingExporters, ceilingTiles.values(), regionCoords, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.4f, 0.05f) : null);
                 }
 
-                // Post processing. Fix covered grass blocks, things like that
+                // Post-processing. Fix covered grass blocks, things like that
                 long t3 = System.currentTimeMillis();
-                PlatformManager.getInstance().getPostProcessor(platform).postProcess(minecraftWorld, new Rectangle(regionCoords.x << 9, regionCoords.y << 9, 512, 512), dimension.getExportSettings(), (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.55f, 0.1f) : null);
+                final BlockBasedExportSettings exportSettings = getExportSettings(dimension, platform);
+                PlatformManager.getInstance().getPostProcessor(platform).postProcess(minecraftWorld, new Rectangle(regionCoords.x << 9, regionCoords.y << 9, 512, 512), exportSettings, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.55f, 0.1f) : null);
 
-                // Third pass. Calculate lighting
+                // Third pass. Calculate lighting and/or leaf distances (if requested, and supported by the platform)
                 long t4 = System.currentTimeMillis();
-                lightingPass(minecraftWorld, regionCoords, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.65f, 0.35f) : null);
+                if (BlockPropertiesCalculator.isBlockPropertiesPassNeeded(platform, worldExportSettings, exportSettings)) {
+                    blockPropertiesPass(minecraftWorld, regionCoords, exportSettings, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, 0.65f, 0.35f) : null);
+                }
                 long t5 = System.currentTimeMillis();
                 if ("true".equalsIgnoreCase(System.getProperty("org.pepsoft.worldpainter.devMode"))) {
                     String timingMessage = (t2 - t1) + ", " + (t3 - t2) + ", " + (t4 - t3) + ", " + (t5 - t4) + ", " + (t5 - t1);
@@ -734,10 +818,12 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                 }
             }
 
+            if (progressReceiver != null) {
+                progressReceiver.setProgress(1.0f);
+            }
+
             return exportResults;
-        }  catch (RuntimeException e) {
-            throw new RuntimeException(e.getMessage() + " (region: " + regionCoords + ")", e);
-        }
+        }, "region.coords", regionCoords);
     }
 
     protected ChunkFactory.ChunkCreationResult createChunk(Dimension dimension, ChunkFactory chunkFactory, Map<Point, Tile> tiles, int chunkX, int chunkY, boolean tileSelection, Map<Layer, LayerExporter> exporters, boolean ceiling) {
@@ -755,29 +841,34 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                 return null;
             }
         } else {
-            if (dimension.getTile(tileCoords) != null) {
-                return chunkFactory.createChunk(chunkX, chunkY);
+            final Tile tile = dimension.getTile(tileCoords);
+            if (tile != null) {
+                final ChunkFactory.ChunkCreationResult result = chunkFactory.createChunk(chunkX, chunkY);
+                // If the chunk is marked as NotPresent we might want to render a border chunk here
+                if ((result == null) && border && tile.getBitLayerValue(NotPresent.INSTANCE, (chunkX & 0x7) << 4, (chunkY & 0x7) << 4)) {
+                    return BorderChunkFactory.create(chunkX, chunkY, dimension, platform, exporters);
+                } else {
+                    return result;
+                }
             } else if ((! ceiling) && (! endlessBorder)) {
-                // Might be a border or bedrock wall chunk (but not if this is a
-                // ceiling dimension or the border is an endless border)
+                // Might be a border or wall chunk (but not if this is a ceiling dimension or the border is an endless
+                // border)
                 if (border && isBorderChunk(dimension, chunkX, chunkY)) {
                     return BorderChunkFactory.create(chunkX, chunkY, dimension, platform, exporters);
-                } else if (dimension.isBedrockWall()
+                } else if ((dimension.getWallType() != null)
                         && (border
                             ? (isBorderChunk(dimension, chunkX - 1, chunkY) || isBorderChunk(dimension, chunkX, chunkY - 1) || isBorderChunk(dimension, chunkX + 1, chunkY) || isBorderChunk(dimension, chunkX, chunkY + 1))
                             : (isWorldChunk(dimension, chunkX - 1, chunkY) || isWorldChunk(dimension, chunkX, chunkY - 1) || isWorldChunk(dimension, chunkX + 1, chunkY) || isWorldChunk(dimension, chunkX, chunkY + 1)))) {
-                    // Bedrock wall is turned on and a neighbouring chunk is a
-                    // border chunk (if there is a border), or a world chunk (if
-                    // there is no border)
-                    return BedrockWallChunk.create(chunkX, chunkY, dimension, platform);
+                    // Bedrock or barrier wall is turned on and a neighbouring chunk is a border chunk (if there is a
+                    // border), or a world chunk (if there is no border)
+                    return WallChunk.create(chunkX, chunkY, dimension, platform);
                 } else {
                     // Outside known space
                     return null;
                 }
             } else {
-                // Not a world tile, and we're a ceiling dimension, or the
-                // border is an endless border, so we don't export borders and
-                // bedrock walls
+                // Not a world tile, and we're a ceiling dimension, or the border is an endless border, so we don't
+                // export borders and bedrock walls
                 return null;
             }
         }
@@ -829,24 +920,24 @@ public abstract class AbstractWorldExporter implements WorldExporter {
     }
 
     protected void performFixups(final File worldDir, final Dimension dimension, final ProgressReceiver progressReceiver, final Map<Point, List<Fixup>> fixups) throws OperationCancelled {
-        long start = System.currentTimeMillis();
+        final long start = System.currentTimeMillis();
         int count = 0, total = 0;
         for (Entry<Point, List<Fixup>> entry: fixups.entrySet()) {
             total += entry.getValue().size();
         }
         // Make sure to honour the read-only layer: TODO: this means nothing at the moment. Is it still relevant?
-        try (CachingMinecraftWorld minecraftWorld = new CachingMinecraftWorld(worldDir, dimension.getDim(), dimension.getMaxHeight(), platform, false, 512)) {
-            ExportSettings exportSettings = dimension.getExportSettings();
+        try (CachingMinecraftWorld minecraftWorld = new CachingMinecraftWorld(worldDir, dimension.getAnchor().dim, dimension.getMinHeight(), dimension.getMaxHeight(), platform, false, 512)) {
+            final ExportSettings exportSettings = getExportSettings(dimension, platform);
             for (Entry<Point, List<Fixup>> entry: fixups.entrySet()) {
                 if (progressReceiver != null) {
                     progressReceiver.setMessage("Performing fixups for region " + entry.getKey().x + "," + entry.getKey().y);
                 }
-                List<Fixup> regionFixups = entry.getValue();
+                final List<Fixup> regionFixups = entry.getValue();
                 if (logger.isDebugEnabled()) {
                     logger.debug("Performing " + regionFixups.size() + " fixups for region " + entry.getKey().x + "," + entry.getKey().y);
                 }
                 for (Fixup fixup: regionFixups) {
-                    fixup.fixup(minecraftWorld, dimension, platform, exportSettings);
+                    fixup.fixup(minecraftWorld, dimension, platform, worldExportSettings, exportSettings);
                     if (progressReceiver != null) {
                         progressReceiver.setProgress((float) ++count / total);
                     }
@@ -855,6 +946,121 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         }
         if (logger.isTraceEnabled()) {
             logger.trace("Fixups for " + fixups.size() + " regions took " + (System.currentTimeMillis() - start) + " ms");
+        }
+    }
+
+    // Coordinates are in Minecraft coordinate system
+    /**
+     * Move tile entity data from a source chunk to a potentially different height in a destination chunk. The source
+     * and destination chunks may be the same.
+     *
+     * @param toChunk   The destination chunk.
+     * @param fromChunk The source chunk.
+     * @param x         The X coordinate.
+     * @param y         The Y coordinate in the destination chunk.
+     * @param z         The Z coordinate.
+     * @param dy        The delta to subtract from {@code y} to obtain the Y coordinate in the source chunk. In other
+     *                  words: how many blocks to move the tile entity data up.
+     */
+    protected void moveEntityTileData(Chunk toChunk, Chunk fromChunk, int x, int y, int z, int dy) {
+        if ((toChunk == fromChunk) && (dy == 0)) {
+            return;
+        }
+        final int existingBlockDX = fromChunk.getxPos() << 4, existingBlockDZ = fromChunk.getzPos() << 4;
+
+        // First remove any tile entity data which may already be there
+        toChunk.getTileEntities().removeIf(entity -> (entity.getY() == y) && ((entity.getX() - existingBlockDX) == x) && ((entity.getZ() - existingBlockDZ) == z));
+
+        // Copy the tile entity data
+        final List<TileEntity> fromEntities = fromChunk.getTileEntities();
+        for (TileEntity entity: fromEntities) {
+            if ((entity.getY() == (y - dy)) && ((entity.getX() - existingBlockDX) == x) && ((entity.getZ() - existingBlockDZ) == z)) {
+                logger.debug("Moving tile entity " + entity.getId() + " from  " + x + "," + (y - dy) + "," + z + " to  " + x + "," + y + "," + z);
+                entity.setY(y);
+                toChunk.getTileEntities().add(entity);
+                break;
+            }
+        }
+
+        // Delete the tile entity data in the old location. Do this in a separate iteration, since toChunk may be the
+        // same one as fromChunk
+        fromEntities.removeIf(entity -> (entity.getY() == (y - dy)) && ((entity.getX() - existingBlockDX) == x) && ((entity.getZ() - existingBlockDZ) == z));
+    }
+
+    protected final ExecutorService createExecutorService(String operation, int jobCount) {
+        return MDCThreadPoolExecutor.newFixedThreadPool(chooseThreadCount(operation, jobCount), new ThreadFactory() {
+            @Override
+            public synchronized Thread newThread(Runnable r) {
+                Thread thread = new Thread(threadGroup, r, operation.toLowerCase().replaceAll("\\s+", "-") + "-" + nextID++);
+                thread.setPriority(Thread.MIN_PRIORITY);
+                return thread;
+            }
+
+            private final ThreadGroup threadGroup = new ThreadGroup(operation);
+            private int nextID = 1;
+        });
+    }
+
+    protected final void applyWorldExportSettings(Collection<? extends Layer> layers) {
+        final Set<WorldExportSettings.Step> stepsToSkip = worldExportSettings.getStepsToSkip();
+        if ((stepsToSkip != null) && (! stepsToSkip.isEmpty())) {
+            layers.removeIf(layer -> {
+                final boolean rc = (stepsToSkip.contains(CAVES) && ((layer instanceof Caverns) || (layer instanceof Chasms) || (layer instanceof Caves) || (layer instanceof TunnelLayer)))
+                        || (stepsToSkip.contains(RESOURCES) && ((layer instanceof Resources) || (layer instanceof UndergroundPocketsLayer)));
+                if (rc) {
+                    logger.debug("Disabling layer {} due to world export settings", layer);
+                }
+                return rc;
+            });
+        }
+    }
+
+    protected final int getIntHeightAt(int dim, int x, int y) {
+        final Dimension dimension = world.getDimension(new Anchor(dim, DETAIL, false, 0));
+        final Tile tile = dimension.getTile(x >> TILE_SIZE_BITS, y >> TILE_SIZE_BITS);
+        if (tile != null) {
+            if (tile.getBitLayerValue(NotPresent.INSTANCE, x & TILE_SIZE_MASK, y & TILE_SIZE_MASK)) {
+                final Tile masterTile = getMasterTile(dim, x, y);
+                if (masterTile != null) {
+                    return masterTile.getIntHeight((x >> 4) & TILE_SIZE_MASK, (y >> 4) & TILE_SIZE_MASK);
+                }
+            }
+            return tile.getIntHeight(x & TILE_SIZE_MASK, y & TILE_SIZE_MASK);
+        } else {
+            final Tile masterTile = getMasterTile(dim, x, y);
+            if (masterTile != null) {
+                return masterTile.getIntHeight((x >> 4) & TILE_SIZE_MASK, (y >> 4) & TILE_SIZE_MASK);
+            }
+            return Integer.MIN_VALUE;
+        }
+    }
+
+    protected final int getWaterLevelAt(int dim, int x, int y) {
+        final Dimension dimension = world.getDimension(new Anchor(dim, DETAIL, false, 0));
+        final Tile tile = dimension.getTile(x >> TILE_SIZE_BITS, y >> TILE_SIZE_BITS);
+        if (tile != null) {
+            if (tile.getBitLayerValue(NotPresent.INSTANCE, x & TILE_SIZE_MASK, y & TILE_SIZE_MASK)) {
+                final Tile masterTile = getMasterTile(dim, x, y);
+                if (masterTile != null) {
+                    return masterTile.getWaterLevel((x >> 4) & TILE_SIZE_MASK, (y >> 4) & TILE_SIZE_MASK);
+                }
+            }
+            return tile.getWaterLevel(x & TILE_SIZE_MASK, y & TILE_SIZE_MASK);
+        } else {
+            final Tile masterTile = getMasterTile(dim, x, y);
+            if (masterTile != null) {
+                return masterTile.getWaterLevel((x >> 4) & TILE_SIZE_MASK, (y >> 4) & TILE_SIZE_MASK);
+            }
+            return Integer.MIN_VALUE;
+        }
+    }
+
+    private Tile getMasterTile(int dim, int x, int y) {
+        final Dimension masterDimension = world.getDimension(new Anchor(dim, MASTER, false, 0));
+        if (masterDimension != null) {
+            return  masterDimension.getTile(x >> (TILE_SIZE_BITS + 4), y >> (TILE_SIZE_BITS + 4));
+        } else {
+            return null;
         }
     }
 
@@ -879,18 +1085,24 @@ public abstract class AbstractWorldExporter implements WorldExporter {
                         // that's not air
                         Material sourceMaterial = source.getMaterial(x, y, z);
                         if ((destinationMaterial == AIR) ? (sourceMaterial != AIR) : sourceMaterial.solid) {
-                            destination.setMaterial(x, y, z, source.getMaterial(x, y, z));
+                            destination.setMaterial(x, y, z, sourceMaterial);
                             destination.setBlockLightLevel(x, y, z, source.getBlockLightLevel(x, y, z));
                             destination.setSkyLightLevel(x, y, z, source.getSkyLightLevel(x, y, z));
+                            if (sourceMaterial.tileEntity) {
+                                moveEntityTileData(destination, source, x, y, z, 0);
+                            }
                         }
                     }
                 }
             }
         }
+        for (Entity entity: source.getEntities()) {
+            destination.getEntities().add(entity);
+        }
     }
 
     private boolean isWorldChunk(Dimension dimension, int x, int y) {
-        return dimension.getTile(x >> 3, y >> 3) != null;
+        return dimension.isTilePresent(x >> 3, y >> 3);
     }
 
     private boolean isBorderChunk(Dimension dimension, int x, int y) {
@@ -899,7 +1111,7 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         if ((dimension.getBorder() == null) || (borderSize == 0)) {
             // There is no border configured, so definitely no border chunk
             return false;
-        } else if (dimension.getTile(tileX, tileY) != null) {
+        } else if (dimension.isTilePresent(tileX, tileY)) {
             // There is a tile here, so definitely no border chunk
             return false;
         } else {
@@ -907,7 +1119,7 @@ public abstract class AbstractWorldExporter implements WorldExporter {
             // in which case we are on a border tile
             for (int dx = -borderSize; dx <= borderSize; dx++) {
                 for (int dy = -borderSize; dy <= borderSize; dy++) {
-                    if (dimension.getTile(tileX + dx, tileY + dy) != null) {
+                    if (dimension.isTilePresent(tileX + dx, tileY + dy)) {
                         // Tile found, we are a border chunk!
                         return true;
                     }
@@ -919,47 +1131,130 @@ public abstract class AbstractWorldExporter implements WorldExporter {
         }
     }
 
-    private Chest createGoodiesChest() {
-        // TODOMC13 migrate to Minecraft 1.15
-        // TODOMC13 this makes Minecraft 1.15 crash!
+    private Chest createGoodiesChest(Platform platform) {
         List<InventoryItem> list = new ArrayList<>();
-        list.add(new InventoryItem(ITM_DIAMOND_SWORD,    0,  1,  0));
-        list.add(new InventoryItem(ITM_DIAMOND_SHOVEL,   0,  1,  1));
-        list.add(new InventoryItem(ITM_DIAMOND_PICKAXE,  0,  1,  2));
-        list.add(new InventoryItem(ITM_DIAMOND_AXE,      0,  1,  3));
-        list.add(new InventoryItem(BLK_SAPLING,          0, 64,  4));
-        list.add(new InventoryItem(BLK_SAPLING,          1, 64,  5));
-        list.add(new InventoryItem(BLK_SAPLING,          2, 64,  6));
-        list.add(new InventoryItem(BLK_BROWN_MUSHROOM,   0, 64,  7));
-        list.add(new InventoryItem(BLK_RED_MUSHROOM,     0, 64,  8));
-        list.add(new InventoryItem(ITM_BONE,             0, 64,  9));
-        list.add(new InventoryItem(ITM_WATER_BUCKET,     0,  1, 10));
-        list.add(new InventoryItem(ITM_WATER_BUCKET,     0,  1, 11));
-        list.add(new InventoryItem(ITM_COAL,             0, 64, 12));
-        list.add(new InventoryItem(ITM_IRON_INGOT,       0, 64, 13));
-        list.add(new InventoryItem(BLK_CACTUS,           0, 64, 14));
-        list.add(new InventoryItem(ITM_SUGAR_CANE,       0, 64, 15));
-        list.add(new InventoryItem(BLK_TORCH,            0, 64, 16));
-        list.add(new InventoryItem(ITM_BED,              0,  1, 17));
-        list.add(new InventoryItem(BLK_OBSIDIAN,         0, 64, 18));
-        list.add(new InventoryItem(ITM_FLINT_AND_STEEL,  0,  1, 19));
-        list.add(new InventoryItem(BLK_WOOD,             0, 64, 20));
-        list.add(new InventoryItem(BLK_CRAFTING_TABLE,   0,  1, 21));
-        list.add(new InventoryItem(BLK_END_PORTAL_FRAME, 0, 12, 22));
-        list.add(new InventoryItem(ITM_EYE_OF_ENDER,     0, 12, 23));
-        Chest chest = new Chest();
+        if (platform == JAVA_MCREGION) {
+            list.add(new InventoryItem((short) ITM_DIAMOND_SWORD, 0, 1, 0));
+            list.add(new InventoryItem((short) ITM_DIAMOND_SHOVEL, 0, 1, 1));
+            list.add(new InventoryItem((short) ITM_DIAMOND_PICKAXE, 0, 1, 2));
+            list.add(new InventoryItem((short) ITM_DIAMOND_AXE, 0, 1, 3));
+            list.add(new InventoryItem((short) BLK_SAPLING, 0, 64, 4));
+            list.add(new InventoryItem((short) BLK_SAPLING, 1, 64, 5));
+            list.add(new InventoryItem((short) BLK_SAPLING, 2, 64, 6));
+            list.add(new InventoryItem((short) BLK_BROWN_MUSHROOM, 0, 64, 7));
+            list.add(new InventoryItem((short) BLK_RED_MUSHROOM, 0, 64, 8));
+            list.add(new InventoryItem((short) ITM_BONE, 0, 64, 9));
+            list.add(new InventoryItem((short) ITM_WATER_BUCKET, 0, 1, 10));
+            list.add(new InventoryItem((short) ITM_WATER_BUCKET, 0, 1, 11));
+            list.add(new InventoryItem((short) ITM_COAL, 0, 64, 12));
+            list.add(new InventoryItem((short) ITM_IRON_INGOT, 0, 64, 13));
+            list.add(new InventoryItem((short) BLK_CACTUS, 0, 64, 14));
+            list.add(new InventoryItem((short) ITM_SUGAR_CANE, 0, 64, 15));
+            list.add(new InventoryItem((short) BLK_TORCH, 0, 64, 16));
+            list.add(new InventoryItem((short) ITM_BED, 0, 1, 17));
+            list.add(new InventoryItem((short) BLK_OBSIDIAN, 0, 64, 18));
+            list.add(new InventoryItem((short) ITM_FLINT_AND_STEEL, 0, 1, 19));
+            list.add(new InventoryItem((short) BLK_WOOD, 0, 64, 20));
+            list.add(new InventoryItem((short) BLK_CRAFTING_TABLE, 0, 1, 21));
+            list.add(new InventoryItem((short) BLK_END_PORTAL_FRAME, 0, 12, 22));
+            list.add(new InventoryItem((short) ITM_EYE_OF_ENDER, 0, 12, 23));
+        } else if (platform == JAVA_ANVIL) {
+            list.add(new InventoryItem(ID_DIAMOND_SWORD, 1, 0));
+            list.add(new InventoryItem(ID_DIAMOND_SHOVEL, 1, 1));
+            list.add(new InventoryItem(ID_DIAMOND_PICKAXE, 1, 2));
+            list.add(new InventoryItem(ID_DIAMOND_AXE, 1, 3));
+            list.add(new InventoryItem(ID_SAPLING, 0, 64, 4));
+            list.add(new InventoryItem(ID_SAPLING, 1, 64, 5));
+            list.add(new InventoryItem(ID_SAPLING, 2, 64, 6));
+            list.add(new InventoryItem(ID_BROWN_MUSHROOM, 64, 7));
+            list.add(new InventoryItem(ID_RED_MUSHROOM, 64, 8));
+            list.add(new InventoryItem(ID_BONE, 64, 9));
+            list.add(new InventoryItem(ID_WATER_BUCKET, 1, 10));
+            list.add(new InventoryItem(ID_WATER_BUCKET, 1, 11));
+            list.add(new InventoryItem(ID_COAL, 64, 12));
+            list.add(new InventoryItem(ID_IRON_INGOT, 64, 13));
+            list.add(new InventoryItem(ID_CACTUS, 64, 14));
+            list.add(new InventoryItem(ID_REEDS, 64, 15));
+            list.add(new InventoryItem(ID_TORCH, 64, 16));
+            list.add(new InventoryItem(ID_BED, 1, 17));
+            list.add(new InventoryItem(ID_OBSIDIAN, 64, 18));
+            list.add(new InventoryItem(ID_FLINT_AND_STEEL, 1, 19));
+            list.add(new InventoryItem(ID_LOG, 64, 20));
+            list.add(new InventoryItem(ID_CRAFTING_TABLE, 1, 21));
+            list.add(new InventoryItem(ID_END_PORTAL_FRAME, 12, 22));
+            list.add(new InventoryItem(ID_ENDER_EYE, 12, 23));
+        } else {
+            list.add(new InventoryItem(ID_DIAMOND_SWORD, 1, 0));
+            list.add(new InventoryItem(ID_DIAMOND_SHOVEL, 1, 1));
+            list.add(new InventoryItem(ID_DIAMOND_PICKAXE, 1, 2));
+            list.add(new InventoryItem(ID_DIAMOND_AXE, 1, 3));
+            list.add(new InventoryItem(ID_OAK_SAPLING, 64, 4));
+            list.add(new InventoryItem(ID_SPRUCE_SAPLING, 64, 5));
+            list.add(new InventoryItem(ID_BIRCH_SAPLING, 64, 6));
+            list.add(new InventoryItem(ID_BROWN_MUSHROOM, 64, 7));
+            list.add(new InventoryItem(ID_RED_MUSHROOM, 64, 8));
+            list.add(new InventoryItem(ID_BONE, 64, 9));
+            list.add(new InventoryItem(ID_WATER_BUCKET, 1, 10));
+            list.add(new InventoryItem(ID_WATER_BUCKET, 1, 11));
+            list.add(new InventoryItem(ID_COAL, 64, 12));
+            list.add(new InventoryItem(ID_IRON_INGOT, 64, 13));
+            list.add(new InventoryItem(ID_CACTUS, 64, 14));
+            list.add(new InventoryItem(ID_SUGAR_CANE, 64, 15));
+            list.add(new InventoryItem(ID_TORCH, 64, 16));
+            list.add(new InventoryItem(ID_RED_BED, 1, 17));
+            list.add(new InventoryItem(ID_OBSIDIAN, 64, 18));
+            list.add(new InventoryItem(ID_FLINT_AND_STEEL, 1, 19));
+            list.add(new InventoryItem(ID_OAK_LOG, 64, 20));
+            list.add(new InventoryItem(ID_CRAFTING_TABLE, 1, 21));
+            list.add(new InventoryItem(ID_END_PORTAL_FRAME, 12, 22));
+            list.add(new InventoryItem(ID_ENDER_EYE, 12, 23));
+        }
+        Chest chest = new Chest(platform);
         chest.setItems(list);
         return chest;
     }
 
+    private BlockBasedExportSettings getExportSettings(Dimension dimension, Platform platform) {
+        final ExportSettings dimensionExportSettings = dimension.getExportSettings();
+        if (dimensionExportSettings instanceof BlockBasedExportSettings) {
+            return (BlockBasedExportSettings) dimensionExportSettings;
+        } else {
+            final BlockBasedExportSettings platformDefaultExportSettings = (BlockBasedExportSettings) platformProvider.getDefaultExportSettings(platform); // We wouldn't be here if the platform wasn't block-based, so the cast is safe
+            return (platformDefaultExportSettings != null) ? platformDefaultExportSettings : DEFAULT_EXPORT_SETTINGS;
+        }
+    }
+
     protected final World2 world;
     protected final BlockBasedPlatformProvider platformProvider;
-    protected final Set<Integer> selectedDimensions;
-    protected final Set<Point> selectedTiles;
     protected final Semaphore performingFixups = new Semaphore(1);
     protected final Platform platform;
+    protected final WorldExportSettings worldExportSettings;
+    protected final boolean populateSupported;
 
     public static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyyMMddHHmmss");
+
+
+    private static final BlockBasedExportSettings DEFAULT_EXPORT_SETTINGS = new BlockBasedExportSettings() {
+        @Override
+        public boolean isCalculateSkyLight() {
+            return true;
+        }
+
+        @Override
+        public boolean isCalculateBlockLight() {
+            return true;
+        }
+
+        @Override
+        public boolean isCalculateLeafDistance() {
+            return true;
+        }
+
+        @Override
+        public boolean isRemoveFloatingLeaves() {
+            return false;
+        }
+    };
 
     private static final Object TIMING_FILE_LOCK = new Object();
     private static final Logger logger = LoggerFactory.getLogger(AbstractWorldExporter.class);

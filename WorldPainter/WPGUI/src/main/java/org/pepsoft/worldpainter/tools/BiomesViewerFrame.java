@@ -5,7 +5,7 @@
 package org.pepsoft.worldpainter.tools;
 
 import org.pepsoft.minecraft.Constants;
-import org.pepsoft.minecraft.Java117Level;
+import org.pepsoft.minecraft.JavaLevel;
 import org.pepsoft.minecraft.SeededGenerator;
 import org.pepsoft.util.DesktopUtils;
 import org.pepsoft.util.ProgressReceiver;
@@ -28,6 +28,7 @@ import java.util.List;
 
 import static org.pepsoft.util.GUIUtils.scaleToUI;
 import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
 import static org.pepsoft.worldpainter.Generator.DEFAULT;
 import static org.pepsoft.worldpainter.Generator.LARGE_BIOMES;
 
@@ -126,8 +127,10 @@ public class BiomesViewerFrame extends JFrame {
         toolBar.add(new JLabel("Seed:"));
         seedSpinner.setEditor(new JSpinner.NumberEditor(seedSpinner, "0"));
         seedSpinner.addChangeListener(e -> {
-            BiomesViewerFrame.this.biomeScheme.setSeed(((Number) seedSpinner.getValue()).longValue());
-            imageViewer.setTileProvider(new BiomesTileProvider(BiomesViewerFrame.this.biomeScheme, BiomesViewerFrame.this.colourScheme, imageViewer.getZoom(), false));
+            if (BiomesViewerFrame.this.biomeScheme != null) {
+                BiomesViewerFrame.this.biomeScheme.setSeed(((Number) seedSpinner.getValue()).longValue());
+                imageViewer.setTileProvider(new BiomesTileProvider(BiomesViewerFrame.this.biomeScheme, BiomesViewerFrame.this.colourScheme, imageViewer.getZoom(), false));
+            }
         });
         toolBar.add(seedSpinner);
         toolBar.add(Box.createHorizontalGlue());
@@ -228,7 +231,7 @@ public class BiomesViewerFrame extends JFrame {
         }
         BiomeScheme biomeScheme1 = BiomesViewerFrame.this.biomeScheme;
         final Platform platform = (biomeScheme1 instanceof Minecraft1_1BiomeScheme) ? DefaultPlugin.JAVA_MCREGION : DefaultPlugin.JAVA_ANVIL;
-        Java117Level level = new Java117Level(platform.standardMaxHeight, platform);
+        JavaLevel level = JavaLevel.create(platform, platform.minZ, platform.standardMaxHeight);
         final long seed = ((Number) seedSpinner.getValue()).longValue();
         if (! (biomeScheme1 instanceof Minecraft1_1BiomeScheme)) {
             final Generator generatorType = ((biomeScheme1 instanceof Minecraft1_3LargeBiomeScheme) || (biomeScheme1 instanceof Minecraft1_7LargeBiomeScheme) || (biomeScheme1 instanceof Minecraft1_8LargeBiomeScheme) || (biomeScheme1 instanceof Minecraft1_12LargeBiomeScheme)) ? Generator.LARGE_BIOMES : Generator.DEFAULT;
@@ -265,11 +268,14 @@ public class BiomesViewerFrame extends JFrame {
         }
         final NewWorldDialog dialog = new NewWorldDialog(
             app,
+            app.getColourScheme(),
             "Generated World",
             ((Number) seedSpinner.getValue()).longValue(),
             ((Integer) schemeChooser.getSelectedItem() == BIOME_ALGORITHM_1_1) ? DefaultPlugin.JAVA_MCREGION : DefaultPlugin.JAVA_ANVIL,
-            DIM_NORMAL,
+            NORMAL_DETAIL,
+            0,
             Configuration.getInstance().getDefaultMaxHeight(),
+            null,
             imageViewer.getSelectedTiles());
         dialog.setVisible(true);
         if (! dialog.isCancelled()) {
@@ -289,7 +295,7 @@ public class BiomesViewerFrame extends JFrame {
                 }
             });
             if (newWorld != null) {
-                final Dimension dimension = newWorld.getDimension(DIM_NORMAL);
+                final Dimension dimension = newWorld.getDimension(NORMAL_DETAIL);
                 switch ((Integer) schemeChooser.getSelectedItem()) {
                     case BIOME_ALGORITHM_1_1:
                     case BIOME_ALGORITHM_1_2_AND_1_3_DEFAULT:

@@ -10,11 +10,15 @@
  */
 package org.pepsoft.worldpainter;
 
-import org.pepsoft.minecraft.SeededGenerator;
+import org.jnbt.Tag;
+import org.pepsoft.minecraft.*;
+import org.pepsoft.util.DesktopUtils;
+import org.pepsoft.worldpainter.Dimension.Anchor;
 import org.pepsoft.worldpainter.Dimension.LayerAnchor;
 import org.pepsoft.worldpainter.exporting.ExportSettings;
 import org.pepsoft.worldpainter.exporting.ExportSettingsEditor;
 import org.pepsoft.worldpainter.layers.*;
+import org.pepsoft.worldpainter.layers.exporters.AbstractCavesExporter.CaveDecorationSettings;
 import org.pepsoft.worldpainter.layers.exporters.AnnotationsExporter.AnnotationsSettings;
 import org.pepsoft.worldpainter.layers.exporters.CavernsExporter.CavernsSettings;
 import org.pepsoft.worldpainter.layers.exporters.CavesExporter.CavesSettings;
@@ -24,8 +28,10 @@ import org.pepsoft.worldpainter.layers.exporters.ResourcesExporter.ResourcesExpo
 import org.pepsoft.worldpainter.layers.exporters.TreesExporter.TreeLayerSettings;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.pepsoft.worldpainter.plugins.PlatformProvider;
+import org.pepsoft.worldpainter.superflat.EditSuperflatPresetDialog;
 import org.pepsoft.worldpainter.themes.SimpleTheme;
 import org.pepsoft.worldpainter.themes.TerrainListCellRenderer;
+import org.pepsoft.worldpainter.tools.Eyedropper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,17 +39,38 @@ import javax.swing.*;
 import javax.swing.JSpinner.NumberEditor;
 import javax.swing.event.ListSelectionEvent;
 import java.awt.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
-import java.util.*;
 
+import static java.util.Collections.singleton;
+import static java.util.Objects.requireNonNull;
+import static javax.swing.JOptionPane.YES_NO_OPTION;
+import static javax.swing.JOptionPane.YES_OPTION;
 import static org.pepsoft.minecraft.Material.*;
+import static org.pepsoft.util.AwtUtils.doLaterOnEventThread;
 import static org.pepsoft.util.GUIUtils.scaleToUI;
+import static org.pepsoft.util.MathUtils.clamp;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowError;
+import static org.pepsoft.util.swing.MessageUtils.showInfo;
+import static org.pepsoft.worldpainter.Constants.V_1_17;
+import static org.pepsoft.worldpainter.CustomLayersTableModel.COLUMN_EXPORT;
+import static org.pepsoft.worldpainter.DefaultPlugin.ATTRIBUTE_MC_VERSION;
+import static org.pepsoft.worldpainter.Dimension.Role.*;
 import static org.pepsoft.worldpainter.DimensionPropertiesEditor.Mode.DEFAULT_SETTINGS;
+import static org.pepsoft.worldpainter.Generator.CUSTOM;
+import static org.pepsoft.worldpainter.Generator.FLAT;
+import static org.pepsoft.worldpainter.Platform.Capability.GENERATOR_PER_DIMENSION;
 import static org.pepsoft.worldpainter.Platform.Capability.POPULATE;
+import static org.pepsoft.worldpainter.layers.exporters.AbstractCavesExporter.CaveDecorationSettings.Decoration.BROWN_MUSHROOM;
+import static org.pepsoft.worldpainter.layers.exporters.AbstractCavesExporter.CaveDecorationSettings.Decoration.*;
+import static org.pepsoft.worldpainter.tools.Eyedropper.PaintType.LAYER;
 
 /**
  * @author pepijn
  */
+@SuppressWarnings({"unused", "rawtypes", "Convert2Lambda", "Anonymous2MethodRef", "ConstantConditions", "FieldCanBeLocal"}) // Managed by NetBeans
 public class DimensionPropertiesEditor extends javax.swing.JPanel {
     /**
      * Creates new form DimensionPropertiesEditor
@@ -63,7 +90,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             jLabel8.setVisible(false);
             spinnerBorderSize.setVisible(false);
             jLabel9.setVisible(false);
-            checkBoxBedrockWall.setVisible(false);
+            checkBoxWall.setVisible(false);
             jLabel7.setVisible(false);
             spinnerMinecraftSeed.setVisible(false);
 
@@ -91,7 +118,21 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         configureSpinners(null, spinnerChasmsMinLevel, spinnerChasmsMaxLevel);
 
         tableCustomLayers.setDefaultRenderer(CustomLayer.class, new CustomLayersTableCellRenderer());
-        tableCustomLayers.getSelectionModel().addListSelectionListener((ListSelectionEvent e) -> setControlStates());
+        tableCustomLayers.getSelectionModel().addListSelectionListener((ListSelectionEvent e) -> {
+            if (! programmaticChange) {
+                setControlStates();
+            }
+        });
+        comboBoxGenerator.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value != null) {
+                    setText(((Generator) value).getDisplayName());
+                }
+                return this;
+            }
+        });
 
         scaleToUI(this);
     }
@@ -106,26 +147,48 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     }
 
     public void setMode(Mode mode) {
+        requireNonNull(mode);
         if (this.mode != null) {
             throw new IllegalStateException("Mode already set");
+        } else if (dimension == null) {
+            throw new IllegalStateException("Mode must be set after dimension");
         }
         this.mode = mode;
+        final Anchor anchor = dimension.getAnchor();
         switch (mode) {
             case EXPORT:
-                jTabbedPane1.remove(1);
-                initialisePostProcessingTab();
+                if (anchor.role == MASTER) {
+                    jTabbedPane1.remove(TAB_OTHER_LAYERS);
+                }
+                if ((anchor.role == CAVE_FLOOR) || (anchor.role == MASTER)) {
+                    jTabbedPane1.remove(TAB_RESOURCES);
+                    jTabbedPane1.remove(TAB_CAVES);
+                }
+                jTabbedPane1.remove(TAB_THEME);
+                if ((anchor.role == DETAIL) && (! anchor.invert)) {
+                    initialisePostProcessingTab();
+                }
                 break;
             case DEFAULT_SETTINGS:
                 spinnerMinecraftSeed.setEnabled(false);
-                jTabbedPane1.remove(5);
-                jTabbedPane1.remove(3);
+                jTabbedPane1.remove(TAB_CUSTOM_LAYERS);
+                jTabbedPane1.remove(TAB_RESOURCES);
+                themeEditor.setAllowCustomItems(false);
                 break;
             case EDITOR:
-                jTabbedPane1.remove(5);
+                jTabbedPane1.remove(TAB_CUSTOM_LAYERS);
+                if (anchor.role == MASTER) {
+                    jTabbedPane1.remove(TAB_OTHER_LAYERS);
+                }
+                if ((anchor.role == CAVE_FLOOR) || (anchor.role == MASTER)) {
+                    jTabbedPane1.remove(TAB_RESOURCES);
+                    jTabbedPane1.remove(TAB_CAVES);
+                }
                 break;
             default:
                 throw new IllegalArgumentException("mode " + mode);
         }
+        loadSettings();
     }
 
     public Dimension getDimension() {
@@ -133,12 +196,21 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     }
 
     public void setDimension(Dimension dimension) {
-        this.dimension = dimension;
-        if (dimension != null) {
-            setPlatform(dimension.getWorld().getPlatform());
-            initialisePostProcessingTab();
-            loadSettings();
+        requireNonNull(dimension);
+        if (this.dimension != null) {
+            throw new IllegalStateException("Dimension already set");
         }
+        this.dimension = dimension;
+        final Anchor anchor = dimension.getAnchor();
+        if (! ((anchor.role == DETAIL) && (! anchor.invert))) {
+            // If we do this straight away it doesn't work due to some bizarre Swing bug, even though we're on the event
+            // thread already
+            doLaterOnEventThread(() -> {
+                panelGeneral.remove(panelMinecraftSettings);
+                panelGeneral.remove(panelBorderWallRoof);
+            });
+        }
+        setPlatform(dimension.getWorld().getPlatform());
     }
 
     public Platform getPlatform() {
@@ -146,16 +218,25 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     }
 
     public void setPlatform(Platform platform) {
+        requireNonNull(platform);
         if (platform != this.platform) {
             this.platform = platform;
             platformProvider = PlatformManager.getInstance().getPlatformProvider(platform);
-            if ((platform == null) || platform.capabilities.contains(POPULATE)) {
+            if (platform.capabilities.contains(POPULATE)) {
                 checkBoxPopulate.setSelected(dimension.isPopulate());
                 checkBoxPopulate.setToolTipText(null);
             } else {
                 checkBoxPopulate.setSelected(false);
                 checkBoxPopulate.setToolTipText("Automatic population not support by format " + platform);
             }
+            Generator generator = (Generator) comboBoxGenerator.getSelectedItem();
+            comboBoxGenerator.setModel(new DefaultComboBoxModel<>(platform.supportedGenerators.toArray(new Generator[platform.supportedGenerators.size()])));
+            if (platform.supportedGenerators.contains(generator)) {
+                comboBoxGenerator.setSelectedItem(generator);
+            } else {
+                comboBoxGenerator.setSelectedItem(platform.supportedGenerators.get(0));
+            }
+            comboBoxGenerator.setEnabled(platform.supportedGenerators.size() > 1);
             setControlStates();
         }
     }
@@ -229,14 +310,21 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     }
     
     public boolean saveSettings() {
-        int maxHeight = dimension.getMaxHeight() - 1;
-        
+        final int minHeight = dimension.getMinHeight(), maxHeight = dimension.getMaxHeight() - 1;
+
+        // sanity checks
+        if ((comboBoxGenerator.getSelectedItem() == CUSTOM) && ((generatorName == null) || generatorName.trim().isEmpty())) {
+            buttonGeneratorOptions.requestFocusInWindow();
+            beepAndShowError(this, "The custom world generator name has not been set.\nUse the [...] button to set it.", "Error");
+            return false;
+        }
+
         // terrain ranges
         if ((mode != Mode.EXPORT) && (! themeEditor.save())) {
             jTabbedPane1.setSelectedIndex(1);
             return false;
         }
-        
+
         // general
         int topLayerMinDepth = (Integer) spinnerMinSurfaceDepth.getValue();
         dimension.setTopLayerMinDepth(topLayerMinDepth);
@@ -247,7 +335,8 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         dimension.setBorder(getSelectedBorder());
         dimension.setBorderLevel((Integer) spinnerBorderLevel.getValue());
         dimension.setBorderSize((Integer) spinnerBorderSize.getValue() / 128);
-        dimension.setBedrockWall(checkBoxBedrockWall.isSelected());
+        dimension.setWallType((checkBoxWall.isSelected() && (! endlessBorder)) ? (radioButtonBedrockWall.isSelected() ? Dimension.WallType.BEDROCK : Dimension.WallType.BARIER) : null);
+        dimension.setRoofType(checkBoxRoof.isSelected() ? (radioButtonBedrockRoof.isSelected() ? Dimension.WallType.BEDROCK : Dimension.WallType.BARIER) : null);
         long previousSeed = dimension.getMinecraftSeed();
         long newSeed = ((Number) spinnerMinecraftSeed.getValue()).longValue();
         if (newSeed != previousSeed) {
@@ -259,19 +348,6 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         dimension.setBottomless(checkBoxBottomless.isSelected());
         dimension.setCoverSteepTerrain(checkBoxCoverSteepTerrain.isSelected());
         dimension.setCeilingHeight((Integer) spinnerCeilingHeight.getValue());
-
-        // Minecraft world border
-        World2 world = dimension.getWorld();
-        if (world != null) {
-            World2.BorderSettings borderSettings = world.getBorderSettings();
-            borderSettings.setCentreX((Integer) spinnerMcBorderCentreX.getValue());
-            borderSettings.setCentreY((Integer) spinnerMcBorderCentreY.getValue());
-            borderSettings.setSize((Integer) spinnerMcBorderSize.getValue());
-//            borderSettings.setSafeZone((Integer) spinnerMcBorderBuffer.getValue());
-//            borderSettings.setDamagePerBlock((Float) spinnerMcBorderDamage.getValue());
-//            borderSettings.setWarningTime((Integer) spinnerMcBorderWarningTime.getValue());
-//            borderSettings.setWarningBlocks((Integer) spinnerMcBorderWarningDistance.getValue());
-        }
 
         // caves
         CavesSettings cavesSettings = (CavesSettings) dimension.getLayerSettings(Caves.INSTANCE);
@@ -291,10 +367,21 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         if (checkBoxFloodCaverns.isSelected()) {
             cavesSettings.setWaterLevel((Integer) spinnerCavernsFloodLevel.getValue());
         } else {
-            cavesSettings.setWaterLevel(0);
+            cavesSettings.setWaterLevel(Integer.MIN_VALUE);
         }
         cavesSettings.setFloodWithLava(checkBoxCavernsFloodWithLava.isSelected());
         cavesSettings.setLeaveWater(! checkBoxCavernsRemoveWater.isSelected());
+        final boolean anyDecorationsSelected = checkBoxDecorationBrownMushrooms.isSelected()
+                || checkBoxDecorationGlowLichen.isSelected()
+                || checkBoxDecorationLushCaves.isSelected()
+                || checkBoxDecorationDripstoneCaves.isSelected();
+        final CaveDecorationSettings decorationSettings = anyDecorationsSelected
+                ? new CaveDecorationSettings(checkBoxDecorationBrownMushrooms.isSelected(),
+                    checkBoxDecorationGlowLichen.isSelected(),
+                    checkBoxDecorationLushCaves.isSelected(),
+                    checkBoxDecorationDripstoneCaves.isSelected())
+                : null;
+        cavesSettings.setCaveDecorationSettings(checkBoxDecorateCaves.isSelected() ? decorationSettings : null);
         dimension.setLayerSettings(Caves.INSTANCE, cavesSettings);
 
         // caverns
@@ -311,7 +398,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         if (checkBoxFloodCaverns.isSelected()) {
             cavernsSettings.setWaterLevel((Integer) spinnerCavernsFloodLevel.getValue());
         } else {
-            cavernsSettings.setWaterLevel(0);
+            cavernsSettings.setWaterLevel(Integer.MIN_VALUE);
         }
         cavernsSettings.setFloodWithLava(checkBoxCavernsFloodWithLava.isSelected());
         cavernsSettings.setSurfaceBreaking(checkBoxCavernsBreakSurface.isSelected());
@@ -319,6 +406,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         cavernsSettings.setMinimumLevel((Integer) spinnerCavernsMinLevel.getValue());
         int cavernsMaxLevel = (Integer) spinnerCavernsMaxLevel.getValue();
         cavernsSettings.setMaximumLevel((cavernsMaxLevel >= maxHeight) ? Integer.MAX_VALUE : cavernsMaxLevel);
+        cavernsSettings.setCaveDecorationSettings(checkBoxDecorateCaverns.isSelected() ? decorationSettings : null);
         dimension.setLayerSettings(Caverns.INSTANCE, cavernsSettings);
         
         // chasms
@@ -339,10 +427,11 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         if (checkBoxFloodCaverns.isSelected()) {
             chasmsSettings.setWaterLevel((Integer) spinnerCavernsFloodLevel.getValue());
         } else {
-            chasmsSettings.setWaterLevel(0);
+            chasmsSettings.setWaterLevel(Integer.MIN_VALUE);
         }
         chasmsSettings.setFloodWithLava(checkBoxCavernsFloodWithLava.isSelected());
         chasmsSettings.setLeaveWater(! checkBoxCavernsRemoveWater.isSelected());
+        chasmsSettings.setCaveDecorationSettings(checkBoxDecorateChasms.isSelected() ? decorationSettings : null);
         dimension.setLayerSettings(Chasms.INSTANCE, chasmsSettings);
         
         // populate
@@ -416,7 +505,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             // resources
             ResourcesExporterSettings resourcesSettings = (ResourcesExporterSettings) dimension.getLayerSettings(Resources.INSTANCE);
             if (resourcesSettings == null) {
-                resourcesSettings = ResourcesExporterSettings.defaultSettings(platform, dimension.getDim(), dimension.getMaxHeight());
+                resourcesSettings = ResourcesExporterSettings.defaultSettings(platform, dimension.getAnchor(), dimension.getMinHeight(), dimension.getMaxHeight());
             }
             if (jCheckBox8.isSelected()) {
                 int minimumLevel = jSlider4.getValue();
@@ -442,12 +531,12 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             resourcesSettings.setChance(REDSTONE_ORE, (Integer) spinnerRedstoneChance.getValue());
             resourcesSettings.setMinLevel(REDSTONE_ORE, (Integer) spinnerRedstoneMinLevel.getValue());
             resourcesSettings.setMaxLevel(REDSTONE_ORE, (Integer) spinnerRedstoneMaxLevel.getValue());
-            resourcesSettings.setChance(WATER, (Integer) spinnerWaterChance.getValue());
-            resourcesSettings.setMinLevel(WATER, (Integer) spinnerWaterMinLevel.getValue());
-            resourcesSettings.setMaxLevel(WATER, (Integer) spinnerWaterMaxLevel.getValue());
-            resourcesSettings.setChance(LAVA, (Integer) spinnerLavaChance.getValue());
-            resourcesSettings.setMinLevel(LAVA, (Integer) spinnerLavaMinLevel.getValue());
-            resourcesSettings.setMaxLevel(LAVA, (Integer) spinnerLavaMaxLevel.getValue());
+            resourcesSettings.setChance(STATIONARY_WATER, (Integer) spinnerWaterChance.getValue());
+            resourcesSettings.setMinLevel(STATIONARY_WATER, (Integer) spinnerWaterMinLevel.getValue());
+            resourcesSettings.setMaxLevel(STATIONARY_WATER, (Integer) spinnerWaterMaxLevel.getValue());
+            resourcesSettings.setChance(STATIONARY_LAVA, (Integer) spinnerLavaChance.getValue());
+            resourcesSettings.setMinLevel(STATIONARY_LAVA, (Integer) spinnerLavaMinLevel.getValue());
+            resourcesSettings.setMaxLevel(STATIONARY_LAVA, (Integer) spinnerLavaMaxLevel.getValue());
             resourcesSettings.setChance(DIRT, (Integer) spinnerDirtChance.getValue());
             resourcesSettings.setMinLevel(DIRT, (Integer) spinnerDirtMinLevel.getValue());
             resourcesSettings.setMaxLevel(DIRT, (Integer) spinnerDirtMaxLevel.getValue());
@@ -478,7 +567,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         dimension.setLayerSettings(Annotations.INSTANCE, annotationsSettings);
         
         // custom layers
-        if ((mode == Mode.EXPORT) && (! customLayersTableModel.isPristine())) {
+        if ((mode == Mode.EXPORT) && (customLayersTableModel != null) && (! customLayersTableModel.isPristine())) {
             customLayersTableModel.save();
             dimension.changed();
         }
@@ -490,31 +579,58 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                 dimension.setExportSettings(editor.getExportSettings());
             }
         }
-        
+
+        // world generation settings
+        if (! endlessBorder) {
+            final Generator generatorType = (Generator) comboBoxGenerator.getSelectedItem();
+            if (generatorType != null) {
+                switch (generatorType) {
+                    case FLAT:
+                        dimension.setGenerator(new SuperflatGenerator(superflatPreset));
+                        break;
+                    case DEFAULT:
+                    case LARGE_BIOMES:
+                    case BUFFET:
+                    case CUSTOMIZED:
+                    case NETHER:
+                    case END:
+                    case AMPLIFIED:
+                        dimension.setGenerator(new SeededGenerator(generatorType, dimension.getMinecraftSeed()));
+                        break;
+                    case CUSTOM:
+                        dimension.setGenerator(new CustomGenerator(generatorName.trim(), customGeneratorSettings));
+                        break;
+                    case UNKNOWN:
+                        // Do nothing
+                        break;
+                }
+            }
+        }
+
         return true;
-    }
-
-    public void addBorderListener(BorderListener borderListener) {
-        borderListeners.add(borderListener);
-    }
-
-    public void removeBorderListener(BorderListener borderListener) {
-        borderListeners.remove(borderListener);
     }
 
     public boolean isPopulateSelected() {
         return checkBoxPopulate.isSelected();
     }
 
+    Generator getSelectedGeneratorType() {
+        return (Generator) comboBoxGenerator.getSelectedItem();
+    }
+
+    void setSelectedGeneratorType(Generator generatorType) {
+        comboBoxGenerator.setSelectedItem(generatorType);
+    }
+
     private void initialisePostProcessingTab() {
-        if ((mode == Mode.EXPORT) && (dimension != null)) {
+        if (mode == Mode.EXPORT) {
             ExportSettings exportSettings = dimension.getExportSettings();
-            if (exportSettings == null) {
-                exportSettings = platformProvider.getDefaultExportSettings();
+            if ((exportSettings == null) && (platformProvider != null)) {
+                exportSettings = platformProvider.getDefaultExportSettings(platform);
             }
             if (exportSettings != null) {
                 try {
-                    ExportSettingsEditor editor = platformProvider.getExportSettingsEditor();
+                    ExportSettingsEditor editor = platformProvider.getExportSettingsEditor(platform);
                     editor.setExportSettings(exportSettings);
                     jTabbedPane1.addTab("Post Processing", editor);
                 } catch (RuntimeException e) {
@@ -531,8 +647,10 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             return null;
         } else if (radioButtonVoidBorder.isSelected()) {
             return radioButtonEndlessBorder.isSelected() ? Dimension.Border.ENDLESS_VOID : Dimension.Border.VOID;
-        } else {
+        } else if (radioButtonWaterBorder.isSelected()){
             return radioButtonEndlessBorder.isSelected() ? Dimension.Border.ENDLESS_WATER : Dimension.Border.WATER;
+        } else {
+            return radioButtonEndlessBorder.isSelected() ? Dimension.Border.ENDLESS_BARRIER : Dimension.Border.BARRIER;
         }
     }
 
@@ -572,6 +690,10 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                     radioButtonVoidBorder.setSelected(true);
                     radioButtonFixedBorder.setSelected(true);
                     break;
+                case BARRIER:
+                    radioButtonBarrierBorder.setSelected(true);
+                    radioButtonFixedBorder.setSelected(true);
+                    break;
                 case ENDLESS_LAVA:
                     radioButtonLavaBorder.setSelected(true);
                     radioButtonEndlessBorder.setSelected(true);
@@ -584,6 +706,10 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                     radioButtonVoidBorder.setSelected(true);
                     radioButtonEndlessBorder.setSelected(true);
                     break;
+                case ENDLESS_BARRIER:
+                    radioButtonBarrierBorder.setSelected(true);
+                    radioButtonEndlessBorder.setSelected(true);
+                    break;
                 default:
                     throw new InternalError();
             }
@@ -594,34 +720,19 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         ((SpinnerNumberModel) spinnerBorderLevel.getModel()).setMaximum(maxHeight);
         spinnerBorderLevel.setValue(dimension.getBorderLevel());
         spinnerBorderSize.setValue(dimension.getBorderSize() * 128);
-        checkBoxBedrockWall.setSelected(dimension.isBedrockWall());
+        checkBoxWall.setSelected(dimension.getWallType() != null);
+        radioButtonBedrockWall.setSelected(dimension.getWallType() == Dimension.WallType.BEDROCK);
+        radioButtonBarrierWall.setSelected(dimension.getWallType() == Dimension.WallType.BARIER);
+        checkBoxRoof.setSelected(dimension.getRoofType() != null);
+        radioButtonBedrockRoof.setSelected(dimension.getRoofType() == Dimension.WallType.BEDROCK);
+        radioButtonBarrierRoof.setSelected(dimension.getRoofType() == Dimension.WallType.BARIER);
         spinnerMinecraftSeed.setValue(dimension.getMinecraftSeed());
         checkBoxBottomless.setSelected(dimension.isBottomless());
         checkBoxCoverSteepTerrain.setSelected(dimension.isCoverSteepTerrain());
+        ((SpinnerNumberModel) spinnerCeilingHeight.getModel()).setMinimum(minHeight + 1);
         ((SpinnerNumberModel) spinnerCeilingHeight.getModel()).setMaximum(maxHeight + 1);
         spinnerCeilingHeight.setValue(dimension.getCeilingHeight());
 
-        // Minecraft world border
-        World2 world = dimension.getWorld();
-        if (world != null) {
-            World2.BorderSettings borderSettings = world.getBorderSettings();
-            spinnerMcBorderCentreX.setValue(borderSettings.getCentreX());
-            spinnerMcBorderCentreY.setValue(borderSettings.getCentreY());
-            spinnerMcBorderSize.setValue(borderSettings.getSize());
-//            spinnerMcBorderBuffer.setValue(borderSettings.getSafeZone());
-//            spinnerMcBorderDamage.setValue(borderSettings.getDamagePerBlock());
-//            spinnerMcBorderWarningTime.setValue(borderSettings.getWarningTime());
-//            spinnerMcBorderWarningDistance.setValue(borderSettings.getWarningBlocks());
-        } else {
-            spinnerMcBorderCentreX.setEnabled(false);
-            spinnerMcBorderCentreY.setEnabled(false);
-            spinnerMcBorderSize.setEnabled(false);
-//            spinnerMcBorderBuffer.setEnabled(false);
-//            spinnerMcBorderDamage.setEnabled(false);
-//            spinnerMcBorderWarningTime.setEnabled(false);
-//            spinnerMcBorderWarningDistance.setEnabled(false);
-        }
-        
         List<Terrain> materialList = new ArrayList<>(Arrays.asList(Terrain.VALUES));
         for (Iterator<Terrain> i = materialList.iterator(); i.hasNext(); ) {
             Terrain terrain = i.next();
@@ -647,10 +758,12 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         checkBoxCavesBreakSurface.setSelected(cavesSettings.isSurfaceBreaking());
         ((SpinnerNumberModel) spinnerCavesMinLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerCavesMinLevel.getModel()).setMaximum(maxHeight);
-        spinnerCavesMinLevel.setValue(cavesSettings.getMinimumLevel());
+        spinnerCavesMinLevel.setValue((cavesSettings.getMinimumLevel() == Integer.MIN_VALUE) ? (minHeight + 8) : Math.max(cavesSettings.getMinimumLevel(), minHeight));
         ((SpinnerNumberModel) spinnerCavesMaxLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerCavesMaxLevel.getModel()).setMaximum(maxHeight);
         spinnerCavesMaxLevel.setValue(Math.min(cavesSettings.getMaximumLevel(), maxHeight));
+        CaveDecorationSettings decorationSettings = cavesSettings.getCaveDecorationSettings();
+        checkBoxDecorateCaves.setSelected(decorationSettings != null);
 
         // caverns
         CavernsSettings cavernsSettings = (CavernsSettings) dimension.getLayerSettings(Caverns.INSTANCE);
@@ -666,23 +779,30 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         }
         ((SpinnerNumberModel) spinnerCavernsFloodLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerCavernsFloodLevel.getModel()).setMaximum(maxHeight);
-        if (cavernsSettings.getWaterLevel() > 0) {
+        if (cavernsSettings.getWaterLevel() >= minHeight) {
             checkBoxFloodCaverns.setSelected(true);
             spinnerCavernsFloodLevel.setValue(cavernsSettings.getWaterLevel());
         } else {
             checkBoxFloodCaverns.setSelected(false);
-            spinnerCavernsFloodLevel.setValue(8);
+            spinnerCavernsFloodLevel.setValue(minHeight + 8);
         }
         checkBoxCavernsFloodWithLava.setSelected(cavernsSettings.isFloodWithLava());
         checkBoxCavernsBreakSurface.setSelected(cavernsSettings.isSurfaceBreaking());
         checkBoxCavernsRemoveWater.setSelected(! cavernsSettings.isLeaveWater());
         ((SpinnerNumberModel) spinnerCavernsMinLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerCavernsMinLevel.getModel()).setMaximum(maxHeight);
-        spinnerCavernsMinLevel.setValue(cavernsSettings.getMinimumLevel());
+        spinnerCavernsMinLevel.setValue(Math.max(cavernsSettings.getMinimumLevel(), minHeight));
         ((SpinnerNumberModel) spinnerCavernsMaxLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerCavernsMaxLevel.getModel()).setMaximum(maxHeight);
         spinnerCavernsMaxLevel.setValue(Math.min(cavernsSettings.getMaximumLevel(), maxHeight));
-        
+        CaveDecorationSettings cavernDecorationSettings = cavernsSettings.getCaveDecorationSettings();
+        if (checkBoxDecorateCaverns.isEnabled()) {
+            checkBoxDecorateCaverns.setSelected(cavernDecorationSettings != null);
+        }
+        if (decorationSettings == null) {
+            decorationSettings = cavernDecorationSettings;
+        }
+
         // chasms
         ChasmsSettings chasmsSettings = (ChasmsSettings) dimension.getLayerSettings(Chasms.INSTANCE);
         if (chasmsSettings == null) {
@@ -698,11 +818,27 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         checkBoxChasmsBreakSurface.setSelected(chasmsSettings.isSurfaceBreaking());
         ((SpinnerNumberModel) spinnerChasmsMinLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerChasmsMinLevel.getModel()).setMaximum(maxHeight);
-        spinnerChasmsMinLevel.setValue(chasmsSettings.getMinimumLevel());
+        spinnerChasmsMinLevel.setValue(Math.max(chasmsSettings.getMinimumLevel(), minHeight));
         ((SpinnerNumberModel) spinnerChasmsMaxLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerChasmsMaxLevel.getModel()).setMaximum(maxHeight);
         spinnerChasmsMaxLevel.setValue(Math.min(chasmsSettings.getMaximumLevel(), maxHeight));
-        
+        CaveDecorationSettings chasmDecorationSettings = chasmsSettings.getCaveDecorationSettings();
+        if (checkBoxDecorateChasms.isEnabled()) {
+            checkBoxDecorateChasms.setSelected(chasmDecorationSettings != null);
+        }
+        if (decorationSettings == null) {
+            decorationSettings = chasmDecorationSettings;
+        }
+
+        // cave decoration settings
+        if (decorationSettings == null) {
+            decorationSettings = new CaveDecorationSettings();
+        }
+        checkBoxDecorationBrownMushrooms.setSelected(decorationSettings.isEnabled(BROWN_MUSHROOM));
+        checkBoxDecorationGlowLichen.setSelected(decorationSettings.isEnabled(GLOW_LICHEN));
+        checkBoxDecorationLushCaves.setSelected(decorationSettings.isEnabled(LUSH_CAVE_PATCHES));
+        checkBoxDecorationDripstoneCaves.setSelected(decorationSettings.isEnabled(DRIPSTONE_CAVE_PATCHES));
+
         // populate
         checkBoxPopulate.setSelected(dimension.isPopulate());
         
@@ -771,7 +907,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             // resources
             ResourcesExporterSettings resourcesSettings = (ResourcesExporterSettings) dimension.getLayerSettings(Resources.INSTANCE);
             if (resourcesSettings == null) {
-                resourcesSettings = ResourcesExporterSettings.defaultSettings(platform, dimension.getDim(), dimension.getMaxHeight());
+                resourcesSettings = ResourcesExporterSettings.defaultSettings(platform, dimension.getAnchor(), dimension.getMinHeight(), dimension.getMaxHeight());
                 resourcesSettings.setMinimumLevel(0);
             }
             jCheckBox8.setSelected(resourcesSettings.isApplyEverywhere());
@@ -826,20 +962,20 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             ((SpinnerNumberModel) spinnerRedstoneMaxLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerRedstoneMaxLevel.getModel()).setMaximum(maxHeight);
             spinnerRedstoneMaxLevel.setValue(clamp(minHeight, resourcesSettings.getMaxLevel(REDSTONE_ORE), maxHeight));
-            spinnerWaterChance.setValue(resourcesSettings.getChance(WATER));
+            spinnerWaterChance.setValue(resourcesSettings.getChance(STATIONARY_WATER));
             ((SpinnerNumberModel) spinnerWaterMinLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerWaterMinLevel.getModel()).setMaximum(maxHeight);
-            spinnerWaterMinLevel.setValue(clamp(minHeight, resourcesSettings.getMinLevel(WATER), maxHeight));
+            spinnerWaterMinLevel.setValue(clamp(minHeight, resourcesSettings.getMinLevel(STATIONARY_WATER), maxHeight));
             ((SpinnerNumberModel) spinnerWaterMaxLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerWaterMaxLevel.getModel()).setMaximum(maxHeight);
-            spinnerWaterMaxLevel.setValue(clamp(minHeight, resourcesSettings.getMaxLevel(WATER), maxHeight));
-            spinnerLavaChance.setValue(resourcesSettings.getChance(LAVA));
+            spinnerWaterMaxLevel.setValue(clamp(minHeight, resourcesSettings.getMaxLevel(STATIONARY_WATER), maxHeight));
+            spinnerLavaChance.setValue(resourcesSettings.getChance(STATIONARY_LAVA));
             ((SpinnerNumberModel) spinnerLavaMinLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerLavaMinLevel.getModel()).setMaximum(maxHeight);
-            spinnerLavaMinLevel.setValue(clamp(minHeight, resourcesSettings.getMinLevel(LAVA), maxHeight));
+            spinnerLavaMinLevel.setValue(clamp(minHeight, resourcesSettings.getMinLevel(STATIONARY_LAVA), maxHeight));
             ((SpinnerNumberModel) spinnerLavaMaxLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerLavaMaxLevel.getModel()).setMaximum(maxHeight);
-            spinnerLavaMaxLevel.setValue(clamp(minHeight, resourcesSettings.getMaxLevel(LAVA), maxHeight));
+            spinnerLavaMaxLevel.setValue(clamp(minHeight, resourcesSettings.getMaxLevel(STATIONARY_LAVA), maxHeight));
             spinnerDirtChance.setValue(resourcesSettings.getChance(DIRT));
             ((SpinnerNumberModel) spinnerDirtMinLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerDirtMinLevel.getModel()).setMaximum(maxHeight);
@@ -885,16 +1021,13 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         }
         
         // terrain ranges
-        if (mode != Mode.EXPORT) {
-            if ((dimension.getTileFactory() instanceof HeightMapTileFactory)
-                    && (((HeightMapTileFactory) dimension.getTileFactory()).getTheme() instanceof SimpleTheme)
-                    && (((SimpleTheme) ((HeightMapTileFactory) dimension.getTileFactory()).getTheme()).getTerrainRanges() != null)) {
-                themeEditor.setTheme((SimpleTheme) ((HeightMapTileFactory) dimension.getTileFactory()).getTheme());
-            } else {
-                jTabbedPane1.setEnabledAt(1, false);
-            }
+        if ((mode != Mode.EXPORT)
+                && (dimension.getTileFactory() instanceof HeightMapTileFactory)
+                && (((HeightMapTileFactory) dimension.getTileFactory()).getTheme() instanceof SimpleTheme)
+                && (((SimpleTheme) ((HeightMapTileFactory) dimension.getTileFactory()).getTheme()).getTerrainRanges() != null)) {
+            themeEditor.setTheme((SimpleTheme) ((HeightMapTileFactory) dimension.getTileFactory()).getTheme());
         }
-        
+
         // annotations
         AnnotationsSettings annotationsSettings = (AnnotationsSettings) dimension.getLayerSettings(Annotations.INSTANCE);
         if (annotationsSettings == null) {
@@ -904,68 +1037,122 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         
         // custom layers
         if (mode == Mode.EXPORT) {
-            Set<CustomLayer> customLayers = App.getInstance().getCustomLayers();
-//            if (! customLayers.isEmpty()) {
+            final List<CustomLayer> customLayers = dimension.getCustomLayers(true);
+            // Don't show layers which cannot be exported, such as custom annotations:
+            customLayers.removeIf(layer -> layer.getExporterType() == null);
+            if (! customLayers.isEmpty()) {
                 customLayersTableModel = new CustomLayersTableModel(customLayers);
                 tableCustomLayers.setModel(customLayersTableModel);
-//            } else {
-//                jTabbedPane1.setEnabledAt(5, false);
-//            }
+                orderPristine = customLayers.stream().noneMatch(layer -> layer.getExportIndex() != null);
+            }
         }
-        
+
+        // world generation settings
+        endlessBorder = (dimension.getBorder() != null) && dimension.getBorder().isEndless();
+        final MapGenerator generator = dimension.getGenerator();
+        comboBoxGenerator.setSelectedItem(endlessBorder ? FLAT : ((generator != null) ? generator.getType() : null));
+        if (generator != null) {
+            savedGeneratorType = generator.getType();
+            generatorName = (generator instanceof CustomGenerator) ? ((CustomGenerator) generator).getName() : null;
+            customGeneratorSettings = (generator instanceof CustomGenerator) ? ((CustomGenerator) generator).getSettings() : null;
+            superflatPreset = (generator instanceof SuperflatGenerator) ? ((SuperflatGenerator) generator).getSettings() : null;
+        }
+
         setControlStates();
     }
     
-    private int clamp(int minValue, int value, int maxValue) {
-        if (value < minValue) {
-            return minValue;
-        } else if (value > maxValue) {
-            return maxValue;
-        } else {
-            return value;
-        }
-    }
-    
     private void setControlStates() {
-        boolean enabled = isEnabled();
-        boolean dim0 = (dimension != null) && (dimension.getDim() == Constants.DIM_NORMAL);
-        boolean ceiling = (dimension != null) && (dimension.getDim() < 0);
-        radioButtonLavaBorder.setEnabled(enabled && (! ceiling));
-        radioButtonNoBorder.setEnabled(enabled && (! ceiling));
-        radioButtonVoidBorder.setEnabled(enabled && (! ceiling));
-        radioButtonWaterBorder.setEnabled(enabled && (! ceiling));
-        spinnerBorderLevel.setEnabled(enabled && (! ceiling) && (radioButtonLavaBorder.isSelected() || radioButtonWaterBorder.isSelected()));
-        radioButtonFixedBorder.setEnabled(enabled && (! ceiling) && (! radioButtonNoBorder.isSelected()));
-        radioButtonEndlessBorder.setEnabled(enabled && dim0 && (! ceiling) && (! radioButtonNoBorder.isSelected()));
-        spinnerBorderSize.setEnabled(enabled && (! ceiling) && (! radioButtonNoBorder.isSelected()) && radioButtonFixedBorder.isSelected());
-        checkBoxBedrockWall.setEnabled(enabled && (! ceiling) && (radioButtonNoBorder.isSelected() || radioButtonFixedBorder.isSelected()));
-        sliderCavesEverywhereLevel.setEnabled(enabled && checkBoxCavesEverywhere.isSelected());
-        sliderCavernsEverywhereLevel.setEnabled(enabled && checkBoxCavernsEverywhere.isSelected());
-        sliderChasmsEverywhereLevel.setEnabled(enabled && checkBoxChasmsEverywhere.isSelected());
-        spinnerCavernsFloodLevel.setEnabled(enabled && checkBoxFloodCaverns.isSelected());
-        checkBoxCavernsFloodWithLava.setEnabled(enabled && checkBoxFloodCaverns.isSelected());
-        sliderDeciduousLevel.setEnabled(enabled && checkBoxDeciduousEverywhere.isSelected());
-        sliderPineLevel.setEnabled(enabled && checkBoxPineEverywhere.isSelected());
-        sliderJungleLevel.setEnabled(enabled && checkBoxJungleEverywhere.isSelected());
-        jSlider6.setEnabled(enabled && checkBoxSwamplandEverywhere.isSelected());
-        jSlider4.setEnabled(enabled && jCheckBox8.isSelected());
-        spinnerMinecraftSeed.setEnabled((mode != Mode.DEFAULT_SETTINGS) && enabled && dim0);
-        checkBoxPopulate.setEnabled(((platform == null) || platform.capabilities.contains(POPULATE)) && enabled && dim0);
-        checkBoxCavernsRemoveWater.setEnabled(enabled && (checkBoxCavesBreakSurface.isSelected() || checkBoxCavernsBreakSurface.isSelected() || checkBoxChasmsBreakSurface.isSelected()));
-        spinnerCeilingHeight.setEnabled(enabled && ceiling);
-        int selectedRow = tableCustomLayers.getSelectedRow();
-        buttonCustomLayerUp.setEnabled(enabled && (selectedRow != -1) && (! customLayersTableModel.isHeaderRow(selectedRow)) && (selectedRow > 0) && (! customLayersTableModel.isHeaderRow(selectedRow - 1)));
-        buttonCustomLayerDown.setEnabled(enabled && (selectedRow != -1) && (! customLayersTableModel.isHeaderRow(selectedRow)) && (selectedRow < (tableCustomLayers.getRowCount() - 1)) && (! customLayersTableModel.isHeaderRow(selectedRow + 1)));
+        final boolean enabled = isEnabled();
+        final Anchor anchor = (dimension != null) ? dimension.getAnchor() : null;
+        final boolean dim0 = (anchor != null) && (anchor.dim == Constants.DIM_NORMAL) && (anchor.role == DETAIL) && (! anchor.invert);
+        final boolean ceiling = (anchor != null) && anchor.invert;
+        final boolean caveFloor = (anchor != null) && (anchor.role == CAVE_FLOOR);
+        final boolean master = (anchor != null) && (anchor.role == MASTER);
+        final boolean decorations = checkBoxDecorateCaverns.isSelected() || checkBoxDecorateCaves.isSelected() || checkBoxDecorateChasms.isSelected();
+        setEnabled(radioButtonLavaBorder, enabled && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(radioButtonNoBorder, enabled && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(radioButtonVoidBorder, enabled && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(radioButtonWaterBorder, enabled && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(radioButtonBarrierBorder, enabled && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(spinnerBorderLevel, enabled && (! ceiling) && (! caveFloor) && (! master) && (radioButtonLavaBorder.isSelected() || radioButtonWaterBorder.isSelected()));
+        setEnabled(radioButtonFixedBorder, enabled && (! ceiling) && (! caveFloor) && (! master) && (! radioButtonNoBorder.isSelected()));
+        setEnabled(radioButtonEndlessBorder, enabled && (platform.capabilities.contains(GENERATOR_PER_DIMENSION) || dim0) && (! ceiling) && (! caveFloor) && (! master) && (! radioButtonNoBorder.isSelected()));
+        setEnabled(spinnerBorderSize, enabled && (! ceiling) && (! caveFloor) && (! master) && (! radioButtonNoBorder.isSelected()) && radioButtonFixedBorder.isSelected());
+        setEnabled(sliderCavesEverywhereLevel, enabled && checkBoxCavesEverywhere.isSelected());
+        setEnabled(sliderCavernsEverywhereLevel, enabled && checkBoxCavernsEverywhere.isSelected());
+        setEnabled(sliderChasmsEverywhereLevel, enabled && checkBoxChasmsEverywhere.isSelected());
+        setEnabled(spinnerCavernsFloodLevel, enabled && checkBoxFloodCaverns.isSelected());
+        setEnabled(checkBoxCavernsFloodWithLava, enabled && checkBoxFloodCaverns.isSelected());
+        setEnabled(sliderDeciduousLevel, enabled && checkBoxDeciduousEverywhere.isSelected());
+        setEnabled(sliderPineLevel, enabled && checkBoxPineEverywhere.isSelected());
+        setEnabled(sliderJungleLevel, enabled && checkBoxJungleEverywhere.isSelected());
+        setEnabled(jSlider6, enabled && checkBoxSwamplandEverywhere.isSelected());
+        setEnabled(jSlider4, enabled && jCheckBox8.isSelected());
+        setEnabled(spinnerMinecraftSeed, (mode != Mode.DEFAULT_SETTINGS) && enabled && dim0);
+        setEnabled(checkBoxPopulate, ((platform == null) || platform.capabilities.contains(POPULATE)) && enabled && dim0);
+        setEnabled(checkBoxCavernsRemoveWater, enabled && (checkBoxCavesBreakSurface.isSelected() || checkBoxCavernsBreakSurface.isSelected() || checkBoxChasmsBreakSurface.isSelected()));
+        setEnabled(spinnerCeilingHeight, enabled && ceiling);
+        final int[] selectedRows = tableCustomLayers.getSelectedRows();
+        boolean headerIncluded = false, disabledLayersFound = false, enabledLayersFound = false;
+        if (selectedRows.length > 0) {
+            for (int row = selectedRows[0]; row <= selectedRows[selectedRows.length - 1]; row++) {
+                if (customLayersTableModel.isHeaderRow(row)) {
+                    headerIncluded = true;
+                } else if ((boolean) customLayersTableModel.getValueAt(row, COLUMN_EXPORT)) {
+                    enabledLayersFound = true;
+                } else {
+                    disabledLayersFound = true;
+                }
+            }
+        }
+        setEnabled(buttonSelectPaint, enabled && (customLayersTableModel != null));
+        setEnabled(buttonCustomLayerUp, enabled && (selectedRows.length > 0) && (! headerIncluded) && (! customLayersTableModel.isHeaderRow(selectedRows[0])) && (selectedRows[0] > 0) && (! customLayersTableModel.isHeaderRow(selectedRows[0] - 1)));
+        setEnabled(buttonCustomLayerTop, buttonCustomLayerUp.isEnabled());
+        setEnabled(buttonCustomLayerDown, enabled && (selectedRows.length > 0) && (! headerIncluded) && (! customLayersTableModel.isHeaderRow(selectedRows[selectedRows.length - 1])) && (selectedRows[selectedRows.length - 1] < (tableCustomLayers.getRowCount() - 1)) && (! customLayersTableModel.isHeaderRow(selectedRows[selectedRows.length - 1] + 1)));
+        setEnabled(buttonCustomLayerBottom, buttonCustomLayerDown.isEnabled());
+        setEnabled(buttonDisableLayers, enabled && enabledLayersFound);
+        setEnabled(buttonEnableLayers, enabled && disabledLayersFound);
+        setEnabled(buttonReset, enabled && (! orderPristine));
         if (! enabled) {
-            comboBoxUndergroundLayerAnchor.setEnabled(false);
+            setEnabled(comboBoxUndergroundLayerAnchor, false);
         } else {
             Terrain subsurfaceTerrain = (Terrain) comboBoxSubsurfaceMaterial.getSelectedItem();
             if ((subsurfaceTerrain != null) && subsurfaceTerrain.isCustom()) {
                 MixedMaterial material = Terrain.getCustomMaterial(subsurfaceTerrain.getCustomTerrainIndex());
-                comboBoxUndergroundLayerAnchor.setEnabled(material.getMode() == MixedMaterial.Mode.LAYERED);
+                setEnabled(comboBoxUndergroundLayerAnchor, material.getMode() == MixedMaterial.Mode.LAYERED);
             } else {
-                comboBoxUndergroundLayerAnchor.setEnabled(false);
+                setEnabled(comboBoxUndergroundLayerAnchor, false);
             }
+        }
+        setEnabled(comboBoxGenerator, enabled && (! endlessBorder) && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(buttonGeneratorOptions, enabled
+                && (! endlessBorder) && (! ceiling) && (! caveFloor) && (! master)
+                && ((comboBoxGenerator.getSelectedItem() == Generator.FLAT)
+                    || ((comboBoxGenerator.getSelectedItem() == CUSTOM) && (customGeneratorSettings == null))));
+        setEnabled(checkBoxWall, enabled && (! endlessBorder) && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(radioButtonBedrockWall, enabled && (! endlessBorder) && checkBoxWall.isSelected());
+        setEnabled(radioButtonBarrierWall, enabled && (! endlessBorder) && checkBoxWall.isSelected());
+        setEnabled(checkBoxRoof, enabled && (! ceiling) && (! caveFloor) && (! master));
+        setEnabled(radioButtonBedrockRoof, enabled && checkBoxRoof.isSelected());
+        setEnabled(radioButtonBarrierRoof, enabled && checkBoxRoof.isSelected());
+        setEnabled(checkBoxDecorateCaverns, enabled);
+        setEnabled(checkBoxDecorateCaves, enabled);
+        setEnabled(checkBoxDecorateChasms, enabled);
+        setEnabled(checkBoxDecorationBrownMushrooms, enabled && decorations);
+        final boolean mcVersionAtLeast1_17 = platform.getAttribute(ATTRIBUTE_MC_VERSION).isAtLeast(V_1_17);
+        setEnabled(checkBoxDecorationGlowLichen, enabled && decorations && mcVersionAtLeast1_17);
+        setEnabled(checkBoxDecorationLushCaves, enabled && decorations && mcVersionAtLeast1_17);
+        setEnabled(checkBoxDecorationDripstoneCaves, enabled && decorations && mcVersionAtLeast1_17);
+        setEnabled(checkBoxCoverSteepTerrain, enabled && (! caveFloor) && (! master)); // TODO make it possible for this to be different for the master dimension
+        setEnabled(comboBoxSurfaceLayerAnchor, enabled);
+        setEnabled(comboBoxSubsurfaceMaterial, enabled && (! caveFloor) && (! master)); // TODO make it possible for this to be different for the master dimension
+        setEnabled(comboBoxUndergroundLayerAnchor, enabled && (! caveFloor) && (! master)); // TODO make it possible for this to be different for the master dimension
+        setEnabled(checkBoxBottomless, enabled && (! caveFloor) && (! master)); // TODO make it possible for this to be different for the master dimension
+    }
+    
+    private void setEnabled(Component component, boolean enabled) {
+        if (component.isEnabled() != enabled) {
+            component.setEnabled(enabled);
         }
     }
 
@@ -997,11 +1184,101 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         });
     }
 
-    private void notifyBorderListeners() {
-        Dimension.Border newBorder = getSelectedBorder();
-        for (BorderListener borderListener: borderListeners) {
-            borderListener.borderChanged(newBorder);
+    private void borderChanged() {
+        final boolean previousEndlessBorder = endlessBorder;
+        Dimension.Border border = getSelectedBorder();
+        endlessBorder = (border != null) && border.isEndless();
+        if (endlessBorder != previousEndlessBorder) {
+            programmaticChange = true;
+            try {
+                if (endlessBorder) {
+                    savedGeneratorType = (Generator) comboBoxGenerator.getSelectedItem();
+                    comboBoxGenerator.setSelectedItem(FLAT);
+                } else {
+                    comboBoxGenerator.setSelectedItem(savedGeneratorType);
+                }
+            } finally {
+                programmaticChange = false;
+            }
         }
+    }
+
+    private void updateGeneratorButtonTooltip() {
+        if (comboBoxGenerator.getSelectedItem() != null) {
+            switch ((Generator) comboBoxGenerator.getSelectedItem()) {
+                case FLAT:
+                    buttonGeneratorOptions.setToolTipText("Edit the Superflat mode preset");
+                    break;
+                case CUSTOM:
+                    buttonGeneratorOptions.setToolTipText("Set the custom world generator name");
+                    break;
+                default:
+                    buttonGeneratorOptions.setToolTipText(null);
+                    break;
+            }
+        } else {
+            buttonGeneratorOptions.setToolTipText(null);
+        }
+    }
+
+    private void disableSelectedLayers() {
+        for (int row: tableCustomLayers.getSelectedRows()) {
+            if (! customLayersTableModel.isHeaderRow(row)) {
+                customLayersTableModel.setExport(row, false);
+            }
+        }
+        setControlStates();
+    }
+
+    private void enableSelectedLayers() {
+        for (int row: tableCustomLayers.getSelectedRows()) {
+            if (! customLayersTableModel.isHeaderRow(row)) {
+                customLayersTableModel.setExport(row, true);
+            }
+        }
+        setControlStates();
+    }
+
+    private void selectPaintOnMap() {
+        Container parent = getParent();
+        while ((parent != null) && (! (parent instanceof WPDialogWithPaintSelection))) {
+            parent = parent.getParent();
+        }
+        if (parent != null) {
+            ((WPDialogWithPaintSelection) parent).selectFromMap(singleton(LAYER), new Eyedropper.SelectionListener() {
+                @Override
+                public void layerSelected(Layer layer, int value) {
+                    if (layer instanceof CustomLayer) {
+                        final int index = customLayersTableModel.getLayerIndex((CustomLayer) layer);
+                        if (index != -1) {
+                            tableCustomLayers.getSelectionModel().setSelectionInterval(index, index);
+                            tableCustomLayers.scrollRectToVisible(tableCustomLayers.getCellRect(index, 0, true));
+                        } else {
+                            beepAndShowError(DimensionPropertiesEditor.this, "Layer " + layer.getName() + " not in list", "Not In List");
+                        }
+                    } else {
+                        beepAndShowError(DimensionPropertiesEditor.this, "Layer " + layer.getName() + " is not a Custom Layer", "Not A Custom Layer");
+                    }
+                }
+
+                @Override public void terrainSelected(Terrain terrain) {}
+                @Override public void selectionCancelled(boolean byUser) {}
+            });
+        } else {
+            DesktopUtils.beep();
+        }
+    }
+
+    private void resetOrder() {
+        if (JOptionPane.showConfirmDialog(this, "Do you want to reset the order of all custom layers to the default?\nThis cannot be undone!", "Confirm Order Reset", YES_NO_OPTION) != YES_OPTION) {
+            return;
+        }
+        final List<CustomLayer> customLayers = dimension.getCustomLayers(true);
+        customLayers.forEach(layer -> layer.setExportIndex(null));
+        customLayersTableModel = new CustomLayersTableModel(customLayers);
+        tableCustomLayers.setModel(customLayersTableModel);
+        orderPristine = true;
+        setControlStates();
     }
 
     /**
@@ -1010,32 +1287,18 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
      * WARNING: Do NOT modify this code. The content of this method is
      * always regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
         java.awt.GridBagConstraints gridBagConstraints;
 
         buttonGroup1 = new javax.swing.ButtonGroup();
-        buttonGroup2 = new javax.swing.ButtonGroup();
         buttonGroup3 = new javax.swing.ButtonGroup();
+        buttonGroup5 = new javax.swing.ButtonGroup();
+        buttonGroup2 = new javax.swing.ButtonGroup();
         jTabbedPane1 = new javax.swing.JTabbedPane();
-        jPanel1 = new javax.swing.JPanel();
-        radioButtonWaterBorder = new javax.swing.JRadioButton();
-        radioButtonNoBorder = new javax.swing.JRadioButton();
-        radioButtonVoidBorder = new javax.swing.JRadioButton();
-        jLabel4 = new javax.swing.JLabel();
-        radioButtonLavaBorder = new javax.swing.JRadioButton();
-        jLabel5 = new javax.swing.JLabel();
-        spinnerBorderLevel = new javax.swing.JSpinner();
-        checkBoxBedrockWall = new javax.swing.JCheckBox();
+        panelGeneral = new javax.swing.JPanel();
         jLabel6 = new javax.swing.JLabel();
         comboBoxSubsurfaceMaterial = new javax.swing.JComboBox();
-        jLabel7 = new javax.swing.JLabel();
-        spinnerMinecraftSeed = new javax.swing.JSpinner();
-        jLabel8 = new javax.swing.JLabel();
-        spinnerBorderSize = new javax.swing.JSpinner();
-        jLabel9 = new javax.swing.JLabel();
-        jLabel44 = new javax.swing.JLabel();
         jLabel65 = new javax.swing.JLabel();
         spinnerMinSurfaceDepth = new javax.swing.JSpinner();
         jLabel66 = new javax.swing.JLabel();
@@ -1045,22 +1308,38 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         checkBoxCoverSteepTerrain = new javax.swing.JCheckBox();
         jLabel78 = new javax.swing.JLabel();
         spinnerCeilingHeight = new javax.swing.JSpinner();
-        jPanel6 = new javax.swing.JPanel();
-        jLabel79 = new javax.swing.JLabel();
-        spinnerMcBorderCentreX = new javax.swing.JSpinner();
-        jLabel80 = new javax.swing.JLabel();
-        spinnerMcBorderCentreY = new javax.swing.JSpinner();
-        jLabel81 = new javax.swing.JLabel();
-        spinnerMcBorderSize = new javax.swing.JSpinner();
-        jLabel85 = new javax.swing.JLabel();
-        jLabel86 = new javax.swing.JLabel();
-        jLabel90 = new javax.swing.JLabel();
-        radioButtonFixedBorder = new javax.swing.JRadioButton();
-        radioButtonEndlessBorder = new javax.swing.JRadioButton();
         comboBoxSurfaceLayerAnchor = new javax.swing.JComboBox<>();
         jLabel83 = new javax.swing.JLabel();
         jLabel84 = new javax.swing.JLabel();
         comboBoxUndergroundLayerAnchor = new javax.swing.JComboBox<>();
+        panelBorderWallRoof = new javax.swing.JPanel();
+        jLabel4 = new javax.swing.JLabel();
+        checkBoxWall = new javax.swing.JCheckBox();
+        spinnerBorderLevel = new javax.swing.JSpinner();
+        radioButtonWaterBorder = new javax.swing.JRadioButton();
+        radioButtonEndlessBorder = new javax.swing.JRadioButton();
+        jLabel8 = new javax.swing.JLabel();
+        spinnerBorderSize = new javax.swing.JSpinner();
+        radioButtonBedrockRoof = new javax.swing.JRadioButton();
+        radioButtonLavaBorder = new javax.swing.JRadioButton();
+        jLabel5 = new javax.swing.JLabel();
+        radioButtonNoBorder = new javax.swing.JRadioButton();
+        radioButtonBarrierRoof = new javax.swing.JRadioButton();
+        checkBoxRoof = new javax.swing.JCheckBox();
+        jLabel9 = new javax.swing.JLabel();
+        radioButtonFixedBorder = new javax.swing.JRadioButton();
+        radioButtonBedrockWall = new javax.swing.JRadioButton();
+        jLabel44 = new javax.swing.JLabel();
+        radioButtonVoidBorder = new javax.swing.JRadioButton();
+        radioButtonBarrierWall = new javax.swing.JRadioButton();
+        radioButtonBarrierBorder = new javax.swing.JRadioButton();
+        panelMinecraftSettings = new javax.swing.JPanel();
+        buttonGeneratorOptions = new javax.swing.JButton();
+        jLabel95 = new javax.swing.JLabel();
+        jLabel94 = new javax.swing.JLabel();
+        spinnerMinecraftSeed = new javax.swing.JSpinner();
+        jLabel7 = new javax.swing.JLabel();
+        comboBoxGenerator = new javax.swing.JComboBox<>();
         jPanel5 = new javax.swing.JPanel();
         themeEditor = new org.pepsoft.worldpainter.themes.impl.simple.SimpleThemeEditor();
         jLabel45 = new javax.swing.JLabel();
@@ -1077,7 +1356,6 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         sliderChasmsEverywhereLevel = new javax.swing.JSlider();
         jPanel16 = new javax.swing.JPanel();
         jLabel2 = new javax.swing.JLabel();
-        jSeparator1 = new javax.swing.JSeparator();
         jPanel13 = new javax.swing.JPanel();
         jLabel87 = new javax.swing.JLabel();
         spinnerCavesMinLevel = new javax.swing.JSpinner();
@@ -1106,6 +1384,20 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         checkBoxChasmsBreakSurface = new javax.swing.JCheckBox();
         checkBoxCavernsRemoveWater = new javax.swing.JCheckBox();
         jPanel15 = new javax.swing.JPanel();
+        jPanel23 = new javax.swing.JPanel();
+        jSeparator5 = new javax.swing.JSeparator();
+        jPanel24 = new javax.swing.JPanel();
+        jLabel96 = new javax.swing.JLabel();
+        checkBoxDecorationBrownMushrooms = new javax.swing.JCheckBox();
+        checkBoxDecorationGlowLichen = new javax.swing.JCheckBox();
+        checkBoxDecorationLushCaves = new javax.swing.JCheckBox();
+        checkBoxDecorationDripstoneCaves = new javax.swing.JCheckBox();
+        jPanel25 = new javax.swing.JPanel();
+        checkBoxDecorateCaves = new javax.swing.JCheckBox();
+        jPanel26 = new javax.swing.JPanel();
+        checkBoxDecorateCaverns = new javax.swing.JCheckBox();
+        jPanel27 = new javax.swing.JPanel();
+        checkBoxDecorateChasms = new javax.swing.JCheckBox();
         jPanel4 = new javax.swing.JPanel();
         jCheckBox8 = new javax.swing.JCheckBox();
         jSlider4 = new javax.swing.JSlider();
@@ -1244,47 +1536,12 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         tableCustomLayers = new javax.swing.JTable();
         buttonCustomLayerUp = new javax.swing.JButton();
         buttonCustomLayerDown = new javax.swing.JButton();
-
-        buttonGroup1.add(radioButtonWaterBorder);
-        radioButtonWaterBorder.setText("Water");
-        radioButtonWaterBorder.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonWaterBorderActionPerformed(evt);
-            }
-        });
-
-        buttonGroup1.add(radioButtonNoBorder);
-        radioButtonNoBorder.setText("No border");
-        radioButtonNoBorder.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonNoBorderActionPerformed(evt);
-            }
-        });
-
-        buttonGroup1.add(radioButtonVoidBorder);
-        radioButtonVoidBorder.setText("Void");
-        radioButtonVoidBorder.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonVoidBorderActionPerformed(evt);
-            }
-        });
-
-        jLabel4.setText("Border:");
-
-        buttonGroup1.add(radioButtonLavaBorder);
-        radioButtonLavaBorder.setText("Lava");
-        radioButtonLavaBorder.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonLavaBorderActionPerformed(evt);
-            }
-        });
-
-        jLabel5.setText("Water or lava level:");
-
-        spinnerBorderLevel.setModel(new javax.swing.SpinnerNumberModel(62, 0, 127, 1));
-        spinnerBorderLevel.setEnabled(false);
-
-        checkBoxBedrockWall.setText("Bedrock wall");
+        buttonCustomLayerTop = new javax.swing.JButton();
+        buttonCustomLayerBottom = new javax.swing.JButton();
+        buttonDisableLayers = new javax.swing.JButton();
+        buttonEnableLayers = new javax.swing.JButton();
+        buttonSelectPaint = new javax.swing.JButton();
+        buttonReset = new javax.swing.JButton();
 
         jLabel6.setText("Underground material:");
 
@@ -1293,26 +1550,6 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                 comboBoxSubsurfaceMaterialActionPerformed(evt);
             }
         });
-
-        jLabel7.setText("Minecraft seed:");
-
-        spinnerMinecraftSeed.setModel(new javax.swing.SpinnerNumberModel(-9223372036854775808L, null, null, 1L));
-        spinnerMinecraftSeed.setEditor(new javax.swing.JSpinner.NumberEditor(spinnerMinecraftSeed, "0"));
-
-        jLabel8.setLabelFor(spinnerBorderSize);
-        jLabel8.setText("Border size:");
-
-        spinnerBorderSize.setModel(new javax.swing.SpinnerNumberModel(256, 128, null, 128));
-        spinnerBorderSize.setEnabled(false);
-        spinnerBorderSize.addChangeListener(new javax.swing.event.ChangeListener() {
-            public void stateChanged(javax.swing.event.ChangeEvent evt) {
-                spinnerBorderSizeStateChanged(evt);
-            }
-        });
-
-        jLabel9.setText("blocks (in multiples of 128)");
-
-        jLabel44.setText("(Minecraft default: 62)");
 
         jLabel65.setText("Top layer minimum depth:");
 
@@ -1342,92 +1579,9 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         checkBoxCoverSteepTerrain.setText("keep steep terrain covered");
         checkBoxCoverSteepTerrain.setToolTipText("<html>Enable this to extend the top layer<br>\ndownwards on steep terrain such as cliffs <br>\nso that the underground material is never exposed.</html>");
 
-        jLabel78.setText("Ceiling height:");
+        jLabel78.setText("Ceiling dimension height:");
 
         spinnerCeilingHeight.setModel(new javax.swing.SpinnerNumberModel(256, 1, 256, 1));
-
-        jPanel6.setBorder(javax.swing.BorderFactory.createTitledBorder("Minecraft World Border"));
-
-        jLabel79.setText("Centre:");
-
-        spinnerMcBorderCentreX.setModel(new javax.swing.SpinnerNumberModel(0, -99999, 99999, 1));
-
-        jLabel80.setText(", ");
-
-        spinnerMcBorderCentreY.setModel(new javax.swing.SpinnerNumberModel(0, -99999, 99999, 1));
-
-        jLabel81.setText("Size:");
-
-        spinnerMcBorderSize.setModel(new javax.swing.SpinnerNumberModel(0, 0, 60000000, 1));
-
-        jLabel85.setText(" blocks");
-
-        jLabel86.setText(" blocks");
-
-        jLabel90.setText("(Applies to all dimensions)");
-
-        javax.swing.GroupLayout jPanel6Layout = new javax.swing.GroupLayout(jPanel6);
-        jPanel6.setLayout(jPanel6Layout);
-        jPanel6Layout.setHorizontalGroup(
-            jPanel6Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(jPanel6Layout.createSequentialGroup()
-                .addContainerGap()
-                .addGroup(jPanel6Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addGroup(jPanel6Layout.createSequentialGroup()
-                        .addComponent(jLabel79)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(spinnerMcBorderCentreX, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(0, 0, 0)
-                        .addComponent(jLabel80)
-                        .addGap(0, 0, 0)
-                        .addComponent(spinnerMcBorderCentreY, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(0, 0, 0)
-                        .addComponent(jLabel85))
-                    .addGroup(jPanel6Layout.createSequentialGroup()
-                        .addComponent(jLabel81)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(spinnerMcBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(0, 0, 0)
-                        .addComponent(jLabel86))
-                    .addComponent(jLabel90))
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
-        );
-        jPanel6Layout.setVerticalGroup(
-            jPanel6Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(jPanel6Layout.createSequentialGroup()
-                .addContainerGap()
-                .addComponent(jLabel90)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(jPanel6Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(jLabel79)
-                    .addComponent(spinnerMcBorderCentreX, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel80)
-                    .addComponent(spinnerMcBorderCentreY, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel85))
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(jPanel6Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(jLabel81)
-                    .addComponent(spinnerMcBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel86))
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
-        );
-
-        buttonGroup3.add(radioButtonFixedBorder);
-        radioButtonFixedBorder.setSelected(true);
-        radioButtonFixedBorder.setText("fixed:");
-        radioButtonFixedBorder.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonFixedBorderActionPerformed(evt);
-            }
-        });
-
-        buttonGroup3.add(radioButtonEndlessBorder);
-        radioButtonEndlessBorder.setText("endless");
-        radioButtonEndlessBorder.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonEndlessBorderActionPerformed(evt);
-            }
-        });
 
         comboBoxSurfaceLayerAnchor.setModel(new javax.swing.DefaultComboBoxModel<>(new String[] { "Bedrock", "Terrain" }));
 
@@ -1442,14 +1596,286 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             }
         });
 
-        javax.swing.GroupLayout jPanel1Layout = new javax.swing.GroupLayout(jPanel1);
-        jPanel1.setLayout(jPanel1Layout);
-        jPanel1Layout.setHorizontalGroup(
-            jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(jPanel1Layout.createSequentialGroup()
+        jLabel4.setText("Border:");
+
+        checkBoxWall.setText("Wall:");
+        checkBoxWall.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxWallActionPerformed(evt);
+            }
+        });
+
+        spinnerBorderLevel.setModel(new javax.swing.SpinnerNumberModel(62, 0, 127, 1));
+        spinnerBorderLevel.setEnabled(false);
+
+        buttonGroup1.add(radioButtonWaterBorder);
+        radioButtonWaterBorder.setText("Water");
+        radioButtonWaterBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonWaterBorderActionPerformed(evt);
+            }
+        });
+
+        buttonGroup3.add(radioButtonEndlessBorder);
+        radioButtonEndlessBorder.setText("endless");
+        radioButtonEndlessBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonEndlessBorderActionPerformed(evt);
+            }
+        });
+
+        jLabel8.setLabelFor(spinnerBorderSize);
+        jLabel8.setText("Border size:");
+
+        spinnerBorderSize.setModel(new javax.swing.SpinnerNumberModel(256, 128, null, 128));
+        spinnerBorderSize.setEnabled(false);
+        spinnerBorderSize.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                spinnerBorderSizeStateChanged(evt);
+            }
+        });
+
+        buttonGroup5.add(radioButtonBedrockRoof);
+        radioButtonBedrockRoof.setSelected(true);
+        radioButtonBedrockRoof.setText("bedrock");
+        radioButtonBedrockRoof.setEnabled(false);
+        radioButtonBedrockRoof.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonBedrockRoofActionPerformed(evt);
+            }
+        });
+
+        buttonGroup1.add(radioButtonLavaBorder);
+        radioButtonLavaBorder.setText("Lava");
+        radioButtonLavaBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonLavaBorderActionPerformed(evt);
+            }
+        });
+
+        jLabel5.setText("Water or lava level:");
+
+        buttonGroup1.add(radioButtonNoBorder);
+        radioButtonNoBorder.setText("No border");
+        radioButtonNoBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonNoBorderActionPerformed(evt);
+            }
+        });
+
+        buttonGroup5.add(radioButtonBarrierRoof);
+        radioButtonBarrierRoof.setText("barrier");
+        radioButtonBarrierRoof.setEnabled(false);
+        radioButtonBarrierRoof.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonBarrierRoofActionPerformed(evt);
+            }
+        });
+
+        checkBoxRoof.setText("Roof:");
+        checkBoxRoof.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxRoofActionPerformed(evt);
+            }
+        });
+
+        jLabel9.setText("blocks (in multiples of 128)");
+
+        buttonGroup3.add(radioButtonFixedBorder);
+        radioButtonFixedBorder.setSelected(true);
+        radioButtonFixedBorder.setText("fixed:");
+        radioButtonFixedBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonFixedBorderActionPerformed(evt);
+            }
+        });
+
+        buttonGroup2.add(radioButtonBedrockWall);
+        radioButtonBedrockWall.setSelected(true);
+        radioButtonBedrockWall.setText("bedrock");
+        radioButtonBedrockWall.setEnabled(false);
+        radioButtonBedrockWall.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonBedrockWallActionPerformed(evt);
+            }
+        });
+
+        jLabel44.setText("(Minecraft default: 62)");
+
+        buttonGroup1.add(radioButtonVoidBorder);
+        radioButtonVoidBorder.setText("Void");
+        radioButtonVoidBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonVoidBorderActionPerformed(evt);
+            }
+        });
+
+        buttonGroup2.add(radioButtonBarrierWall);
+        radioButtonBarrierWall.setText("barrier");
+        radioButtonBarrierWall.setEnabled(false);
+        radioButtonBarrierWall.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonBarrierWallActionPerformed(evt);
+            }
+        });
+
+        buttonGroup1.add(radioButtonBarrierBorder);
+        radioButtonBarrierBorder.setText("Barrier");
+        radioButtonBarrierBorder.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonBarrierBorderActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout panelBorderWallRoofLayout = new javax.swing.GroupLayout(panelBorderWallRoof);
+        panelBorderWallRoof.setLayout(panelBorderWallRoofLayout);
+        panelBorderWallRoofLayout.setHorizontalGroup(
+            panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                .addGap(0, 0, 0)
+                .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(jLabel4)
+                    .addComponent(radioButtonNoBorder)
+                    .addComponent(radioButtonVoidBorder)
+                    .addComponent(radioButtonLavaBorder)
+                    .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                        .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(radioButtonWaterBorder)
+                            .addComponent(jLabel8))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(radioButtonEndlessBorder)
+                            .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                                .addComponent(radioButtonFixedBorder)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                                        .addComponent(spinnerBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                        .addGap(0, 0, 0)
+                                        .addComponent(jLabel9))
+                                    .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                                        .addComponent(jLabel5)
+                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                        .addComponent(spinnerBorderLevel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                                    .addComponent(jLabel44)))))
+                    .addComponent(radioButtonBarrierBorder)
+                    .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                        .addComponent(checkBoxWall)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(radioButtonBedrockWall)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(radioButtonBarrierWall)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(checkBoxRoof)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(radioButtonBedrockRoof)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(radioButtonBarrierRoof)))
+                .addGap(0, 0, 0))
+        );
+        panelBorderWallRoofLayout.setVerticalGroup(
+            panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelBorderWallRoofLayout.createSequentialGroup()
+                .addGap(0, 0, 0)
+                .addComponent(jLabel4)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(radioButtonNoBorder)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(radioButtonVoidBorder)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(radioButtonWaterBorder)
+                    .addComponent(jLabel5)
+                    .addComponent(spinnerBorderLevel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(radioButtonLavaBorder)
+                    .addComponent(jLabel44))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(radioButtonBarrierBorder)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel8)
+                    .addComponent(spinnerBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel9)
+                    .addComponent(radioButtonFixedBorder))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(radioButtonEndlessBorder)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(panelBorderWallRoofLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(checkBoxWall)
+                    .addComponent(checkBoxRoof)
+                    .addComponent(radioButtonBedrockRoof)
+                    .addComponent(radioButtonBarrierRoof)
+                    .addComponent(radioButtonBarrierWall)
+                    .addComponent(radioButtonBedrockWall))
+                .addGap(0, 0, 0))
+        );
+
+        buttonGeneratorOptions.setText("...");
+        buttonGeneratorOptions.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonGeneratorOptionsActionPerformed(evt);
+            }
+        });
+
+        jLabel95.setText("seed:");
+
+        jLabel94.setText("world type:");
+
+        spinnerMinecraftSeed.setModel(new javax.swing.SpinnerNumberModel(-9223372036854775808L, null, null, 1L));
+        spinnerMinecraftSeed.setEditor(new javax.swing.JSpinner.NumberEditor(spinnerMinecraftSeed, "0"));
+
+        jLabel7.setText("Minecraft settings:");
+
+        comboBoxGenerator.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                comboBoxGeneratorActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout panelMinecraftSettingsLayout = new javax.swing.GroupLayout(panelMinecraftSettings);
+        panelMinecraftSettings.setLayout(panelMinecraftSettingsLayout);
+        panelMinecraftSettingsLayout.setHorizontalGroup(
+            panelMinecraftSettingsLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelMinecraftSettingsLayout.createSequentialGroup()
+                .addGap(0, 0, 0)
+                .addComponent(jLabel7)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(jLabel94)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(comboBoxGenerator, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(buttonGeneratorOptions)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(jLabel95)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(spinnerMinecraftSeed, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addGap(0, 0, 0))
+        );
+        panelMinecraftSettingsLayout.setVerticalGroup(
+            panelMinecraftSettingsLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelMinecraftSettingsLayout.createSequentialGroup()
+                .addGap(0, 0, 0)
+                .addGroup(panelMinecraftSettingsLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel7)
+                    .addComponent(spinnerMinecraftSeed, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(comboBoxGenerator, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel94)
+                    .addComponent(jLabel95)
+                    .addComponent(buttonGeneratorOptions))
+                .addGap(0, 0, 0))
+        );
+
+        javax.swing.GroupLayout panelGeneralLayout = new javax.swing.GroupLayout(panelGeneral);
+        panelGeneral.setLayout(panelGeneralLayout);
+        panelGeneralLayout.setHorizontalGroup(
+            panelGeneralLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelGeneralLayout.createSequentialGroup()
                 .addContainerGap()
-                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addGroup(jPanel1Layout.createSequentialGroup()
+                .addGroup(panelGeneralLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(panelBorderWallRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addGroup(panelGeneralLayout.createSequentialGroup()
                         .addComponent(jLabel65)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(spinnerMinSurfaceDepth, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -1463,7 +1889,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                         .addComponent(jLabel83)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(comboBoxSurfaceLayerAnchor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGroup(jPanel1Layout.createSequentialGroup()
+                    .addGroup(panelGeneralLayout.createSequentialGroup()
                         .addComponent(jLabel6)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(comboBoxSubsurfaceMaterial, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -1471,7 +1897,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                         .addComponent(jLabel84)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(comboBoxUndergroundLayerAnchor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGroup(jPanel1Layout.createSequentialGroup()
+                    .addGroup(panelGeneralLayout.createSequentialGroup()
                         .addComponent(checkBoxBottomless)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(jLabel67)
@@ -1479,46 +1905,14 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                         .addComponent(jLabel78)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(spinnerCeilingHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGroup(jPanel1Layout.createSequentialGroup()
-                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addComponent(jLabel7)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(spinnerMinecraftSeed, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addComponent(jLabel4)
-                            .addComponent(radioButtonNoBorder)
-                            .addComponent(radioButtonVoidBorder)
-                            .addComponent(radioButtonLavaBorder)
-                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                    .addComponent(radioButtonWaterBorder)
-                                    .addComponent(jLabel8))
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                    .addComponent(radioButtonEndlessBorder)
-                                    .addGroup(jPanel1Layout.createSequentialGroup()
-                                        .addComponent(radioButtonFixedBorder)
-                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                                .addComponent(spinnerBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                                .addGap(0, 0, 0)
-                                                .addComponent(jLabel9))
-                                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                                .addComponent(jLabel5)
-                                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                                .addComponent(spinnerBorderLevel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                                            .addComponent(jLabel44))))))
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(jPanel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addComponent(checkBoxBedrockWall))
+                    .addComponent(panelMinecraftSettings, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
         );
-        jPanel1Layout.setVerticalGroup(
-            jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(jPanel1Layout.createSequentialGroup()
+        panelGeneralLayout.setVerticalGroup(
+            panelGeneralLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelGeneralLayout.createSequentialGroup()
                 .addContainerGap()
-                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                .addGroup(panelGeneralLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel65)
                     .addComponent(spinnerMinSurfaceDepth, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel66)
@@ -1527,53 +1921,25 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                     .addComponent(comboBoxSurfaceLayerAnchor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel83))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                .addGroup(panelGeneralLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel6)
                     .addComponent(comboBoxSubsurfaceMaterial, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel84)
                     .addComponent(comboBoxUndergroundLayerAnchor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                .addGroup(panelGeneralLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(checkBoxBottomless)
                     .addComponent(jLabel67, javax.swing.GroupLayout.PREFERRED_SIZE, 24, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel78)
                     .addComponent(spinnerCeilingHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addGap(19, 19, 19)
-                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addGroup(jPanel1Layout.createSequentialGroup()
-                        .addComponent(jLabel4)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(radioButtonNoBorder)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(radioButtonVoidBorder)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(radioButtonWaterBorder)
-                            .addComponent(jLabel5)
-                            .addComponent(spinnerBorderLevel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(radioButtonLavaBorder)
-                            .addComponent(jLabel44))
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(jLabel8)
-                            .addComponent(spinnerBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(jLabel9)
-                            .addComponent(radioButtonFixedBorder)))
-                    .addComponent(jPanel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(radioButtonEndlessBorder)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(checkBoxBedrockWall)
+                .addComponent(panelBorderWallRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addGap(18, 18, 18)
-                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(jLabel7)
-                    .addComponent(spinnerMinecraftSeed, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                .addComponent(panelMinecraftSettings, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addContainerGap(67, Short.MAX_VALUE))
         );
 
-        jTabbedPane1.addTab("General", jPanel1);
+        jTabbedPane1.addTab("General", panelGeneral);
 
         jLabel45.setText("These are the default terrain types and layers used by the Mountain tool, and when resetting the");
 
@@ -1606,10 +1972,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
 
         jTabbedPane1.addTab("Theme", jPanel5);
 
-        java.awt.GridBagLayout jPanel3Layout = new java.awt.GridBagLayout();
-        jPanel3Layout.columnWidths = new int[] {0, 2, 0, 2, 0};
-        jPanel3Layout.rowHeights = new int[] {0, 2, 0, 2, 0, 2, 0};
-        jPanel3.setLayout(jPanel3Layout);
+        jPanel3.setLayout(new java.awt.GridBagLayout());
 
         checkBoxCavesEverywhere.setText("Caves everywhere");
         checkBoxCavesEverywhere.addActionListener(new java.awt.event.ActionListener() {
@@ -1692,7 +2055,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 2;
+        gridBagConstraints.gridx = 1;
         gridBagConstraints.gridy = 0;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
         jPanel3.add(jPanel10, gridBagConstraints);
@@ -1735,7 +2098,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 4;
+        gridBagConstraints.gridx = 2;
         gridBagConstraints.gridy = 0;
         gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
@@ -1749,21 +2112,15 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
             jPanel16Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(jPanel16Layout.createSequentialGroup()
                 .addContainerGap()
-                .addGroup(jPanel16Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(jSeparator1)
-                    .addGroup(jPanel16Layout.createSequentialGroup()
-                        .addComponent(jLabel2)
-                        .addGap(0, 0, Short.MAX_VALUE)))
-                .addContainerGap())
+                .addComponent(jLabel2)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
         );
         jPanel16Layout.setVerticalGroup(
             jPanel16Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(jPanel16Layout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(jSeparator1, javax.swing.GroupLayout.PREFERRED_SIZE, 10, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jLabel2)
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                .addContainerGap())
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
@@ -1859,7 +2216,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 2;
+        gridBagConstraints.gridx = 1;
         gridBagConstraints.gridy = 2;
         gridBagConstraints.fill = java.awt.GridBagConstraints.BOTH;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.NORTHWEST;
@@ -1906,7 +2263,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 4;
+        gridBagConstraints.gridx = 2;
         gridBagConstraints.gridy = 2;
         gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
         gridBagConstraints.fill = java.awt.GridBagConstraints.BOTH;
@@ -1961,8 +2318,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
 
         gridBagConstraints = new java.awt.GridBagConstraints();
         gridBagConstraints.gridx = 0;
-        gridBagConstraints.gridy = 3;
-        gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
+        gridBagConstraints.gridy = 7;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
         jPanel3.add(jPanel8, gridBagConstraints);
 
@@ -1992,7 +2348,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
 
         gridBagConstraints = new java.awt.GridBagConstraints();
         gridBagConstraints.gridx = 0;
-        gridBagConstraints.gridy = 4;
+        gridBagConstraints.gridy = 3;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
         jPanel3.add(jPanel17, gridBagConstraints);
 
@@ -2021,8 +2377,8 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 2;
-        gridBagConstraints.gridy = 4;
+        gridBagConstraints.gridx = 1;
+        gridBagConstraints.gridy = 3;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
         jPanel3.add(jPanel18, gridBagConstraints);
 
@@ -2051,8 +2407,9 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         );
 
         gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 4;
-        gridBagConstraints.gridy = 4;
+        gridBagConstraints.gridx = 2;
+        gridBagConstraints.gridy = 3;
+        gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
         jPanel3.add(jPanel19, gridBagConstraints);
 
@@ -2061,7 +2418,7 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         checkBoxCavernsRemoveWater.setEnabled(false);
         gridBagConstraints = new java.awt.GridBagConstraints();
         gridBagConstraints.gridx = 0;
-        gridBagConstraints.gridy = 5;
+        gridBagConstraints.gridy = 4;
         gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
         gridBagConstraints.anchor = java.awt.GridBagConstraints.NORTHWEST;
         gridBagConstraints.insets = new java.awt.Insets(0, 19, 0, 0);
@@ -2080,11 +2437,173 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
 
         gridBagConstraints = new java.awt.GridBagConstraints();
         gridBagConstraints.gridx = 0;
-        gridBagConstraints.gridy = 6;
+        gridBagConstraints.gridy = 8;
         gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
         gridBagConstraints.weightx = 1.0;
         gridBagConstraints.weighty = 1.0;
         jPanel3.add(jPanel15, gridBagConstraints);
+
+        javax.swing.GroupLayout jPanel23Layout = new javax.swing.GroupLayout(jPanel23);
+        jPanel23.setLayout(jPanel23Layout);
+        jPanel23Layout.setHorizontalGroup(
+            jPanel23Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel23Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(jSeparator5, javax.swing.GroupLayout.DEFAULT_SIZE, 789, Short.MAX_VALUE)
+                .addContainerGap())
+        );
+        jPanel23Layout.setVerticalGroup(
+            jPanel23Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel23Layout.createSequentialGroup()
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                .addComponent(jSeparator5, javax.swing.GroupLayout.PREFERRED_SIZE, 10, javax.swing.GroupLayout.PREFERRED_SIZE))
+        );
+
+        gridBagConstraints = new java.awt.GridBagConstraints();
+        gridBagConstraints.gridx = 0;
+        gridBagConstraints.gridy = 6;
+        gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
+        gridBagConstraints.fill = java.awt.GridBagConstraints.BOTH;
+        jPanel3.add(jPanel23, gridBagConstraints);
+
+        jLabel96.setText("Decorations:");
+
+        checkBoxDecorationBrownMushrooms.setText("brown mushrooms");
+
+        checkBoxDecorationGlowLichen.setText("glow lichen");
+
+        checkBoxDecorationLushCaves.setText("patches of lush cave");
+
+        checkBoxDecorationDripstoneCaves.setText("patches of dripstone cave");
+
+        javax.swing.GroupLayout jPanel24Layout = new javax.swing.GroupLayout(jPanel24);
+        jPanel24.setLayout(jPanel24Layout);
+        jPanel24Layout.setHorizontalGroup(
+            jPanel24Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel24Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(jLabel96)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel24Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(checkBoxDecorationDripstoneCaves)
+                    .addComponent(checkBoxDecorationLushCaves)
+                    .addComponent(checkBoxDecorationGlowLichen)
+                    .addComponent(checkBoxDecorationBrownMushrooms))
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+        jPanel24Layout.setVerticalGroup(
+            jPanel24Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel24Layout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(jPanel24Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel96)
+                    .addComponent(checkBoxDecorationBrownMushrooms))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(checkBoxDecorationGlowLichen)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(checkBoxDecorationLushCaves)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(checkBoxDecorationDripstoneCaves)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        gridBagConstraints = new java.awt.GridBagConstraints();
+        gridBagConstraints.gridx = 1;
+        gridBagConstraints.gridy = 7;
+        gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
+        gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
+        jPanel3.add(jPanel24, gridBagConstraints);
+
+        checkBoxDecorateCaves.setText("Decorate");
+        checkBoxDecorateCaves.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxDecorateCavesActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout jPanel25Layout = new javax.swing.GroupLayout(jPanel25);
+        jPanel25.setLayout(jPanel25Layout);
+        jPanel25Layout.setHorizontalGroup(
+            jPanel25Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel25Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(checkBoxDecorateCaves)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+        jPanel25Layout.setVerticalGroup(
+            jPanel25Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel25Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(checkBoxDecorateCaves)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        gridBagConstraints = new java.awt.GridBagConstraints();
+        gridBagConstraints.gridx = 0;
+        gridBagConstraints.gridy = 5;
+        gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
+        jPanel3.add(jPanel25, gridBagConstraints);
+
+        checkBoxDecorateCaverns.setText("Decorate");
+        checkBoxDecorateCaverns.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxDecorateCavernsActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout jPanel26Layout = new javax.swing.GroupLayout(jPanel26);
+        jPanel26.setLayout(jPanel26Layout);
+        jPanel26Layout.setHorizontalGroup(
+            jPanel26Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel26Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(checkBoxDecorateCaverns)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+        jPanel26Layout.setVerticalGroup(
+            jPanel26Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel26Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(checkBoxDecorateCaverns)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        gridBagConstraints = new java.awt.GridBagConstraints();
+        gridBagConstraints.gridx = 1;
+        gridBagConstraints.gridy = 5;
+        gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
+        jPanel3.add(jPanel26, gridBagConstraints);
+
+        checkBoxDecorateChasms.setText("Decorate");
+        checkBoxDecorateChasms.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxDecorateChasmsActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout jPanel27Layout = new javax.swing.GroupLayout(jPanel27);
+        jPanel27.setLayout(jPanel27Layout);
+        jPanel27Layout.setHorizontalGroup(
+            jPanel27Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel27Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(checkBoxDecorateChasms)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+        jPanel27Layout.setVerticalGroup(
+            jPanel27Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel27Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(checkBoxDecorateChasms)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        gridBagConstraints = new java.awt.GridBagConstraints();
+        gridBagConstraints.gridx = 2;
+        gridBagConstraints.gridy = 5;
+        gridBagConstraints.gridwidth = java.awt.GridBagConstraints.REMAINDER;
+        gridBagConstraints.anchor = java.awt.GridBagConstraints.FIRST_LINE_START;
+        jPanel3.add(jPanel27, gridBagConstraints);
 
         jTabbedPane1.addTab("Caves, Caverns and Chasms", new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/caverns.png")), jPanel3); // NOI18N
 
@@ -3176,22 +3695,81 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
 
         jTabbedPane1.addTab("Other Layers", jPanel2);
 
-        jLabel82.setText("<html>On this page you can configure the export order of your custom layers,<br>as well as prevent certain layers from being exported.</html>");
+        jLabel82.setText("<html>On this page you can configure the export order of your custom layers, as well as prevent certain layers from being exported.<br>\nHigher layers in the list are exported <em>before</em> lower layers. Layers cannot be moved between first or second pass.<br>\n<strong>Note:</strong> once you customise the order on this screen, new layers will be added to the end of the list.</html>");
 
-        tableCustomLayers.setSelectionMode(javax.swing.ListSelectionModel.SINGLE_SELECTION);
+        tableCustomLayers.setSelectionMode(javax.swing.ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         jScrollPane1.setViewportView(tableCustomLayers);
 
+        buttonCustomLayerUp.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/up.png"))); // NOI18N
         buttonCustomLayerUp.setText("Up");
+        buttonCustomLayerUp.setToolTipText("Move the selected layer(s) up");
+        buttonCustomLayerUp.setHorizontalAlignment(javax.swing.SwingConstants.LEADING);
         buttonCustomLayerUp.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonCustomLayerUpActionPerformed(evt);
             }
         });
 
+        buttonCustomLayerDown.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/down.png"))); // NOI18N
         buttonCustomLayerDown.setText("Down");
+        buttonCustomLayerDown.setToolTipText("Move the selected layer(s) down");
+        buttonCustomLayerDown.setHorizontalAlignment(javax.swing.SwingConstants.LEADING);
         buttonCustomLayerDown.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonCustomLayerDownActionPerformed(evt);
+            }
+        });
+
+        buttonCustomLayerTop.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/top.png"))); // NOI18N
+        buttonCustomLayerTop.setText("To Top");
+        buttonCustomLayerTop.setToolTipText("Move the selected layer(s) to the start of their pass");
+        buttonCustomLayerTop.setHorizontalAlignment(javax.swing.SwingConstants.LEADING);
+        buttonCustomLayerTop.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonCustomLayerTopActionPerformed(evt);
+            }
+        });
+
+        buttonCustomLayerBottom.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/bottom.png"))); // NOI18N
+        buttonCustomLayerBottom.setText("To Bottom");
+        buttonCustomLayerBottom.setToolTipText("Move the selected layer(s) to the end of their pass");
+        buttonCustomLayerBottom.setHorizontalAlignment(javax.swing.SwingConstants.LEADING);
+        buttonCustomLayerBottom.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonCustomLayerBottomActionPerformed(evt);
+            }
+        });
+
+        buttonDisableLayers.setText("Disable");
+        buttonDisableLayers.setToolTipText("Disable the selected layer(s)");
+        buttonDisableLayers.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonDisableLayersActionPerformed(evt);
+            }
+        });
+
+        buttonEnableLayers.setText("Enable");
+        buttonEnableLayers.setToolTipText("Enable the selected layer(s)");
+        buttonEnableLayers.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonEnableLayersActionPerformed(evt);
+            }
+        });
+
+        buttonSelectPaint.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/eyedropper.png"))); // NOI18N
+        buttonSelectPaint.setText("Select");
+        buttonSelectPaint.setHorizontalAlignment(javax.swing.SwingConstants.LEADING);
+        buttonSelectPaint.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonSelectPaintActionPerformed(evt);
+            }
+        });
+
+        buttonReset.setText("Reset Order");
+        buttonReset.setToolTipText("Enable the selected layer(s)");
+        buttonReset.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonResetActionPerformed(evt);
             }
         });
 
@@ -3209,8 +3787,14 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                         .addComponent(jScrollPane1)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel7Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
+                            .addComponent(buttonCustomLayerBottom, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                             .addComponent(buttonCustomLayerDown, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
-                            .addComponent(buttonCustomLayerUp, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))))
+                            .addComponent(buttonCustomLayerUp, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonDisableLayers, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonEnableLayers, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonCustomLayerTop, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonSelectPaint, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonReset, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))))
                 .addContainerGap())
         );
         jPanel7Layout.setVerticalGroup(
@@ -3220,11 +3804,23 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
                 .addComponent(jLabel82, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(jPanel7Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 316, Short.MAX_VALUE)
+                    .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 371, Short.MAX_VALUE)
                     .addGroup(jPanel7Layout.createSequentialGroup()
+                        .addComponent(buttonSelectPaint)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonCustomLayerTop)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(buttonCustomLayerUp)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(buttonCustomLayerDown)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonCustomLayerBottom)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonDisableLayers)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonEnableLayers)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonReset)
                         .addGap(0, 0, Short.MAX_VALUE)))
                 .addContainerGap())
         );
@@ -3246,37 +3842,37 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     }// </editor-fold>//GEN-END:initComponents
 
     private void radioButtonWaterBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonWaterBorderActionPerformed
+        borderChanged();
         setControlStates();
         if ((Integer) spinnerBorderLevel.getValue() == (dimension.getMaxHeight() - 1)) {
             spinnerBorderLevel.setValue(dimension.getBorderLevel());
         }
-        notifyBorderListeners();
     }//GEN-LAST:event_radioButtonWaterBorderActionPerformed
 
     private void radioButtonNoBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonNoBorderActionPerformed
+        borderChanged();
         setControlStates();
-        notifyBorderListeners();
     }//GEN-LAST:event_radioButtonNoBorderActionPerformed
 
     private void checkBoxPopulateActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxPopulateActionPerformed
-        if (checkBoxPopulate.isSelected() && jCheckBox8.isSelected()) {
+        if (checkBoxPopulate.isSelected() && jCheckBox8.isSelected() && (! endlessBorder)) {
             jCheckBox8.setSelected(false);
             setControlStates();
-            JOptionPane.showMessageDialog(this, "\"Resources everywhere\" disabled on the Resources tab,\nto avoid duplicate resources. You may enable it again manually.", "Resources Everywhere Disabled", JOptionPane.INFORMATION_MESSAGE);
+            showInfo(this, "\"Resources everywhere\" disabled on the Resources tab,\nto avoid duplicate resources. You may enable it again manually.", "Resources Everywhere Disabled");
         }
     }//GEN-LAST:event_checkBoxPopulateActionPerformed
 
     private void radioButtonVoidBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonVoidBorderActionPerformed
+        borderChanged();
         setControlStates();
-        notifyBorderListeners();
     }//GEN-LAST:event_radioButtonVoidBorderActionPerformed
 
     private void radioButtonLavaBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonLavaBorderActionPerformed
+        borderChanged();
         setControlStates();
         if ((Integer) spinnerBorderLevel.getValue() == (dimension.getMaxHeight() - 1)) {
             spinnerBorderLevel.setValue(dimension.getBorderLevel());
         }
-        notifyBorderListeners();
     }//GEN-LAST:event_radioButtonLavaBorderActionPerformed
 
     private void comboBoxSubsurfaceMaterialActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxSubsurfaceMaterialActionPerformed
@@ -3344,29 +3940,59 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     }//GEN-LAST:event_checkBoxExportAnnotationsActionPerformed
 
     private void buttonCustomLayerUpActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCustomLayerUpActionPerformed
-        int rowIndex = tableCustomLayers.getSelectedRow();
-        customLayersTableModel.swap(rowIndex - 1, rowIndex);
-        tableCustomLayers.getSelectionModel().setSelectionInterval(rowIndex - 1, rowIndex - 1);
-        tableCustomLayers.scrollRectToVisible(tableCustomLayers.getCellRect(rowIndex - 1, 0, true));
-        setControlStates();
+        moveSelectedRowsUp(1);
     }//GEN-LAST:event_buttonCustomLayerUpActionPerformed
 
-    private void buttonCustomLayerDownActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCustomLayerDownActionPerformed
-        int rowIndex = tableCustomLayers.getSelectedRow();
-        customLayersTableModel.swap(rowIndex, rowIndex + 1);
-        tableCustomLayers.getSelectionModel().setSelectionInterval(rowIndex + 1, rowIndex + 1);
-        tableCustomLayers.scrollRectToVisible(tableCustomLayers.getCellRect(rowIndex + 1, 0, true));
+    private void moveSelectedRowsUp(int noOfRows) {
+        programmaticChange = true;
+        try {
+            for (int i = 0; i < noOfRows; i++) {
+                int[] rowIndices = tableCustomLayers.getSelectedRows();
+                tableCustomLayers.clearSelection();
+                for (int rowIndex: rowIndices) {
+                    customLayersTableModel.swap(rowIndex - 1, rowIndex);
+                    tableCustomLayers.getSelectionModel().addSelectionInterval(rowIndex - 1, rowIndex - 1);
+                }
+            }
+        } finally {
+            programmaticChange = false;
+        }
+        tableCustomLayers.scrollRectToVisible(tableCustomLayers.getCellRect(tableCustomLayers.getSelectedRows()[0], 0, true));
+        orderPristine = false;
         setControlStates();
+    }
+
+    private void buttonCustomLayerDownActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCustomLayerDownActionPerformed
+        moveSelectedRowsDown(1);
     }//GEN-LAST:event_buttonCustomLayerDownActionPerformed
 
-    private void radioButtonFixedBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonFixedBorderActionPerformed
+    private void moveSelectedRowsDown(int noOfRows) {
+        programmaticChange = true;
+        try {
+            for (int i = 0; i < noOfRows; i++) {
+                int[] rowIndices = tableCustomLayers.getSelectedRows();
+                tableCustomLayers.clearSelection();
+                for (int j = rowIndices.length - 1; j >= 0; j--) {
+                    customLayersTableModel.swap(rowIndices[j] + 1, rowIndices[j]);
+                    tableCustomLayers.getSelectionModel().addSelectionInterval(rowIndices[j] + 1, rowIndices[j] + 1);
+                }
+            }
+        } finally {
+            programmaticChange = false;
+        }
+        tableCustomLayers.scrollRectToVisible(tableCustomLayers.getCellRect(tableCustomLayers.getSelectedRows()[tableCustomLayers.getSelectedRowCount() - 1], 0, true));
+        orderPristine = false;
         setControlStates();
-        notifyBorderListeners();
+    }
+
+    private void radioButtonFixedBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonFixedBorderActionPerformed
+        borderChanged();
+        setControlStates();
     }//GEN-LAST:event_radioButtonFixedBorderActionPerformed
 
     private void radioButtonEndlessBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonEndlessBorderActionPerformed
+        borderChanged();
         setControlStates();
-        notifyBorderListeners();
     }//GEN-LAST:event_radioButtonEndlessBorderActionPerformed
 
     private void comboBoxUndergroundLayerAnchorActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxUndergroundLayerAnchorActionPerformed
@@ -3404,13 +4030,141 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
         setControlStates();
     }//GEN-LAST:event_checkBoxCavesBreakSurfaceActionPerformed
 
+    private void buttonGeneratorOptionsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonGeneratorOptionsActionPerformed
+        if (comboBoxGenerator.getSelectedItem() == CUSTOM) {
+            String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the custom world generator name:", generatorName);
+            if (editedGeneratorOptions != null) {
+                generatorName = editedGeneratorOptions;
+            }
+        } else {
+            if (generatorName != null) {
+                String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the Superflat mode preset:", generatorName);
+                if (editedGeneratorOptions != null) {
+                    generatorName = editedGeneratorOptions;
+                }
+            } else {
+                SuperflatPreset mySuperflatPreset = (superflatPreset != null)
+                        ? superflatPreset
+                        : SuperflatPreset.defaultPreset(platform);
+                EditSuperflatPresetDialog dialog = new EditSuperflatPresetDialog(SwingUtilities.windowForComponent(this), platform, mySuperflatPreset);
+                dialog.setVisible(true);
+                if (! dialog.isCancelled()) {
+                    superflatPreset = mySuperflatPreset;
+                }
+            }
+        }
+    }//GEN-LAST:event_buttonGeneratorOptionsActionPerformed
+
+    private void comboBoxGeneratorActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxGeneratorActionPerformed
+        updateGeneratorButtonTooltip();
+        setControlStates();
+    }//GEN-LAST:event_comboBoxGeneratorActionPerformed
+
+    private void buttonCustomLayerTopActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCustomLayerTopActionPerformed
+        int[] selectedRows = tableCustomLayers.getSelectedRows();
+        int topSelectedRow = selectedRows[0];
+        int headerRow = -1;
+        for (int row = topSelectedRow - 1; row >= 0; row--) {
+            if (customLayersTableModel.isHeaderRow(row)) {
+                headerRow = row;
+                break;
+            }
+        }
+        if (headerRow == -1) {
+            throw new IllegalStateException("No header row found above selected rows");
+        }
+        moveSelectedRowsUp(topSelectedRow - headerRow - 1);
+    }//GEN-LAST:event_buttonCustomLayerTopActionPerformed
+
+    private void buttonCustomLayerBottomActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCustomLayerBottomActionPerformed
+        final int[] selectedRows = tableCustomLayers.getSelectedRows();
+        final int bottomSelectedRow = selectedRows[selectedRows.length - 1];
+        final int rowCount = tableCustomLayers.getRowCount();
+        int headerRow = -1;
+        for (int row = bottomSelectedRow + 1; row < rowCount; row++) {
+            if (customLayersTableModel.isHeaderRow(row)) {
+                headerRow = row;
+                break;
+            }
+        }
+        if (headerRow == -1) {
+            // "Virtual" header at the end of the table
+            headerRow = rowCount;
+        }
+        moveSelectedRowsDown(headerRow - bottomSelectedRow - 1);
+    }//GEN-LAST:event_buttonCustomLayerBottomActionPerformed
+
+    private void checkBoxRoofActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxRoofActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_checkBoxRoofActionPerformed
+
+    private void checkBoxWallActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxWallActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_checkBoxWallActionPerformed
+
+    private void radioButtonBedrockRoofActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonBedrockRoofActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_radioButtonBedrockRoofActionPerformed
+
+    private void radioButtonBarrierRoofActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonBarrierRoofActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_radioButtonBarrierRoofActionPerformed
+
+    private void radioButtonBarrierBorderActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonBarrierBorderActionPerformed
+        borderChanged();
+        setControlStates();
+    }//GEN-LAST:event_radioButtonBarrierBorderActionPerformed
+
+    private void radioButtonBedrockWallActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonBedrockWallActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_radioButtonBedrockWallActionPerformed
+
+    private void radioButtonBarrierWallActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonBarrierWallActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_radioButtonBarrierWallActionPerformed
+
+    private void checkBoxDecorateCavesActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxDecorateCavesActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_checkBoxDecorateCavesActionPerformed
+
+    private void checkBoxDecorateCavernsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxDecorateCavernsActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_checkBoxDecorateCavernsActionPerformed
+
+    private void checkBoxDecorateChasmsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxDecorateChasmsActionPerformed
+        setControlStates();
+    }//GEN-LAST:event_checkBoxDecorateChasmsActionPerformed
+
+    private void buttonDisableLayersActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonDisableLayersActionPerformed
+        disableSelectedLayers();
+    }//GEN-LAST:event_buttonDisableLayersActionPerformed
+
+    private void buttonEnableLayersActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonEnableLayersActionPerformed
+        enableSelectedLayers();
+    }//GEN-LAST:event_buttonEnableLayersActionPerformed
+
+    private void buttonSelectPaintActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonSelectPaintActionPerformed
+        selectPaintOnMap();
+    }//GEN-LAST:event_buttonSelectPaintActionPerformed
+
+    private void buttonResetActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonResetActionPerformed
+        resetOrder();
+    }//GEN-LAST:event_buttonResetActionPerformed
+
     // Variables declaration - do not modify//GEN-BEGIN:variables
+    private javax.swing.JButton buttonCustomLayerBottom;
     private javax.swing.JButton buttonCustomLayerDown;
+    private javax.swing.JButton buttonCustomLayerTop;
     private javax.swing.JButton buttonCustomLayerUp;
+    private javax.swing.JButton buttonDisableLayers;
+    private javax.swing.JButton buttonEnableLayers;
+    private javax.swing.JButton buttonGeneratorOptions;
     private javax.swing.ButtonGroup buttonGroup1;
     private javax.swing.ButtonGroup buttonGroup2;
     private javax.swing.ButtonGroup buttonGroup3;
-    private javax.swing.JCheckBox checkBoxBedrockWall;
+    private javax.swing.ButtonGroup buttonGroup5;
+    private javax.swing.JButton buttonReset;
+    private javax.swing.JButton buttonSelectPaint;
     private javax.swing.JCheckBox checkBoxBottomless;
     private javax.swing.JCheckBox checkBoxCavernsBreakSurface;
     private javax.swing.JCheckBox checkBoxCavernsEverywhere;
@@ -3422,15 +4176,25 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     private javax.swing.JCheckBox checkBoxChasmsEverywhere;
     private javax.swing.JCheckBox checkBoxCoverSteepTerrain;
     private javax.swing.JCheckBox checkBoxDeciduousEverywhere;
+    private javax.swing.JCheckBox checkBoxDecorateCaverns;
+    private javax.swing.JCheckBox checkBoxDecorateCaves;
+    private javax.swing.JCheckBox checkBoxDecorateChasms;
+    private javax.swing.JCheckBox checkBoxDecorationBrownMushrooms;
+    private javax.swing.JCheckBox checkBoxDecorationDripstoneCaves;
+    private javax.swing.JCheckBox checkBoxDecorationGlowLichen;
+    private javax.swing.JCheckBox checkBoxDecorationLushCaves;
     private javax.swing.JCheckBox checkBoxExportAnnotations;
     private javax.swing.JCheckBox checkBoxFloodCaverns;
     private javax.swing.JCheckBox checkBoxFrostEverywhere;
     private javax.swing.JCheckBox checkBoxJungleEverywhere;
     private javax.swing.JCheckBox checkBoxPineEverywhere;
     private javax.swing.JCheckBox checkBoxPopulate;
+    private javax.swing.JCheckBox checkBoxRoof;
     private javax.swing.JCheckBox checkBoxSmoothSnow;
     private javax.swing.JCheckBox checkBoxSnowUnderTrees;
     private javax.swing.JCheckBox checkBoxSwamplandEverywhere;
+    private javax.swing.JCheckBox checkBoxWall;
+    private javax.swing.JComboBox<Generator> comboBoxGenerator;
     private javax.swing.JComboBox comboBoxSubsurfaceMaterial;
     private javax.swing.JComboBox<String> comboBoxSurfaceLayerAnchor;
     private javax.swing.JComboBox<String> comboBoxUndergroundLayerAnchor;
@@ -3513,26 +4277,22 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     private javax.swing.JLabel jLabel76;
     private javax.swing.JLabel jLabel77;
     private javax.swing.JLabel jLabel78;
-    private javax.swing.JLabel jLabel79;
     private javax.swing.JLabel jLabel8;
-    private javax.swing.JLabel jLabel80;
-    private javax.swing.JLabel jLabel81;
     private javax.swing.JLabel jLabel82;
     private javax.swing.JLabel jLabel83;
     private javax.swing.JLabel jLabel84;
-    private javax.swing.JLabel jLabel85;
-    private javax.swing.JLabel jLabel86;
     private javax.swing.JLabel jLabel87;
     private javax.swing.JLabel jLabel88;
     private javax.swing.JLabel jLabel89;
     private javax.swing.JLabel jLabel9;
-    private javax.swing.JLabel jLabel90;
     private javax.swing.JLabel jLabel91;
     private javax.swing.JLabel jLabel92;
     private javax.swing.JLabel jLabel93;
+    private javax.swing.JLabel jLabel94;
+    private javax.swing.JLabel jLabel95;
+    private javax.swing.JLabel jLabel96;
     private javax.swing.JLabel jLabel98;
     private javax.swing.JLabel jLabel99;
-    private javax.swing.JPanel jPanel1;
     private javax.swing.JPanel jPanel10;
     private javax.swing.JPanel jPanel11;
     private javax.swing.JPanel jPanel12;
@@ -3547,21 +4307,33 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     private javax.swing.JPanel jPanel20;
     private javax.swing.JPanel jPanel21;
     private javax.swing.JPanel jPanel22;
+    private javax.swing.JPanel jPanel23;
+    private javax.swing.JPanel jPanel24;
+    private javax.swing.JPanel jPanel25;
+    private javax.swing.JPanel jPanel26;
+    private javax.swing.JPanel jPanel27;
     private javax.swing.JPanel jPanel3;
     private javax.swing.JPanel jPanel4;
     private javax.swing.JPanel jPanel5;
-    private javax.swing.JPanel jPanel6;
     private javax.swing.JPanel jPanel7;
     private javax.swing.JPanel jPanel8;
     private javax.swing.JPanel jPanel9;
     private javax.swing.JScrollPane jScrollPane1;
-    private javax.swing.JSeparator jSeparator1;
     private javax.swing.JSeparator jSeparator2;
     private javax.swing.JSeparator jSeparator3;
     private javax.swing.JSeparator jSeparator4;
+    private javax.swing.JSeparator jSeparator5;
     private javax.swing.JSlider jSlider4;
     private javax.swing.JSlider jSlider6;
     private javax.swing.JTabbedPane jTabbedPane1;
+    private javax.swing.JPanel panelBorderWallRoof;
+    private javax.swing.JPanel panelGeneral;
+    private javax.swing.JPanel panelMinecraftSettings;
+    private javax.swing.JRadioButton radioButtonBarrierBorder;
+    private javax.swing.JRadioButton radioButtonBarrierRoof;
+    private javax.swing.JRadioButton radioButtonBarrierWall;
+    private javax.swing.JRadioButton radioButtonBedrockRoof;
+    private javax.swing.JRadioButton radioButtonBedrockWall;
     private javax.swing.JRadioButton radioButtonEndlessBorder;
     private javax.swing.JRadioButton radioButtonFixedBorder;
     private javax.swing.JRadioButton radioButtonLavaBorder;
@@ -3618,9 +4390,6 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     private javax.swing.JSpinner spinnerLavaMaxLevel;
     private javax.swing.JSpinner spinnerLavaMinLevel;
     private javax.swing.JSpinner spinnerMaxSurfaceDepth;
-    private javax.swing.JSpinner spinnerMcBorderCentreX;
-    private javax.swing.JSpinner spinnerMcBorderCentreY;
-    private javax.swing.JSpinner spinnerMcBorderSize;
     private javax.swing.JSpinner spinnerMinSurfaceDepth;
     private javax.swing.JSpinner spinnerMinecraftSeed;
     private javax.swing.JSpinner spinnerQuartzChance;
@@ -3641,15 +4410,23 @@ public class DimensionPropertiesEditor extends javax.swing.JPanel {
     private PlatformProvider platformProvider;
     private CustomLayersTableModel customLayersTableModel;
     private Mode mode;
-    private List<BorderListener> borderListeners = new ArrayList<>();
     private Dimension.LayerAnchor subsurfaceLayerAnchor;
+    private String generatorName;
+    private SuperflatPreset superflatPreset;
+    private boolean endlessBorder, programmaticChange, orderPristine = true;
+    private Tag customGeneratorSettings;
+    private Generator savedGeneratorType;
+    private Eyedropper.SelectionListener selectionListener;
+
+    private static final int TAB_GENERAL       = 0;
+    private static final int TAB_THEME         = 1;
+    private static final int TAB_CAVES         = 2;
+    private static final int TAB_RESOURCES     = 3;
+    private static final int TAB_OTHER_LAYERS  = 4;
+    private static final int TAB_CUSTOM_LAYERS = 5;
 
     private static final Logger logger = LoggerFactory.getLogger(DimensionPropertiesEditor.class);
     private static final long serialVersionUID = 1L;
 
     public enum Mode {EXPORT, DEFAULT_SETTINGS, EDITOR}
-
-    public interface BorderListener {
-        void borderChanged(Dimension.Border newBorder);
-    }
 }

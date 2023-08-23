@@ -1,27 +1,31 @@
 package org.pepsoft.worldpainter.platforms;
 
-import org.pepsoft.minecraft.Chunk;
+import com.google.common.collect.ImmutableSet;
+import org.pepsoft.minecraft.DataType;
 import org.pepsoft.minecraft.MC118AnvilChunk;
-import org.pepsoft.worldpainter.Platform;
-import org.pepsoft.worldpainter.Version;
+import org.pepsoft.minecraft.NBTChunk;
 import org.pepsoft.worldpainter.exporting.PostProcessor;
 
-import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_18;
+import java.util.Set;
 
-public final class Anvil1_18PlatformProvider extends AnvilPlatformProvider {
-    public Anvil1_18PlatformProvider() {
-        super(Version.VERSION, JAVA_ANVIL_1_18);
-    }
+import static org.pepsoft.minecraft.DataType.ENTITIES;
+import static org.pepsoft.minecraft.DataType.REGION;
 
+final class Anvil1_18PlatformProvider extends AnvilPlatformProvider {
     @Override
-    public PostProcessor getPostProcessor(Platform platform) {
-        ensurePlatformSupported(platform);
+    PostProcessor getPostProcessor() {
         return new Java1_15PostProcessor();
     }
 
     @Override
-    public Chunk createChunk(Platform platform, int x, int z, int maxHeight) {
-        ensurePlatformSupported(platform);
-        return new MC118AnvilChunk(x, z, maxHeight);
+    NBTChunk createChunk(int x, int z, int minHeight, int maxHeight) {
+        return new MC118AnvilChunk(x, z, minHeight, maxHeight);
     }
+
+    @Override
+    Set<DataType> getDataTypes() {
+        return DATA_TYPES;
+    }
+
+    private static final Set<DataType> DATA_TYPES = ImmutableSet.of(REGION, ENTITIES);
 }

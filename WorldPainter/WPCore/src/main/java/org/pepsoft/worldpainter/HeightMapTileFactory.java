@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.util.SortedMap;
 
+import static org.pepsoft.util.MathUtils.clamp;
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE;
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE_BITS;
 
@@ -33,6 +34,7 @@ public class HeightMapTileFactory extends AbstractTileFactory {
         this.theme = theme;
     }
 
+    @Override
     public int getMinHeight() {
         return minHeight;
     }
@@ -54,15 +56,13 @@ public class HeightMapTileFactory extends AbstractTileFactory {
         theme.setSeed(seed);
     }
 
-    public final void setMaxHeight(int maxHeight) {
-        setMaxHeight(maxHeight, HeightTransform.IDENTITY);
-    }
-    
     @Override
-    public final void setMaxHeight(int maxHeight, HeightTransform transform) {
-        if (maxHeight != this.maxHeight) {
-            this.maxHeight = maxHeight;
-            theme.setMaxHeight(maxHeight, transform);
+    public final void setMinMaxHeight(int minHeight, int maxHeight, HeightTransform transform) {
+        this.minHeight = minHeight;
+        this.maxHeight = maxHeight;
+        theme.setMinMaxHeight(minHeight, maxHeight, transform);
+        if (! transform.isIdentity()) {
+            heightMap = transform.transformHeightMap(heightMap);
         }
     }
 
@@ -82,7 +82,7 @@ public class HeightMapTileFactory extends AbstractTileFactory {
         return heightMap;
     }
     
-    public final float getBaseHeight() {
+    public final double getBaseHeight() {
         return heightMap.getBaseHeight();
     }
 
@@ -99,7 +99,7 @@ public class HeightMapTileFactory extends AbstractTileFactory {
 
     public void setTheme(Theme theme) {
         this.theme = theme;
-        theme.setMaxHeight(maxHeight, HeightTransform.IDENTITY);
+        theme.setMinMaxHeight(minHeight, maxHeight, HeightTransform.IDENTITY);
     }
 
     @Override
@@ -110,7 +110,7 @@ public class HeightMapTileFactory extends AbstractTileFactory {
 
     @Override
     public Tile createTile(int tileX, int tileY) {
-        final int maxY = getMaxHeight() - 1, myWaterHeight = getWaterHeight();
+        final int maxZ = maxHeight - 1, myWaterHeight = getWaterHeight();
         final Tile tile = new Tile(tileX, tileY, minHeight, maxHeight);
         tile.inhibitEvents();
         final int worldTileX = tileX * TILE_SIZE, worldTileY = tileY * TILE_SIZE;
@@ -118,7 +118,7 @@ public class HeightMapTileFactory extends AbstractTileFactory {
             for (int x = 0; x < TILE_SIZE; x++) {
                 for (int y = 0; y < TILE_SIZE; y++) {
                     final int blockX = worldTileX + x, blockY = worldTileY + y;
-                    final float height = clamp(heightMap.getHeight(blockX, blockY), maxY);
+                    final float height = clamp(minHeight, (float) heightMap.getHeight(blockX, blockY), maxZ);
                     tile.setHeight(x, y, height);
                     tile.setWaterLevel(x, y, myWaterHeight);
                     if (floodWithLava) {
@@ -152,12 +152,9 @@ public class HeightMapTileFactory extends AbstractTileFactory {
         theme.apply(tile, x, y);
     }
 
-    protected final float clamp(float value, int max) {
-        return (value < 0)
-            ? 0
-            : ((value > max)
-                ? max
-                : value);
+    @Override
+    public void transform(CoordinateTransform transform) {
+        heightMap = transform.transform(heightMap);
     }
 
     protected final void setRandomise(boolean randomise) {

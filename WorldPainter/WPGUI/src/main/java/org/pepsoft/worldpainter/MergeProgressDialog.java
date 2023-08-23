@@ -5,12 +5,6 @@
  */
 package org.pepsoft.worldpainter;
 
-import java.awt.*;
-import java.awt.event.WindowEvent;
-import java.awt.event.WindowListener;
-import java.io.File;
-import java.io.IOException;
-
 import org.pepsoft.util.DesktopUtils;
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.TaskbarProgressReceiver;
@@ -18,17 +12,21 @@ import org.pepsoft.util.swing.ProgressTask;
 import org.pepsoft.worldpainter.merging.JavaWorldMerger;
 
 import javax.swing.*;
+import java.awt.*;
+import java.awt.event.WindowEvent;
+import java.awt.event.WindowListener;
+import java.io.File;
+import java.io.IOException;
 
 /**
  *
  * @author Pepijn Schmitz
  */
 public class MergeProgressDialog extends MultiProgressDialog<Void> implements WindowListener {
-    public MergeProgressDialog(Window parent, JavaWorldMerger merger, File backupDir, boolean biomesOnly) {
+    public MergeProgressDialog(Window parent, JavaWorldMerger merger, File backupDir) {
         super(parent, "Merging");
         this.merger = merger;
         this.backupDir = backupDir;
-        this.biomesOnly = biomesOnly;
         addWindowListener(this);
 
         JButton minimiseButton = new JButton("Minimize");
@@ -61,9 +59,9 @@ public class MergeProgressDialog extends MultiProgressDialog<Void> implements Wi
     @Override
     protected String getResultsReport(Void results, long duration) {
         StringBuilder sb = new StringBuilder();
-        sb.append("World merged with ").append(merger.getLevelDatFile());
+        sb.append("World merged with ").append(merger.getMapDir());
         int hours = (int) (duration / 3600);
-        duration = duration - hours * 3600;
+        duration = duration - hours * 3600L;
         int minutes = (int) (duration / 60);
         int seconds = (int) (duration - minutes * 60);
         sb.append("\nMerge took ").append(hours).append(":").append((minutes < 10) ? "0" : "").append(minutes).append(":").append((seconds < 10) ? "0" : "").append(seconds);
@@ -88,13 +86,9 @@ public class MergeProgressDialog extends MultiProgressDialog<Void> implements Wi
             public Void execute(ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
                 progressReceiver = new TaskbarProgressReceiver(App.getInstance(), progressReceiver);
                 try {
-                    if (biomesOnly) {
-                        merger.mergeBiomes(backupDir, progressReceiver);
-                    } else {
-                        merger.merge(backupDir, progressReceiver);
-                    }
+                    merger.merge(backupDir, progressReceiver);
                 } catch (IOException e) {
-                    throw new RuntimeException("I/O error while merging world " + merger.getWorld().getName() + " with map " + merger.getLevelDatFile().getParent(), e);
+                    throw new RuntimeException("I/O error while merging world " + merger.getWorld().getName() + " with map " + merger.getMapDir(), e);
                 }
                 return null;
             }
@@ -103,5 +97,4 @@ public class MergeProgressDialog extends MultiProgressDialog<Void> implements Wi
 
     private final File backupDir;
     private final JavaWorldMerger merger;
-    private final boolean biomesOnly;
 }

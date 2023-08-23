@@ -14,26 +14,34 @@ import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
 import org.pepsoft.worldpainter.history.HistoryEntry;
 import org.pepsoft.worldpainter.layers.Layer;
 import org.pepsoft.worldpainter.layers.NotPresent;
+import org.pepsoft.worldpainter.layers.NotPresentBlock;
 
 import javax.swing.*;
 import javax.swing.text.html.HTMLDocument;
 import java.awt.*;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.Dimension.Role.MASTER;
 
 /**
  *
  * @author pepijn
  */
-public class TileEditor extends WorldPainterDialog implements TileSelector.Listener {
+public class TileEditor extends WorldPainterModalFrame implements TileSelector.Listener {
     /** Creates new form TileEditor */
-    public TileEditor(java.awt.Frame parent, Dimension dimension, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, Collection<Layer> hiddenLayers, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin) {
+    public TileEditor(java.awt.Frame parent, Dimension dimension, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, Set<Layer> hiddenLayers, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin) {
         super(parent);
         this.dimension = dimension;
+        final Dimension.Anchor anchor = dimension.getAnchor();
+        if (anchor.role == DETAIL) {
+            backgroundDimension = dimension.getWorld().getDimension(new Dimension.Anchor(anchor.dim, MASTER, anchor.invert, 0));
+        } else {
+            backgroundDimension = null;
+        }
         initComponents();
         
         // Fix the incredibly ugly default font of the JTextPane
@@ -46,16 +54,26 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
         tileSelector1.setContourLines(contourLines);
         tileSelector1.setContourSeparation(contourSeparation);
         tileSelector1.setLightOrigin(lightOrigin);
-        tileSelector1.setDimension(dimension);
         tileSelector1.setCustomBiomeManager(customBiomeManager);
+        tileSelector1.setDimension(dimension);
         tileSelector1.addListener(this);
 
         getRootPane().setDefaultButton(buttonClose);
 
         scaleToUI();
+        pack();
+        scaleWindowToUI();
         setLocationRelativeTo(parent);
     }
-    
+
+    public boolean isTilesChanged() {
+        return tilesChanged;
+    }
+
+    public void moveTo(Point coords) {
+        tileSelector1.moveTo(coords);
+    }
+
     // TileSelector.Listener
     
     @Override
@@ -75,7 +93,7 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
                 Tile existingTile = dimension.getTile(selectedTile);
                 if (existingTile != null) {
                     allowRemoveTiles = true;
-                    if (existingTile.hasLayer(NotPresent.INSTANCE)) {
+                    if (existingTile.hasLayer(NotPresent.INSTANCE) || existingTile.hasLayer(NotPresentBlock.INSTANCE)) {
                         allowAddTiles = true;
                     }
                 } else {
@@ -108,7 +126,7 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
                 if (selectedTile.y > newHighestTileY) {
                     newHighestTileY = selectedTile.y;
                 }
-            } else if (existingTile.hasLayer(NotPresent.INSTANCE)) {
+            } else if (existingTile.hasLayer(NotPresent.INSTANCE) || existingTile.hasLayer(NotPresentBlock.INSTANCE)) {
                 tilesToExpand.add(selectedTile);
             }
         }
@@ -153,18 +171,29 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
         dimension.setEventsInhibited(true);
         dimension.clearUndo();
         try {
+            final ScaledDimension scaledBackground = (! tilesToAdd.isEmpty()) && (backgroundDimension != null) ? new ScaledDimension(backgroundDimension, backgroundDimension.getScale()) : null;
             for (Point newTileCoords: tilesToAdd) {
-                Tile newTile = dimension.getTileFactory().createTile(newTileCoords.x, newTileCoords.y);
+                Tile newTile = null;
+                if (backgroundDimension != null) {
+                    newTile = scaledBackground.getTile(newTileCoords);
+                    // TODO: handle copied custom layers
+                    // TODO: handle NotPresent areas
+                }
+                if (newTile == null) {
+                    newTile = dimension.getTileFactory().createTile(newTileCoords.x, newTileCoords.y);
+                }
                 dimension.addTile(newTile);
             }
             for (Point expandTileCoords: tilesToExpand) {
-                Tile tile = dimension.getTileForEditing(expandTileCoords);
+                final Tile tile = dimension.getTileForEditing(expandTileCoords);
                 tile.clearLayerData(NotPresent.INSTANCE);
+                tile.clearLayerData(NotPresentBlock.INSTANCE);
             }
         } finally {
             dimension.setEventsInhibited(false);
         }
         dimension.armSavePoint();
+        tilesChanged = true;
 
         World2 world = dimension.getWorld();
         if (world != null) {
@@ -195,6 +224,7 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
                 dimension.setEventsInhibited(false);
             }
             dimension.armSavePoint();
+            tilesChanged = true;
             World2 world = dimension.getWorld();
             if (world != null) {
                 world.addHistoryEntry(HistoryEntry.WORLD_TILES_REMOVED, dimension.getName(), tilesToRemove.size());
@@ -250,7 +280,7 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
 
         jTextPane1.setEditable(false);
         jTextPane1.setContentType("text/html"); // NOI18N
-        jTextPane1.setText("WorldPainter works in tiles of 128 by 128 blocks. On this screen you can add, expand or remove tiles.<br><br>Select tiles to the right using the left mouse button, move the map with the middle or right buttons, then select an action below:<br><br><b>Note:</b> this will remove all undo information!");
+        jTextPane1.setText("WorldPainter works in tiles of 128 by 128 blocks.\nOn this screen you can add, expand or remove tiles.<br>\n<br>\nSelect tiles to the right using the left mouse button,\nmove the map with the middle or right buttons,\nthen select an action below:<br>\n<br>\nDrag to select tiles; hold Ctrl and drag to deselect tiles.<br>\n<br>\n<b>Note:</b> this will remove all undo information!");
         jTextPane1.setOpaque(false);
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
@@ -311,7 +341,8 @@ public class TileEditor extends WorldPainterDialog implements TileSelector.Liste
     private org.pepsoft.worldpainter.TileSelector tileSelector1;
     // End of variables declaration//GEN-END:variables
 
-    private final Dimension dimension;
+    private final Dimension dimension, backgroundDimension;
+    private boolean tilesChanged = false;
     
     private static final long serialVersionUID = 1L;
 }

@@ -9,6 +9,8 @@ import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.Terrain;
 import org.pepsoft.worldpainter.WorldPainter;
 
+import javax.swing.*;
+
 /**
  *
  * @author pepijn
@@ -18,8 +20,17 @@ public class RaiseRotatedPyramid extends MouseOrTabletOperation {
         super("Raise Rotated Pyramid", "Raises a square, but rotated 45 degrees, pyramid out of the ground", worldPainter, 100, "operation.raiseRotatedPyramid", "pyramid");
     }
 
+    @Override
+    public JPanel getOptionsPanel() {
+        return OPTIONS_PANEL;
+    }
+
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
-        Dimension dimension = getDimension();
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
         float height = dimension.getHeightAt(centreX, centreY);
         dimension.setEventsInhibited(true);
         try {
@@ -27,7 +38,7 @@ public class RaiseRotatedPyramid extends MouseOrTabletOperation {
                 dimension.setHeightAt(centreX, centreY, height + 1);
             }
             dimension.setTerrainAt(centreX, centreY, Terrain.SANDSTONE);
-            int maxR = dimension.getMaxHeight();
+            int maxR = dimension.getMaxHeight() - dimension.getMinHeight();
             for (int r = 1; r < maxR; r++) {
                 if (! raiseRing(dimension, centreX, centreY, r, height--)) {
                     break;
@@ -68,4 +79,6 @@ public class RaiseRotatedPyramid extends MouseOrTabletOperation {
         }
         return raised;
     }
+
+    private static final StandardOptionsPanel OPTIONS_PANEL = new StandardOptionsPanel("Raise Rotated Pyramid", "<p>Click to raise a 45&deg; rotated four-sided sandstone pyramid from the ground");
 }

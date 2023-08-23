@@ -6,9 +6,12 @@
 
 package org.pepsoft.worldpainter.layers.plants;
 
+import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.Platform;
+import org.pepsoft.worldpainter.exporting.LayerExporter;
 import org.pepsoft.worldpainter.layers.CustomLayer;
 import org.pepsoft.worldpainter.layers.bo2.Bo2ObjectProvider;
+import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 import org.pepsoft.worldpainter.objects.WPObject;
 
 import java.io.IOException;
@@ -28,8 +31,8 @@ import static org.pepsoft.worldpainter.layers.plants.Plants.ALL_PLANTS;
  * @author pepijn
  */
 public class PlantLayer extends CustomLayer {
-    public PlantLayer(String name, String description, int colour) {
-        super(name, description, DataSize.BIT, 35, colour);
+    public PlantLayer(String name, String description, Object paint) {
+        super(name, description, DataSize.BIT, 35, paint);
     }
     
     public PlantSettings getSettings(int plantIndex) {
@@ -46,6 +49,14 @@ public class PlantLayer extends CustomLayer {
 
     public void setGenerateFarmland(boolean generateFarmland) {
         this.generateTilledDirt = generateFarmland;
+    }
+
+    public boolean isOnlyOnValidBlocks() {
+        return onlyOnValidBlocks;
+    }
+
+    public void setOnlyOnValidBlocks(boolean onlyOnValidBlocks) {
+        this.onlyOnValidBlocks = onlyOnValidBlocks;
     }
 
     public Map<Plant, PlantSettings> getConfiguredPlants() {
@@ -115,20 +126,30 @@ public class PlantLayer extends CustomLayer {
     }
     
     // Layer
-    
+
     @Override
-    public PlantLayerExporter getExporter() {
-        return new PlantLayerExporter(this);
+    public Class<? extends LayerExporter> getExporterType() {
+        return PlantLayerExporter.class;
+    }
+
+    @Override
+    public PlantLayerExporter getExporter(Dimension dimension, Platform platform, ExporterSettings settings) {
+        return new PlantLayerExporter(dimension, platform, this);
     }
 
     // Cloneable
+
+    @Override
+    public String getType() {
+        return "Plants";
+    }
 
     @Override
     public PlantLayer clone() {
         PlantLayer clone = (PlantLayer) super.clone();
         clone.settings = new PlantSettings[settings.length];
         for (int i = 0; i < settings.length; i++) {
-            clone.settings[i] = settings[i].clone();
+            clone.settings[i] = (settings[i] != null) ? settings[i].clone() : null;
         }
         return clone;
     }
@@ -163,7 +184,10 @@ public class PlantLayer extends CustomLayer {
                 }
             }
         }
-        version = 1;
+        if (version < 2) {
+            onlyOnValidBlocks = true;
+        }
+        version = 2;
     }
 
     public static class PlantSettings implements Serializable, Cloneable {
@@ -186,7 +210,8 @@ public class PlantLayer extends CustomLayer {
     
     private PlantSettings[] settings = new PlantSettings[ALL_PLANTS.length];
     private boolean generateTilledDirt = true; // Now referred to as generateFarmland
-    private int version = 1;
+    private int version = 2;
+    private boolean onlyOnValidBlocks = true;
 
     private static final long serialVersionUID = -2758775044863488107L;
 }

@@ -4,19 +4,19 @@
  */
 package org.pepsoft.worldpainter.objects;
 
-import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import javax.vecmath.Point3i;
 import org.pepsoft.minecraft.Direction;
 import org.pepsoft.minecraft.Entity;
 import org.pepsoft.minecraft.Material;
 import org.pepsoft.minecraft.TileEntity;
 import org.pepsoft.util.AttributeKey;
-import org.pepsoft.util.MathUtils;
 import org.pepsoft.worldpainter.Platform;
+
+import javax.vecmath.Point3i;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  *
@@ -70,21 +70,14 @@ public class MirroredObject extends AbstractObject {
         if (objectEntities != null) {
             List<Entity> entities = new ArrayList<>(objectEntities.size());
             for (Entity objectEntity: objectEntities) {
-                Entity entity = (Entity) objectEntity.clone();
-                double[] pos = entity.getPos();
-                double[] vel = entity.getVel();
+                Entity entity = objectEntity.mirror(mirrorYAxis);
+                double[] relPos = entity.getRelPos();
                 if (mirrorYAxis) {
-                    pos[2] = dimensions.y - pos[2];
-                    vel[2] = -vel[2];
+                    relPos[2] = dimensions.y - relPos[2];
                 } else {
-                    pos[0] = dimensions.x - pos[0];
-                    vel[0] = -vel[0];
+                    relPos[0] = dimensions.x - relPos[0];
                 }
-                entity.setPos(pos);
-                entity.setVel(vel);
-                float[] rot = entity.getRot();
-                rot[0] = MathUtils.mod(rot[0] + 180.0f, 360.0f);
-                entity.setRot(rot);
+                entity.setRelPos(relPos);
                 entities.add(entity);
             }
             return entities;

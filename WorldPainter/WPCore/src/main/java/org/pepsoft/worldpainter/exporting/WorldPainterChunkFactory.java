@@ -11,8 +11,10 @@ import org.pepsoft.minecraft.Material;
 import org.pepsoft.util.PerlinNoise;
 import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.layers.*;
+import org.pepsoft.worldpainter.objects.WPObject;
 import org.pepsoft.worldpainter.plugins.BlockBasedPlatformProvider;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
+import org.pepsoft.worldpainter.util.BiomeUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,19 +27,66 @@ import static org.pepsoft.minecraft.Material.*;
 import static org.pepsoft.worldpainter.Constants.*;
 import static org.pepsoft.worldpainter.Platform.Capability.*;
 import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_17Biomes.*;
+import static org.pepsoft.worldpainter.layers.plants.Plants.SUGAR_CANE;
 
 /**
  *
  * @author pepijn
  */
 public class WorldPainterChunkFactory implements ChunkFactory {
-    public WorldPainterChunkFactory(Dimension dimension, Map<Layer, LayerExporter> exporters, Platform platform, int maxHeight) {
+    /**
+     * Create a new {@code WorldPainterChunkFactory}.
+     *
+     * @param dimension           The dimension for which the factory should create chunks.
+     * @param exporters           The phase one layer exporters the factory should apply to the created chunks.
+     * @param platform            The platform for which the dimension is being exported.
+     * @param maxHeightConstraint The height to which to constrain the created chunks. May be lower than the
+     * {@code maxHeight} of the dimension, world or platform, e.g. for preview purposes.
+     */
+    public WorldPainterChunkFactory(Dimension dimension, Map<Layer, LayerExporter> exporters, Platform platform, int maxHeightConstraint) {
         this.dimension = dimension;
         this.exporters = exporters;
         this.platform  = platform;
         platformProvider = (BlockBasedPlatformProvider) PlatformManager.getInstance().getPlatformProvider(platform);
-        this.maxHeight = Math.min(maxHeight, dimension.getMaxHeight());
+        this.minHeight = dimension.getMinHeight();
+        this.maxHeight = Math.min(maxHeightConstraint, dimension.getMaxHeight());
         minimumLayers = dimension.getMinimumLayers();
+        seed = dimension.getSeed();
+        if (sugarCaneNoise.getSeed() != (seed + SUGAR_CANE_SEED_OFFSET)) {
+            sugarCaneNoise.setSeed(seed + SUGAR_CANE_SEED_OFFSET);
+        }
+        subsurfaceMaterial = dimension.getSubsurfaceMaterial();
+        roofType = dimension.getRoofType();
+        bedrock = ! dimension.isBottomless();
+        coverSteepTerrain = dimension.isCoverSteepTerrain();
+        topLayersRelativeToTerrain = dimension.getTopLayerAnchor() == Dimension.LayerAnchor.TERRAIN;
+        subSurfaceLayersRelativeToTerrain =
+                subsurfaceMaterial.isCustom()
+                        && (Terrain.getCustomMaterial(subsurfaceMaterial.getCustomTerrainIndex()).getMode() == MixedMaterial.Mode.LAYERED)
+                        && (dimension.getSubsurfaceLayerAnchor() == Dimension.LayerAnchor.TERRAIN);
+        subSurfacePatternHeight = subSurfaceLayersRelativeToTerrain ? Terrain.getCustomMaterial(subsurfaceMaterial.getCustomTerrainIndex()).getPatternHeight() : -1;
+        maxY = this.maxHeight - 1;
+        biomesSupported2D = platform.capabilities.contains(BIOMES);
+        biomesSupported3D = platform.capabilities.contains(BIOMES_3D);
+        biomesSupportedNamed = platform.capabilities.contains(NAMED_BIOMES);
+        copyBiomes = (biomesSupported2D || biomesSupported3D || biomesSupportedNamed) && (! dimension.getAnchor().invert);
+        switch (dimension.getAnchor().dim) {
+            case DIM_NORMAL:
+                defaultBiome = BIOME_PLAINS;
+                break;
+            case DIM_NETHER:
+                defaultBiome = BIOME_HELL;
+                break;
+            case DIM_END:
+                defaultBiome = BIOME_SKY;
+                break;
+            default:
+                throw new InternalError();
+        }
+    }
+
+    public int getMinHeight() {
+        return minHeight;
     }
 
     @Override
@@ -62,20 +111,6 @@ public class WorldPainterChunkFactory implements ChunkFactory {
             // merge it
             return null;
         }
-        final long seed = dimension.getSeed();
-        if (sugarCaneNoise.getSeed() != (seed + SUGAR_CANE_SEED_OFFSET)) {
-            sugarCaneNoise.setSeed(seed + SUGAR_CANE_SEED_OFFSET);
-        }
-        final Terrain subsurfaceMaterial = dimension.getSubsurfaceMaterial();
-        final boolean dark = dimension.isDarkLevel();
-        final boolean bedrock = ! dimension.isBottomless();
-        final boolean coverSteepTerrain = dimension.isCoverSteepTerrain();
-        final boolean topLayersRelativeToTerrain = dimension.getTopLayerAnchor() == Dimension.LayerAnchor.TERRAIN;
-        final boolean subSurfaceLayersRelativeToTerrain =
-            subsurfaceMaterial.isCustom()
-            && (Terrain.getCustomMaterial(subsurfaceMaterial.getCustomTerrainIndex()).getMode() == MixedMaterial.Mode.LAYERED)
-            && (dimension.getSubsurfaceLayerAnchor() == Dimension.LayerAnchor.TERRAIN);
-        final int subSurfacePatternHeight = subSurfaceLayersRelativeToTerrain ? Terrain.getCustomMaterial(subsurfaceMaterial.getCustomTerrainIndex()).getPatternHeight() : -1;
 
         final int tileX = tile.getX();
         final int tileY = tile.getY();
@@ -84,36 +119,12 @@ public class WorldPainterChunkFactory implements ChunkFactory {
         final Random random = new Random(seed + xOffsetInTile * 3 + yOffsetInTile * 5);
         final boolean populate = platform.capabilities.contains(POPULATE)
                 && (dimension.isPopulate() || tile.getBitLayerValue(Populate.INSTANCE, xOffsetInTile, yOffsetInTile));
+        final BiomeUtils biomeUtils = new BiomeUtils(dimension);
         final ChunkCreationResult result = new ChunkCreationResult();
-        final Chunk chunk = platformProvider.createChunk(platform, chunkX, chunkZ, maxHeight);
+        final Chunk chunk = platformProvider.createChunk(platform, chunkX, chunkZ, minHeight, maxHeight);
         result.chunk = chunk;
-        final int minY = dimension.getMinHeight(), maxY = maxHeight - 1;
-        final boolean biomesSupported2D = platform.capabilities.contains(BIOMES);
-        final boolean biomesSupported3D = platform.capabilities.contains(BIOMES_3D);
-        // TODOMC118 add named biomes support
-        final boolean copyBiomes = (biomesSupported2D || biomesSupported3D) && (dimension.getDim() >= 0);
-        final int defaultBiome;
-        switch (dimension.getDim()) {
-            case DIM_NORMAL:
-                defaultBiome = BIOME_PLAINS;
-                break;
-            case DIM_NETHER:
-                defaultBiome = BIOME_HELL;
-                break;
-            case DIM_END:
-                defaultBiome = BIOME_SKY;
-                break;
-            case DIM_NORMAL_CEILING:
-            case DIM_NETHER_CEILING:
-            case DIM_END_CEILING:
-                // Biome is ignored for ceilings
-                defaultBiome = 0;
-                break;
-            default:
-                throw new InternalError();
-        }
 
-        if (copyBiomes && biomesSupported3D) {
+        if (copyBiomes && (biomesSupported3D || biomesSupportedNamed)) {
             final int chunkXInWorld = (tileX << TILE_SIZE_BITS) | xOffsetInTile;
             final int chunkZInWorld = (tileY << TILE_SIZE_BITS) | yOffsetInTile;
             for (int x = 0; x < 16; x += 4) {
@@ -121,10 +132,7 @@ public class WorldPainterChunkFactory implements ChunkFactory {
                     final int biome = dimension.getMostPrevalentBiome((chunkXInWorld | x) >> 2, (chunkZInWorld | z) >> 2, defaultBiome);
                     // Set the whole column to this biome since we don't have 3D biome support yet
                     // TODO add 3D biome support
-                    final int xx = x >> 2, zz = z >> 2;
-                    for (int y = minY; y < maxHeight; y += 4) {
-                        chunk.set3DBiome(xx, y >> 2, zz, biome);
-                    }
+                    biomeUtils.set2DBiome(chunk, x, z, biome);
                 }
             }
         }
@@ -144,27 +152,16 @@ public class WorldPainterChunkFactory implements ChunkFactory {
                             biome = defaultBiome;
                         }
                     }
-                    chunk.setBiome(x, z, biome);
+                    biomeUtils.set2DBiome(chunk, x, z, biome);
                 }
 
-                final float height = tile.getHeight(xInTile, yInTile);
-                final int intHeight = (int) (height + 0.5f);
+                final int intHeight = tile.getIntHeight(xInTile, yInTile);
                 final int waterLevel = tile.getWaterLevel(xInTile, yInTile);
+                final boolean underWater = waterLevel > intHeight;
                 final boolean _void = tile.getBitLayerValue(org.pepsoft.worldpainter.layers.Void.INSTANCE, xInTile, yInTile);
                 if (! _void) {
                     final Terrain terrain = tile.getTerrain(xInTile, yInTile);
-                    final int topLayerDepth = dimension.getTopLayerDepth(worldX, worldY, intHeight);
                     final boolean floodWithLava;
-                    final boolean underWater = waterLevel > intHeight;
-                    final int subSurfaceLayerOffset = subSurfaceLayersRelativeToTerrain ? -(intHeight - subSurfacePatternHeight + 1) : 0;
-                    final int topLayerLayerOffset;
-                    if (topLayersRelativeToTerrain
-                            && terrain.isCustom()
-                            && (Terrain.getCustomMaterial(terrain.getCustomTerrainIndex()).getMode() == MixedMaterial.Mode.LAYERED)) {
-                        topLayerLayerOffset = -(intHeight - Terrain.getCustomMaterial(terrain.getCustomTerrainIndex()).getPatternHeight() + 1);
-                    } else {
-                        topLayerLayerOffset = 0;
-                    }
                     if (underWater) {
                         floodWithLava = tile.getBitLayerValue(FloodWithLava.INSTANCE, xInTile, yInTile);
                         result.stats.waterArea++;
@@ -173,74 +170,43 @@ public class WorldPainterChunkFactory implements ChunkFactory {
                         result.stats.landArea++;
                     }
                     if (bedrock) {
-                        chunk.setMaterial(x, minY, z, BEDROCK);
+                        chunk.setMaterial(x, minHeight, z, BEDROCK);
                     }
-                    int subsurfaceMaxHeight = intHeight - topLayerDepth;
-                    if (coverSteepTerrain) {
-                        subsurfaceMaxHeight = Math.min(subsurfaceMaxHeight,
-                            Math.min(Math.min(dimension.getIntHeightAt(worldX - 1, worldY, Integer.MAX_VALUE),
-                            dimension.getIntHeightAt(worldX + 1, worldY, Integer.MAX_VALUE)),
-                            Math.min(dimension.getIntHeightAt(worldX, worldY - 1, Integer.MAX_VALUE),
-                            dimension.getIntHeightAt(worldX, worldY + 1, Integer.MAX_VALUE))));
-                    }
-                    int columnRenderHeight = Math.min(Math.max(intHeight + Math.max(terrain.getToppingHeight(), 3), waterLevel), maxY);
-                    for (int y = minY + (bedrock ? 1 : 0); y <= columnRenderHeight; y++) {
-                        if (y <= subsurfaceMaxHeight) {
-                            // Sub surface
-                            chunk.setMaterial(x, y, z, subsurfaceMaterial.getMaterial(platform, seed, worldX, worldY, y + subSurfaceLayerOffset, intHeight + subSurfaceLayerOffset));
-                        } else if (y < intHeight) {
-                            // Top/terrain layer, but not surface block
-                            chunk.setMaterial(x, y, z, terrain.getMaterial(platform, seed, worldX, worldY, y + topLayerLayerOffset, intHeight + topLayerLayerOffset));
-                        } else if (y == intHeight) {
-                            // Surface block
-                            final Material material;
-                            if (topLayerLayerOffset != 0) {
-                                material = terrain.getMaterial(platform, seed, worldX, worldY, intHeight + topLayerLayerOffset, intHeight + topLayerLayerOffset);
-                            } else {
-                                // Use floating point height here to make sure
-                                // undulations caused by layer variation settings/
-                                // blobs, etc. look continuous on the surface
-                                material = terrain.getMaterial(platform, seed, worldX, worldY, height + topLayerLayerOffset, intHeight + topLayerLayerOffset);
+                    applySubSurface(tile, chunk, xInTile, yInTile);
+                    applyTopLayer(tile, chunk, xInTile, yInTile, false);
+                    if (! underWater) {
+                        // Above the surface on dry land
+                        WPObject object = null;
+                        if (((terrain == Terrain.GRASS) || (terrain == Terrain.DESERT) || (terrain == Terrain.RED_DESERT) || (terrain == Terrain.BEACHES))
+                                && ((sugarCaneNoise.getPerlinNoise(worldX / TINY_BLOBS, worldY / TINY_BLOBS, z / TINY_BLOBS) * sugarCaneNoise.getPerlinNoise(worldX / SMALL_BLOBS, worldY / SMALL_BLOBS, z / SMALL_BLOBS)) > SUGAR_CANE_CHANCE)
+                                && (isAdjacentWater(tile, intHeight, xInTile - 1, yInTile)
+                                    || isAdjacentWater(tile, intHeight, xInTile + 1, yInTile)
+                                    || isAdjacentWater(tile, intHeight, xInTile, yInTile - 1)
+                                    || isAdjacentWater(tile, intHeight, xInTile, yInTile + 1))) {
+                            final int blockTypeBelow = chunk.getBlockType(x, intHeight, z);
+                            if ((random.nextInt(5) > 0) && ((blockTypeBelow == BLK_GRASS) || (blockTypeBelow == BLK_DIRT) || (blockTypeBelow == BLK_SAND) || (blockTypeBelow == BLK_SUGAR_CANE))) {
+                                object = SUGAR_CANE.realise(random.nextInt(3) + 1, platform);
                             }
-                            final int blockType = material.blockType;
-                            if (((blockType == BLK_WOODEN_SLAB) || (blockType == BLK_SLAB) || (blockType == BLK_RED_SANDSTONE_SLAB)) && (! underWater) && (height > intHeight)) {
-                                chunk.setMaterial(x, y, z, Material.get(blockType - 1, material.data));
-                            } else {
-                                chunk.setMaterial(x, y, z, material);
-                            }
-                        } else if (y <= waterLevel) {
-                            // Above the surface but below the water/lava level
-                            if (floodWithLava) {
-                                chunk.setMaterial(x, y, z, STATIONARY_LAVA);
-                            } else {
-                                chunk.setMaterial(x, y, z, STATIONARY_WATER);
-                            }
-                        } else if (! underWater) {
-                            // Above the surface on dry land
-                            if ((y > minY) && ((y - intHeight) <= 3) && ((terrain == Terrain.GRASS) || (terrain == Terrain.DESERT) || (terrain == Terrain.RED_DESERT) || (terrain == Terrain.BEACHES))
-                                    && ((sugarCaneNoise.getPerlinNoise(worldX / TINY_BLOBS, worldY / TINY_BLOBS, z / TINY_BLOBS) * sugarCaneNoise.getPerlinNoise(worldX / SMALL_BLOBS, worldY / SMALL_BLOBS, z / SMALL_BLOBS)) > SUGAR_CANE_CHANCE)
-                                    && (isAdjacentWater(tile, intHeight, xInTile - 1, yInTile)
-                                        || isAdjacentWater(tile, intHeight, xInTile + 1, yInTile)
-                                        || isAdjacentWater(tile, intHeight, xInTile, yInTile - 1)
-                                        || isAdjacentWater(tile, intHeight, xInTile, yInTile + 1))) {
-                                int blockTypeBelow = chunk.getBlockType(x, y - 1, z);
-                                if ((random.nextInt(5) > 0) && ((blockTypeBelow == BLK_GRASS) || (blockTypeBelow == BLK_DIRT) || (blockTypeBelow == BLK_SAND) || (blockTypeBelow == BLK_SUGAR_CANE))) {
-                                    chunk.setMaterial(x, y, z, Material.SUGAR_CANE);
-                                } else {
-                                    chunk.setMaterial(x, y, z, terrain.getMaterial(platform, seed, worldX, worldY, y, intHeight));
-                                }
-                            } else {
-                                chunk.setMaterial(x, y, z, terrain.getMaterial(platform, seed, worldX, worldY, y, intHeight));
-                            }
+                        }
+                        if (object == null) {
+                            object = terrain.getSurfaceObject(platform, seed, worldX, worldY, 0);
+                        }
+                        if (object != null) {
+                            renderObject(chunk, object, x, intHeight + 1, z);
+                        }
+                    } else if (! floodWithLava) {
+                        final WPObject object = terrain.getSurfaceObject(platform, seed, worldX, worldY, waterLevel - intHeight);
+                        if (object != null) {
+                            renderObject(chunk, object, x, intHeight + 1, z);
                         }
                     }
                 }
-                if (dark) {
-                    chunk.setMaterial(x, maxY, z, BEDROCK);
+                if (roofType != null) {
+                    chunk.setMaterial(x, maxY, z, (roofType == Dimension.WallType.BEDROCK) ? BEDROCK : BARRIER);
                     chunk.setHeight(x, z, maxY);
                 } else if (_void) {
-                    chunk.setHeight(x, z, minY);
-                } else if (waterLevel > intHeight) {
+                    chunk.setHeight(x, z, minHeight);
+                } else if (underWater) {
                     chunk.setHeight(x, z, (waterLevel < maxY) ? (waterLevel + 1): maxY);
                 } else {
                     chunk.setHeight(x, z, (intHeight < maxY) ? (intHeight + 1): maxY);
@@ -254,11 +220,120 @@ public class WorldPainterChunkFactory implements ChunkFactory {
                 if (logger.isTraceEnabled()) {
                     logger.trace("Exporting layer {} for chunk {},{}", layer, chunkX, chunkZ);
                 }
-                ((FirstPassLayerExporter) layerExporter).render(dimension, tile, chunk, platform);
+                ((FirstPassLayerExporter) layerExporter).render(tile, chunk);
             }
         }
         result.stats.surfaceArea = 256;
         return result;
+    }
+
+    public void applyTopLayer(Tile tile, Chunk chunk, int xInTile, int yInTile, boolean onlyWhereSolid) {
+        final Terrain terrain = tile.getTerrain(xInTile, yInTile);
+        final int worldX = (tile.getX() << 7) | xInTile, worldY = (tile.getY() << 7) | yInTile, x = xInTile & 0xf, z = yInTile & 0xf;
+        final float height = tile.getHeight(xInTile, yInTile);
+        final int intHeight = Math.round(height), waterLevel = tile.getWaterLevel(xInTile, yInTile);
+        final int topLayerDepth = dimension.getTopLayerDepth(worldX, worldY, intHeight);
+        final boolean floodWithLava;
+        final boolean underWater = waterLevel > intHeight;
+        final int topLayerLayerOffset;
+        if (topLayersRelativeToTerrain
+                && terrain.isCustom()
+                && (Terrain.getCustomMaterial(terrain.getCustomTerrainIndex()).getMode() == MixedMaterial.Mode.LAYERED)) {
+            topLayerLayerOffset = -(intHeight - Terrain.getCustomMaterial(terrain.getCustomTerrainIndex()).getPatternHeight() + 1);
+        } else {
+            topLayerLayerOffset = 0;
+        }
+        if (underWater) {
+            floodWithLava = tile.getBitLayerValue(FloodWithLava.INSTANCE, xInTile, yInTile);
+        } else {
+            floodWithLava = false;
+        }
+        int subsurfaceMaxHeight = intHeight - topLayerDepth;
+        if (coverSteepTerrain) {
+            subsurfaceMaxHeight = Math.min(subsurfaceMaxHeight,
+                    Math.min(Math.min(dimension.getIntHeightAt(worldX - 1, worldY, Integer.MAX_VALUE),
+                                    dimension.getIntHeightAt(worldX + 1, worldY, Integer.MAX_VALUE)),
+                            Math.min(dimension.getIntHeightAt(worldX, worldY - 1, Integer.MAX_VALUE),
+                                    dimension.getIntHeightAt(worldX, worldY + 1, Integer.MAX_VALUE))));
+        }
+        int columnRenderHeight = Math.min(Math.max(intHeight, waterLevel), maxY);
+        for (int y = Math.max(subsurfaceMaxHeight + 1, minHeight + (bedrock ? 1 : 0)); y <= columnRenderHeight; y++) {
+            if (onlyWhereSolid && (! chunk.getMaterial(x, y, z).solid)) {
+                continue;
+            }
+            if (y < intHeight) {
+                // Top/terrain layer, but not surface block
+                chunk.setMaterial(x, y, z, terrain.getMaterial(platform, seed, worldX, worldY, y + topLayerLayerOffset, intHeight + topLayerLayerOffset));
+            } else if (y == intHeight) {
+                // Surface block
+                final Material material;
+                if (topLayerLayerOffset != 0) {
+                    material = terrain.getMaterial(platform, seed, worldX, worldY, intHeight + topLayerLayerOffset, intHeight + topLayerLayerOffset);
+                } else {
+                    // Use floating point height here to make sure
+                    // undulations caused by layer variation settings/
+                    // blobs, etc. look continuous on the surface
+                    material = terrain.getMaterial(platform, seed, worldX, worldY, height + topLayerLayerOffset, intHeight + topLayerLayerOffset);
+                }
+                final int blockType = material.blockType;
+                if (((blockType == BLK_WOODEN_SLAB) || (blockType == BLK_SLAB) || (blockType == BLK_RED_SANDSTONE_SLAB)) && (! underWater) && (height > intHeight)) {
+                    chunk.setMaterial(x, y, z, Material.get(blockType - 1, material.data));
+                } else {
+                    chunk.setMaterial(x, y, z, material);
+                }
+            } else if (y <= waterLevel) {
+                // Above the surface but below the water/lava level
+                if (floodWithLava) {
+                    chunk.setMaterial(x, y, z, STATIONARY_LAVA);
+                } else {
+                    chunk.setMaterial(x, y, z, STATIONARY_WATER);
+                }
+            }
+        }
+    }
+
+    public void applySubSurface(Tile tile, Chunk chunk, int xInTile, int yInTile) {
+        final int worldX = (tile.getX() << 7) | xInTile, worldY = (tile.getY() << 7) | yInTile, x = xInTile & 0xf, z = yInTile & 0xf;
+        final int intHeight = tile.getIntHeight(xInTile, yInTile);
+        final int topLayerDepth = dimension.getTopLayerDepth(worldX, worldY, intHeight);
+        final int subSurfaceLayerOffset = subSurfaceLayersRelativeToTerrain ? -(intHeight - subSurfacePatternHeight + 1) : 0;
+        int subsurfaceMaxHeight = intHeight - topLayerDepth;
+        if (coverSteepTerrain) {
+            subsurfaceMaxHeight = Math.min(subsurfaceMaxHeight,
+                    Math.min(Math.min(dimension.getIntHeightAt(worldX - 1, worldY, Integer.MAX_VALUE),
+                                    dimension.getIntHeightAt(worldX + 1, worldY, Integer.MAX_VALUE)),
+                            Math.min(dimension.getIntHeightAt(worldX, worldY - 1, Integer.MAX_VALUE),
+                                    dimension.getIntHeightAt(worldX, worldY + 1, Integer.MAX_VALUE))));
+        }
+        for (int y = minHeight + (bedrock ? 1 : 0); y <= subsurfaceMaxHeight; y++) {
+            // Sub surface
+            chunk.setMaterial(x, y, z, subsurfaceMaterial.getMaterial(platform, seed, worldX, worldY, y + subSurfaceLayerOffset, intHeight + subSurfaceLayerOffset));
+        }
+    }
+
+    private void renderObject(Chunk chunk, WPObject object, int x, int y, int z) {
+        final int height = object.getDimensions().z;
+        if ((y < minHeight) || (y + height >= maxHeight)) {
+            return;
+        }
+        for (int dy = 0; dy < height; dy++) {
+            if (((y + dy) < minHeight) || ((y + dy) >= maxHeight)) {
+                continue;
+            }
+            if (object.getMask(0, 0, dy)) {
+                final Material objectMaterial = object.getMaterial(0, 0, dy);
+                final Material existingMaterial = chunk.getMaterial(x, y + dy, z);
+                if (existingMaterial.isNamed(MC_WATER)) {
+                    if (objectMaterial.containsWater()) {
+                        chunk.setMaterial(x, y + dy, z, objectMaterial);
+                    } else if (objectMaterial.hasProperty(WATERLOGGED)) {
+                        chunk.setMaterial(x, y + dy, z, objectMaterial.withProperty(WATERLOGGED, true));
+                    }
+                } else {
+                    chunk.setMaterial(x, y + dy, z, objectMaterial);
+                }
+            }
+        }
     }
 
     private boolean isAdjacentWater(Tile tile, int height, int x, int y) {
@@ -273,11 +348,15 @@ public class WorldPainterChunkFactory implements ChunkFactory {
 
     private final Platform platform;
     private final BlockBasedPlatformProvider platformProvider;
-    private final int maxHeight;
+    private final int minHeight, maxHeight, subSurfacePatternHeight, maxY, defaultBiome;
     private final Dimension dimension;
     private final Set<Layer> minimumLayers;
     private final PerlinNoise sugarCaneNoise = new PerlinNoise(0);
     private final Map<Layer, LayerExporter> exporters;
+    private final long seed;
+    private final Terrain subsurfaceMaterial;
+    private final boolean bedrock, coverSteepTerrain, topLayersRelativeToTerrain, subSurfaceLayersRelativeToTerrain, biomesSupported2D, biomesSupported3D, biomesSupportedNamed, copyBiomes;
+    private final Dimension.WallType roofType;
 
     private static final long SUGAR_CANE_SEED_OFFSET = 127411424;
     private static final float SUGAR_CANE_CHANCE = PerlinNoise.getLevelForPromillage(325);

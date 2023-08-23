@@ -10,6 +10,7 @@ import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.worldpainter.exporting.JavaMinecraftWorld;
 import org.pepsoft.worldpainter.exporting.JavaWorldExporter;
 import org.pepsoft.worldpainter.exporting.MinecraftWorld;
+import org.pepsoft.worldpainter.exporting.WorldExportSettings;
 import org.pepsoft.worldpainter.layers.NotPresent;
 import org.pepsoft.worldpainter.platforms.JavaPlatformProvider;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
@@ -25,10 +26,13 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
+import static java.util.Collections.singleton;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_15;
+import static org.pepsoft.worldpainter.GameType.CREATIVE;
+import static org.pepsoft.worldpainter.exporting.WorldExportSettings.EXPORT_EVERYTHING;
 
 /**
  * Created by Pepijn Schmitz on 09-01-17.
@@ -48,10 +52,6 @@ public class RegressionIT {
     @Test
     public void test2_3_6World() throws IOException, UnloadableWorldException, ProgressReceiver.OperationCancelled {
         World2 world = loadWorld("/testset/test-v2.3.6-1.world");
-        File tmpBaseDir = createTmpBaseDir();
-        File anvil12worldDir = exportJavaWorld(world, tmpBaseDir);
-        world.setPlatform(JAVA_ANVIL_1_15);
-        File anvil115worldDir = exportJavaWorld(world, tmpBaseDir);
 //        try (ZipInputStream in = new ZipInputStream(RegressionIT.class.getResourceAsStream("/testset/test-v2.3.6-1-result.zip"))) {
 //            ZipEntry zipEntry;
 //            byte[] buffer = new byte[32768];
@@ -68,15 +68,25 @@ public class RegressionIT {
 //                }
 //            }
 //        }
+        world.setGameType(CREATIVE);
+        world.setAllowCheats(true);
         for (Dimension dimension: world.getDimensions()) {
-            logger.info("Comparing dimension " + dimension.getName());
-            Rectangle area = new Rectangle(dimension.getLowestX() << 5, dimension.getLowestY() << 5, dimension.getWidth() << 5, dimension.getHeight() << 5);
-            try (MinecraftWorld anvil12World = new JavaMinecraftWorld(anvil12worldDir, dimension.getDim(), dimension.getMaxHeight(), JAVA_ANVIL, true, 256);
-                    MinecraftWorld anvil115World = new JavaMinecraftWorld(anvil115worldDir, dimension.getDim(), dimension.getMaxHeight(), JAVA_ANVIL_1_15, true, 256)) {
-                MinecraftWorldUtils.assertEquals("Anvil 1.2", anvil12World, "Anvil 1.15", anvil115World, area);
+            File tmpBaseDir = createTmpBaseDir();
+            try {
+                world.setPlatform(JAVA_ANVIL);
+                File anvil12worldDir = exportDimension(dimension, tmpBaseDir);
+                world.setPlatform(JAVA_ANVIL_1_15);
+                File anvil115worldDir = exportDimension(dimension, tmpBaseDir);
+                logger.info("Comparing dimension " + dimension.getName());
+                Rectangle area = new Rectangle(dimension.getLowestX() << 5, dimension.getLowestY() << 5, dimension.getWidth() << 5, dimension.getHeight() << 5);
+                try (MinecraftWorld anvil12World = new JavaMinecraftWorld(anvil12worldDir, dimension.getAnchor().dim, dimension.getMinHeight(), dimension.getMaxHeight(), JAVA_ANVIL, true, 256);
+                     MinecraftWorld anvil115World = new JavaMinecraftWorld(anvil115worldDir, dimension.getAnchor().dim, dimension.getMinHeight(), dimension.getMaxHeight(), JAVA_ANVIL_1_15, true, 256)) {
+                    MinecraftWorldUtils.assertEquals("Anvil 1.2", anvil12World, "Anvil 1.15", anvil115World, area);
+                }
+            } finally {
+                FileUtils.deleteDir(tmpBaseDir);
             }
         }
-        FileUtils.deleteDir(tmpBaseDir);
     }
 
     protected File exportJavaWorld(World2 world, File baseDir) throws IOException, ProgressReceiver.OperationCancelled {
@@ -88,7 +98,25 @@ public class RegressionIT {
 
         // Export
         logger.info("Exporting world {}", world.getName());
-        JavaWorldExporter worldExporter = new JavaWorldExporter(world);
+        JavaWorldExporter worldExporter = new JavaWorldExporter(world, EXPORT_EVERYTHING);
+        String name = world.getName() + "-" + world.getPlatform().id;
+        worldExporter.export(baseDir, name, null, null);
+
+        // Return the directory into which the world was exported
+        return new File(baseDir, FileUtils.sanitiseName(name));
+    }
+
+    protected File exportDimension(Dimension dimension, File baseDir) throws IOException, ProgressReceiver.OperationCancelled {
+        final World2 world = dimension.getWorld();
+        // Prepare for export
+        for (int i = 0; i < Terrain.CUSTOM_TERRAIN_COUNT; i++) {
+            MixedMaterial material = world.getMixedMaterial(i);
+            Terrain.setCustomMaterial(i, material);
+        }
+
+        // Export
+        logger.info("Exporting dimension {} of world {}", dimension.getName(), world.getName());
+        JavaWorldExporter worldExporter = new JavaWorldExporter(world, new WorldExportSettings(singleton(dimension.getAnchor().dim), null, null));
         String name = world.getName() + "-" + world.getPlatform().id;
         worldExporter.export(baseDir, name, null, null);
 
@@ -101,7 +129,7 @@ public class RegressionIT {
         assertEquals(expectedVersion, level.getVersion());
     }
 
-    protected void verifyJavaDimension(File worldDir, Dimension dimension, Set<Material> expectedMaterials) {
+    protected void verifyJavaDimension(File worldDir, Dimension dimension, Set<Material> expectedMaterials, WorldExportSettings exportSettings) {
         World2 world = dimension.getWorld();
         logger.info("Verifying dimension {} of map {}", dimension.getName(), world.getName());
 
@@ -110,12 +138,12 @@ public class RegressionIT {
         if (! dimension.containsOneOf(NotPresent.INSTANCE)) {
             checkBounds = true;
             int lowestTileX, highestTileX, lowestTileY, highestTileY;
-            if (dimension.getWorld().getTilesToExport() != null) {
+            if (exportSettings.getTilesToExport() != null) {
                 lowestTileX = Integer.MAX_VALUE;
                 highestTileX = Integer.MIN_VALUE;
                 lowestTileY = Integer.MAX_VALUE;
                 highestTileY = Integer.MIN_VALUE;
-                for (Point tile : dimension.getWorld().getTilesToExport()) {
+                for (Point tile: exportSettings.getTilesToExport()) {
                     if (tile.x < lowestTileX) {
                         lowestTileX = tile.x;
                     }
@@ -151,7 +179,7 @@ public class RegressionIT {
         int[] lowestChunkX = {Integer.MAX_VALUE}, highestChunkX = {Integer.MIN_VALUE};
         int[] lowestChunkZ = {Integer.MAX_VALUE}, highestChunkZ = {Integer.MIN_VALUE};
         Set<Material> materials = new HashSet<>();
-        ChunkStore chunkStore = platformProvider.getChunkStore(platform, worldDir, dimension.getDim());
+        ChunkStore chunkStore = platformProvider.getChunkStore(platform, worldDir, dimension.getAnchor().dim);
         chunkStore.visitChunks(chunk -> {
             if (chunk.getxPos() < lowestChunkX[0]) {
                 lowestChunkX[0] = chunk.getxPos();

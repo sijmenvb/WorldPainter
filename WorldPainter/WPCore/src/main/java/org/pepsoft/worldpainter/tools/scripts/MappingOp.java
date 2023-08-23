@@ -25,6 +25,7 @@
 package org.pepsoft.worldpainter.tools.scripts;
 
 import org.pepsoft.worldpainter.Dimension;
+import org.pepsoft.worldpainter.Dimension.Anchor;
 import org.pepsoft.worldpainter.HeightMap;
 import org.pepsoft.worldpainter.Terrain;
 import org.pepsoft.worldpainter.World2;
@@ -41,6 +42,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
 
 /**
  *
@@ -111,31 +113,37 @@ public class MappingOp extends AbstractOperation<Void> {
     
     public MappingOp applyToSurface() {
         this.dimIndex = DIM_NORMAL;
+        this.dimInverted = false;
         return this;
     }
     
     public MappingOp applyToNether() {
         this.dimIndex = DIM_NETHER;
+        this.dimInverted = false;
         return this;
     }
     
     public MappingOp applyToEnd() {
         this.dimIndex = DIM_END;
+        this.dimInverted = false;
         return this;
     }
 
     public MappingOp applyToSurfaceCeiling() {
-        this.dimIndex = DIM_NORMAL_CEILING;
+        this.dimIndex = DIM_NORMAL;
+        this.dimInverted = true;
         return this;
     }
 
     public MappingOp applyToNetherCeiling() {
-        this.dimIndex = DIM_NETHER_CEILING;
+        this.dimIndex = DIM_NETHER;
+        this.dimInverted = true;
         return this;
     }
 
     public MappingOp applyToEndCeiling() {
-        this.dimIndex = DIM_END_CEILING;
+        this.dimIndex = DIM_END;
+        this.dimInverted = true;
         return this;
     }
 
@@ -205,7 +213,7 @@ public class MappingOp extends AbstractOperation<Void> {
         } else {
             float factor = (float) (upper - lower) / (storedUpperFrom - storedLowerFrom);
             for (int i = storedLowerFrom; i <= storedUpperFrom; i++) {
-                mapping[i] = lower + (int) ((i - storedLowerFrom) * factor + 0.5f);
+                mapping[i] = lower + Math.round((i - storedLowerFrom) * factor);
             }
         }
         return this;
@@ -264,8 +272,8 @@ public class MappingOp extends AbstractOperation<Void> {
             }
         }
         final boolean colourMapPresent = ! colourMapping.isEmpty();
-        if ((greyScaleMapPresent || colourMapPresent) && (heightMap == null)) {
-            throw new ScriptException("Mapping specified but no height map specified");
+        if ((greyScaleMapPresent || colourMapPresent) && (heightMap == null) && (layer == null)) {
+            throw new ScriptException("Mapping specified but no height map or layer specified");
         } else if (heightMap != null) {
             if ((! greyScaleMapPresent) && (! colourMapPresent)) {
                 throw new ScriptException("mapping not specified");
@@ -324,7 +332,7 @@ public class MappingOp extends AbstractOperation<Void> {
                 }
             }
         }
-        final Dimension dimension = world.getDimension(dimIndex);
+        final Dimension dimension = world.getDimension(new Anchor(dimIndex, DETAIL, dimInverted, 0));
         if (dimension == null) {
             throw new ScriptException("Non existent dimension specified");
         }
@@ -338,7 +346,7 @@ public class MappingOp extends AbstractOperation<Void> {
         if (heightMap != null) {
             if ((scale != 100) || (offsetX != 0) || (offsetY != 0)) {
                 boolean smoothScaling = (scale != 100) && smoothScalingAllowed; // TODO ?
-                scaledHeightMap = TransformingHeightMap.build().withHeightMap(heightMap).withScale(scale).withOffset(offsetX, offsetY).now();
+                scaledHeightMap = TransformingHeightMap.build().withHeightMap(heightMap).withScale(scale / 100.0f).withOffset(offsetX, offsetY).now();
             } else {
                 scaledHeightMap = heightMap;
             }
@@ -366,11 +374,11 @@ public class MappingOp extends AbstractOperation<Void> {
                             continue;
                         }
                     } else {
-                        int valueIn = (int) (scaledHeightMap.getHeight(x, y) + 0.5f);
+                        long valueIn = Math.round(scaledHeightMap.getHeight(x, y));
                         if ((valueIn < 0) || (valueIn > 65535)) {
                             continue;
                         }
-                        valueOut = mapping[valueIn];
+                        valueOut = mapping[(int) valueIn];
                         if (valueOut == -1) {
                             continue;
                         }
@@ -385,7 +393,7 @@ public class MappingOp extends AbstractOperation<Void> {
                     if (filterValue == 0.0f) {
                         continue;
                     } else if (smoothScalingAllowed && (filterValue != 1.0f)) {
-                        valueOut = (int) (filterValue * valueOut + 0.5f);
+                        valueOut = Math.round(filterValue * valueOut);
                     }
                 }
                 switch (mode) {
@@ -459,6 +467,7 @@ public class MappingOp extends AbstractOperation<Void> {
     private long storedColour = -1L;
     private Mode mode = Mode.SET;
     private Filter filter;
+    private boolean dimInverted;
    
     enum Mode {
         SET, SET_WHEN_LOWER, SET_WHEN_HIGHER, SET_TERRAIN

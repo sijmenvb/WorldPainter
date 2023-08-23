@@ -6,10 +6,9 @@
 
 package org.pepsoft.worldpainter.tools;
 
-import org.pepsoft.util.FileUtils;
+import org.pepsoft.util.swing.BetterJPopupMenu;
 import org.pepsoft.worldpainter.MouseAdapter;
 import org.pepsoft.worldpainter.*;
-import org.pepsoft.worldpainter.colourschemes.DynMapColourScheme;
 import org.pepsoft.worldpainter.heightMaps.*;
 import org.pepsoft.worldpainter.heightMaps.gui.HeightMapPropertiesPanel;
 import org.pepsoft.worldpainter.heightMaps.gui.HeightMapTileProvider;
@@ -17,21 +16,25 @@ import org.pepsoft.worldpainter.heightMaps.gui.HeightMapTreeCellRenderer;
 import org.pepsoft.worldpainter.heightMaps.gui.HeightMapTreeModel;
 import org.pepsoft.worldpainter.layers.Biome;
 import org.pepsoft.worldpainter.themes.SimpleTheme;
+import org.pepsoft.worldpainter.util.ImageUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
-import javax.swing.filechooser.FileFilter;
 import javax.swing.tree.TreePath;
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
 
 import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.util.GUIUtils.scaleToUI;
 import static org.pepsoft.worldpainter.Terrain.GRASS;
 
@@ -43,7 +46,8 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
     /**
      * Creates new form HeightMapEditor
      */
-    public HeightMapEditor() throws IOException {
+    public HeightMapEditor(HeightMap heightMap) throws IOException {
+        rootHeightMap = heightMap;
         initComponents();
         tiledImageViewer1.addMouseWheelListener(new MouseWheelListener() {
             @Override
@@ -97,15 +101,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
         }
     }
 
-    private void createHeightMap() throws IOException {
-        rootHeightMap = TileFactoryFactory.createFancyTileFactory(new Random().nextLong(), GRASS, 0, DEFAULT_MAX_HEIGHT_ANVIL, 62, 58, false, 20f, 1.0).getHeightMap();
-//        File bitmapFile = new File("/home/pepijn/Pictures/WorldPainter/test-image-8-bit-grayscale.png");
-//        BufferedImage bitmap = ImageIO.read(bitmapFile);
-//        BitmapHeightMap bitmapHeightMap = BitmapHeightMap.build().withImage(bitmap).withSmoothScaling(false).withRepeat(true).now();
-//        TransformingHeightMap scaledHeightMap = TransformingHeightMap.build().withHeightMap(bitmapHeightMap).withScale(300).now();
-//        NoiseHeightMap angleMap = new NoiseHeightMap("Angle", (float) (Math.PI * 2), 2.5f, 1);
-//        NoiseHeightMap distanceMap = new NoiseHeightMap("Distance", 25f, 2.5f, 1);
-//        heightMap = new DisplacementHeightMap(scaledHeightMap, angleMap, distanceMap);
+    private void createHeightMap() {
         focusOn(rootHeightMap);
         installHeightMap(true);
         jTree1.addMouseListener(new MouseAdapter() {
@@ -137,7 +133,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
                 } else {
                     parent = null;
                 }
-                JPopupMenu menu = new JPopupMenu();
+                JPopupMenu menu = new BetterJPopupMenu();
                 JMenuItem menuItem = new JMenuItem("Focus Here");
                 menuItem.addActionListener(actionEvent -> {
                     focusOn(heightMap);
@@ -178,7 +174,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
                 insertMenu.add(menuItem);
                 menuItem = new JMenuItem("Transformation");
                 menuItem.addActionListener(actionEvent -> {
-                    TransformingHeightMap transformingHeightMap = new TransformingHeightMap(heightMap.getName(), heightMap, 100, 100, 0, 0, 0);
+                    TransformingHeightMap transformingHeightMap = new TransformingHeightMap(heightMap.getName(), heightMap, 1.0f, 1.0f, 0, 0, 0.0f);
                     replace(parent, heightMap, transformingHeightMap);
                 });
                 insertMenu.add(menuItem);
@@ -210,46 +206,12 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
                 replaceMenu.add(menuItem);
                 menuItem = new JMenuItem("Bitmap");
                 menuItem.addActionListener(actionEvent -> {
-                    File myHeightMapDir = Configuration.getInstance().getHeightMapsDirectory();
-                    final Set<String> extensions = new HashSet<>(Arrays.asList(ImageIO.getReaderFileSuffixes()));
-                    StringBuilder sb = new StringBuilder("Supported image formats (");
-                    boolean first = true;
-                    for (String extension: extensions) {
-                        if (first) {
-                            first = false;
-                        } else {
-                            sb.append(", ");
-                        }
-                        sb.append("*.");
-                        sb.append(extension);
-                    }
-                    sb.append(')');
-                    final String description = sb.toString();
-                    File file = FileUtils.selectFileForOpen(HeightMapEditor.this, "Select a height map image file", myHeightMapDir, new FileFilter() {
-                        @Override
-                        public boolean accept(File f) {
-                            if (f.isDirectory()) {
-                                return true;
-                            }
-                            String filename = f.getName();
-                            int p = filename.lastIndexOf('.');
-                            if (p != -1) {
-                                String extension = filename.substring(p + 1).toLowerCase();
-                                return extensions.contains(extension);
-                            } else {
-                                return false;
-                            }
-                        }
-
-                        @Override
-                        public String getDescription() {
-                            return description;
-                        }
-                    });
+                    final File myHeightMapDir = Configuration.getInstance().getHeightMapsDirectory();
+                    final File file = ImageUtils.selectImageForOpen(HeightMapEditor.this, "a height map image file", myHeightMapDir);
                     if (file != null) {
                         try {
                             BufferedImage image = ImageIO.read(file);
-                            BitmapHeightMap bitmapHeightMap = new BitmapHeightMap(file.getName(), image, 0, file, false, false);
+                            BitmapHeightMap bitmapHeightMap = BitmapHeightMap.build().withName(file.getName()).withImage(image).withFile(file).now();
                             replace(parent, heightMap, bitmapHeightMap);
                         } catch (IOException e) {
                             throw new RuntimeException(e);
@@ -265,7 +227,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
                 replaceMenu.add(menuItem);
                 menuItem = new JMenuItem("Bands");
                 menuItem.addActionListener(actionEvent -> {
-                    BandedHeightMap bandedHeightMap = new BandedHeightMap();
+                    BandedHeightMap bandedHeightMap = new BandedHeightMap(100, 1.0, 100, 1.0, false);
                     replace(parent, heightMap, bandedHeightMap);
                 });
                 replaceMenu.add(menuItem);
@@ -302,7 +264,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
                 replaceMenu.add(menuItem);
                 menuItem = new JMenuItem("Transformation");
                 menuItem.addActionListener(actionEvent -> {
-                    TransformingHeightMap transformingHeightMap = new TransformingHeightMap(null, new ConstantHeightMap(1.0f), 100, 100, 0, 0, 0);
+                    TransformingHeightMap transformingHeightMap = new TransformingHeightMap(null, new ConstantHeightMap(1.0f), 1.0f, 1.0f, 0, 0, 0.0f);
                     replace(parent, heightMap, transformingHeightMap);
                 });
                 replaceMenu.add(menuItem);
@@ -348,11 +310,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
     private void installHeightMap(boolean updateTreeModel) {
         switch (viewMode) {
             case HEIGHT_MAP:
-                if (tiledImageViewer1.getTileProviderCount() == 0) {
-                    tiledImageViewer1.setTileProvider(new HeightMapTileProvider(focusHeightMap));
-                } else {
-                    tiledImageViewer1.replaceTileProvider(0, new HeightMapTileProvider(focusHeightMap));
-                }
+                tiledImageViewer1.setTileProvider(new HeightMapTileProvider(focusHeightMap));
                 tiledImageViewer1.setGridColour(Color.GRAY);
                 break;
             case TERRAIN:
@@ -401,11 +359,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
                         return tile;
                     }
                 };
-                if (tiledImageViewer1.getTileProviderCount() == 0) {
-                    tiledImageViewer1.setTileProvider(0, new WPTileProvider(tileProvider, new DynMapColourScheme("default", true), null, Collections.singleton(Biome.INSTANCE), false, 10, TileRenderer.LightOrigin.NORTHWEST, false, null));
-                } else {
-                    tiledImageViewer1.replaceTileProvider(0, new WPTileProvider(tileProvider, new DynMapColourScheme("default", true), null, Collections.singleton(Biome.INSTANCE), false, 10, TileRenderer.LightOrigin.NORTHWEST, false, null));
-                }
+                tiledImageViewer1.setTileProvider(new WPTileProvider(tileProvider, ColourScheme.DEFAULT, null, Collections.singleton(Biome.INSTANCE), false, 10, TileRenderer.LightOrigin.NORTHWEST, null));
                 tiledImageViewer1.setGridColour(Color.BLACK);
                 break;
         }
@@ -462,7 +416,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
         tiledImageViewer1 = new org.pepsoft.util.swing.TiledImageViewer();
         simpleThemeEditor1 = new org.pepsoft.worldpainter.themes.impl.simple.SimpleThemeEditor();
 
-        setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
+        setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         setTitle("Height Map Editor");
 
         jToolBar1.setRollover(true);
@@ -604,10 +558,21 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
         Configuration.setInstance(config);
         logger.info("Installation ID: " + config.getUuid());
 
+        HeightMap rootHeightMap = TileFactoryFactory.createFancyTileFactory(new Random().nextLong(), GRASS, 0, DEFAULT_MAX_HEIGHT_ANVIL, DEFAULT_WATER_LEVEL, 58, false, 20f, 1.0).getHeightMap();
+//        File bitmapFile = new File("/home/pepijn/Pictures/WorldPainter/test-image-8-bit-grayscale.png");
+//        BufferedImage bitmap = ImageIO.read(bitmapFile);
+//        BitmapHeightMap bitmapHeightMap = BitmapHeightMap.build().withImage(bitmap).withSmoothScaling(false).withRepeat(true).now();
+//        TransformingHeightMap scaledHeightMap = TransformingHeightMap.build().withHeightMap(bitmapHeightMap).withScale(300).now();
+//        NoiseHeightMap angleMap = new NoiseHeightMap("Angle", (float) (Math.PI * 2), 2.5f, 1);
+//        NoiseHeightMap distanceMap = new NoiseHeightMap("Distance", 25f, 2.5f, 1);
+//        rootHeightMap = new DisplacementHeightMap(scaledHeightMap, angleMap, distanceMap);
+
         /* Create and display the form */
         java.awt.EventQueue.invokeLater(() -> {
             try {
-                new HeightMapEditor().setVisible(true);
+                final HeightMapEditor heightMapEditor = new HeightMapEditor(rootHeightMap);
+                heightMapEditor.setDefaultCloseOperation(EXIT_ON_CLOSE);
+                heightMapEditor.setVisible(true);
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -623,7 +588,7 @@ public class HeightMapEditor extends javax.swing.JFrame implements HeightMapProp
     private final Map<Point, Tile> tileCache = Collections.synchronizedMap(new HashMap<>());
     private HeightMapTreeModel treeModel;
     private ViewMode viewMode = ViewMode.HEIGHT_MAP;
-    private SimpleTheme theme = SimpleTheme.createDefault(Terrain.GRASS, 0, DEFAULT_MAX_HEIGHT_ANVIL, 62);
+    private SimpleTheme theme = SimpleTheme.createDefault(Terrain.GRASS, 0, DEFAULT_MAX_HEIGHT_ANVIL, DEFAULT_WATER_LEVEL);
     private long seed = new Random().nextLong();
     private HeightMapTreeCellRenderer cellRenderer;
 

@@ -4,17 +4,18 @@
  */
 package org.pepsoft.worldpainter.layers.combined;
 
+import org.pepsoft.worldpainter.layers.CombinedLayer;
+import org.pepsoft.worldpainter.layers.CustomLayer;
+import org.pepsoft.worldpainter.layers.Layer;
+
+import javax.swing.event.TableModelEvent;
+import javax.swing.event.TableModelListener;
+import javax.swing.table.TableModel;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import javax.swing.event.TableModelEvent;
-import javax.swing.event.TableModelListener;
-import javax.swing.table.TableModel;
-import org.pepsoft.worldpainter.layers.CombinedLayer;
-import org.pepsoft.worldpainter.layers.CustomLayer;
-import org.pepsoft.worldpainter.layers.Layer;
 
 /**
  *
@@ -23,10 +24,13 @@ import org.pepsoft.worldpainter.layers.Layer;
 public class CombinedLayerTableModel implements TableModel {
     public CombinedLayerTableModel(List<Layer> layers, Map<Layer, Float> factors) {
         rows = new ArrayList<>(layers.size());
-        rows.addAll(layers.stream().map(layer -> new Row(layer, (int) (factors.get(layer) * 100 + 0.5f), ((layer instanceof CustomLayer) ? ((CustomLayer) layer).isHide() : false))).collect(Collectors.toList()));
+        rows.addAll(layers.stream().map(layer -> new Row(layer, Math.round(factors.get(layer) * 100), ((layer instanceof CustomLayer) ? ((CustomLayer) layer).isHide() : false))).collect(Collectors.toList()));
     }
     
     void addRow(Row row) {
+        if (row == null) {
+            throw new NullPointerException("row");
+        }
         rows.add(row);
         TableModelEvent event = new TableModelEvent(this, rows.size() - 1, rows.size() - 1, TableModelEvent.ALL_COLUMNS, TableModelEvent.INSERT);
         for (TableModelListener listener: listeners) {
@@ -112,6 +116,9 @@ public class CombinedLayerTableModel implements TableModel {
         Row row = rows.get(rowIndex);
         switch (columnIndex) {
             case COLUMN_LAYER:
+                if (aValue == null) {
+                    throw new NullPointerException("aValue");
+                }
                 row.layer = (Layer) aValue;
                 break;
             case COLUMN_FACTOR:
@@ -147,6 +154,9 @@ public class CombinedLayerTableModel implements TableModel {
     
     static class Row {
         Row(Layer layer, int factor, boolean hide) {
+            if (layer == null) {
+                throw new NullPointerException("layer");
+            }
             this.layer = layer;
             this.factor = factor;
             this.hide = hide;

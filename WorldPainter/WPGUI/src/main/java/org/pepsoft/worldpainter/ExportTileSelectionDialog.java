@@ -10,6 +10,7 @@
  */
 package org.pepsoft.worldpainter;
 
+import org.pepsoft.worldpainter.Dimension.Anchor;
 import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
 import org.pepsoft.worldpainter.layers.Layer;
 
@@ -19,31 +20,27 @@ import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowEvent;
 import java.awt.event.WindowListener;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
 import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
 
 /**
  *
  * @author pepijn
  */
-public class ExportTileSelectionDialog extends javax.swing.JDialog implements WindowListener {
+public class ExportTileSelectionDialog extends WorldPainterDialog implements WindowListener {
     /** Creates new form ExportTileSelectionDialog */
-    public ExportTileSelectionDialog(java.awt.Dialog parent, World2 world, int selectedDimension, Set<Point> selectedTiles, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, Collection<Layer> hiddenLayers, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin) {
-        super(parent, true);
+    public ExportTileSelectionDialog(Window parent, World2 world, int selectedDimension, Set<Point> selectedTiles, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, Set<Layer> hiddenLayers, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin) {
+        super(parent);
         this.world = world;
         initComponents();
         
-        List<Integer> dimensions = new ArrayList<>();
+        SortedSet<Integer> dimensions = new TreeSet<>();
         for (Dimension dimension: world.getDimensions()) {
-            if (dimension.getDim() < 0) {
-                // Ceiling dimensions shouldn't be separately selectable
-                continue;
-            }
-            dimensions.add(dimension.getDim());
+            dimensions.add(dimension.getAnchor().dim);
         }
         jComboBox1.setModel(new DefaultComboBoxModel(dimensions.toArray()));
         programmaticChange = true;
@@ -90,8 +87,8 @@ public class ExportTileSelectionDialog extends javax.swing.JDialog implements Wi
         tileSelector1.setContourLines(contourLines);
         tileSelector1.setContourSeparation(contourSeparation);
         tileSelector1.setLightOrigin(lightOrigin);
-        tileSelector1.setDimension(world.getDimension(selectedDimension));
         tileSelector1.setCustomBiomeManager(customBiomeManager);
+        tileSelector1.setDimension(world.getDimension(new Anchor(selectedDimension, DETAIL, false, 0)));
         if (selectedTiles != null) {
             tileSelector1.setSelectedTiles(selectedTiles);
         }
@@ -100,7 +97,8 @@ public class ExportTileSelectionDialog extends javax.swing.JDialog implements Wi
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "cancel");
         
         getRootPane().setDefaultButton(buttonClose);
-        
+
+        scaleWindowToUI();
         setLocationRelativeTo(parent);
         
         addWindowListener(this);
@@ -215,7 +213,7 @@ public class ExportTileSelectionDialog extends javax.swing.JDialog implements Wi
     private void jComboBox1ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jComboBox1ActionPerformed
         if (! programmaticChange) {
             int selectedDimension = getSelectedDimension();
-            tileSelector1.setDimension(world.getDimension(selectedDimension));
+            tileSelector1.setDimension(world.getDimension(new Anchor(selectedDimension, DETAIL, false, 0)));
             tileSelector1.moveToCentre();
             tileSelector1.clearSelection();
             buttonSetSpawn.setEnabled(selectedDimension == DIM_NORMAL);
@@ -223,7 +221,7 @@ public class ExportTileSelectionDialog extends javax.swing.JDialog implements Wi
     }//GEN-LAST:event_jComboBox1ActionPerformed
 
     private void buttonCloseActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCloseActionPerformed
-        dispose();
+        ok();
     }//GEN-LAST:event_buttonCloseActionPerformed
 
     private void buttonSetSpawnActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonSetSpawnActionPerformed

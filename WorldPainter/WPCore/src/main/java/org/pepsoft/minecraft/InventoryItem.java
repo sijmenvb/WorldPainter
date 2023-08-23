@@ -5,8 +5,9 @@
 
 package org.pepsoft.minecraft;
 
-import java.util.HashMap;
 import org.jnbt.CompoundTag;
+
+import java.util.HashMap;
 
 import static org.pepsoft.minecraft.Constants.*;
 
@@ -15,16 +16,31 @@ import static org.pepsoft.minecraft.Constants.*;
  * @author pepijn
  */
 public class InventoryItem extends AbstractNBTItem {
-    public InventoryItem() {
-        super(new CompoundTag("", new HashMap<>()));
-    }
-
-    public InventoryItem(int type, int damage, int count, int slot) {
+    public InventoryItem(int id, int damage, int count, int slot) {
         this();
-        setType(type);
+        setId(id);
         setDamage(damage);
         setCount(count);
         setSlot(slot);
+    }
+
+    public InventoryItem(String id, int damage, int count, int slot) {
+        this();
+        setId(id);
+        setDamage(damage);
+        setCount(count);
+        setSlot(slot);
+    }
+
+    public InventoryItem(String id, int count, int slot) {
+        this();
+        setId(id);
+        setCount(count);
+        setSlot(slot);
+    }
+
+    private InventoryItem() {
+        super(new CompoundTag("", new HashMap<>()));
     }
 
     public InventoryItem(CompoundTag tag) {
@@ -61,6 +77,22 @@ public class InventoryItem extends AbstractNBTItem {
 
     public final void setType(int type) {
         setShort(TAG_ID_, (short) type);
+    }
+
+    public final void setId(String id) {
+        setString(TAG_ID_, id);
+    }
+
+    public final void setId(int id) {
+        setShort(TAG_ID_, (short) id);
+    }
+
+    public final CompoundTag getTag() {
+        return (CompoundTag) getTag(TAG_TAG_);
+    }
+
+    public final void setTag(CompoundTag tag) {
+        setTag(TAG_TAG_, tag);
     }
 
     private static final long serialVersionUID = 1L;

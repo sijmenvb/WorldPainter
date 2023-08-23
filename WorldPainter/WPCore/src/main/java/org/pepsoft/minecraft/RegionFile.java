@@ -58,7 +58,7 @@ package org.pepsoft.minecraft;
 
  */
 
-import org.pepsoft.worldpainter.exception.WPRuntimeException;
+import org.pepsoft.util.mdc.MDCCapturingRuntimeException;
 
 import java.io.*;
 import java.util.ArrayList;
@@ -149,7 +149,9 @@ public final class RegionFile implements AutoCloseable {
         }
 
         /* set up the available sector map */
-        int nSectors = (int) file.length() / SECTOR_BYTES;
+        int nSectors = ((file.length() & 0xfff) == 0)
+                ? (int) file.length() / SECTOR_BYTES
+                : (int) (((file.length() >> 12) + 1) << 12) / SECTOR_BYTES; // In read-only mode the file length may not be a multiple of 4K at this point, so compensate for that
         sectorFree = new ArrayList<>(nSectors);
 
         for (int i = 0; i < nSectors; ++i) {
@@ -297,6 +299,19 @@ public final class RegionFile implements AutoCloseable {
         return count;
     }
 
+    public synchronized void delete(int x, int z) throws IOException {
+        int offset = getOffset(x, z);
+        int sectorNumber = offset >> 8;
+        int sectorsAllocated = offset & 0xFF;
+
+        /* mark the sectors previously used for this chunk as free */
+        for (int i = 0; i < sectorsAllocated; ++i) {
+            sectorFree.set(sectorNumber + i, true);
+        }
+        setOffset(x, z, 0);
+        setTimestamp(x, z, (int) (System.currentTimeMillis() / 1000L));
+    }
+
     @Override
     public String toString() {
         return fileName.getPath();
@@ -311,7 +326,7 @@ public final class RegionFile implements AutoCloseable {
 
         // maximum chunk size is 1MB
         if (sectorsNeeded >= 256) {
-            return;
+            throw new IllegalArgumentException("Maximum chunk size is 1MB");
         }
 
         if (sectorNumber != 0 && sectorsAllocated == sectorsNeeded) {
@@ -444,7 +459,7 @@ public final class RegionFile implements AutoCloseable {
         }
     }
 
-    public static class InvalidRegionFileException extends WPRuntimeException {
+    public static class InvalidRegionFileException extends MDCCapturingRuntimeException {
         InvalidRegionFileException(String message) {
             super(message);
         }

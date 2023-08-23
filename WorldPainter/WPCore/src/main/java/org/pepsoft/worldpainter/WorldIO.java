@@ -1,5 +1,7 @@
 package org.pepsoft.worldpainter;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jetbrains.annotations.NotNull;
 import org.pepsoft.minecraft.Direction;
 import org.pepsoft.minecraft.SeededGenerator;
 import org.pepsoft.minecraft.SuperflatGenerator;
@@ -17,13 +19,16 @@ import org.pepsoft.worldpainter.vo.EventVO;
 
 import java.io.*;
 import java.util.*;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
-import java.util.zip.ZipException;
+import java.util.zip.*;
 
+import static com.fasterxml.jackson.core.JsonGenerator.Feature.AUTO_CLOSE_TARGET;
+import static com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS;
 import static org.pepsoft.minecraft.Material.*;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
 import static org.pepsoft.worldpainter.Generator.DEFAULT;
+
+// TODO why this design again? Just make these utility methods, surely?
 
 /**
  * A utility class for saving and loading WorldPainter {@link World2 worlds} in
@@ -59,21 +64,35 @@ public class WorldIO {
      */
     public void save(OutputStream out) throws IOException {
         try (ObjectOutputStream wrappedOut = new ObjectOutputStream(new GZIPOutputStream(out))) {
-            Map<String, Object> metadata = new HashMap<>();
-            metadata.put(World2.METADATA_KEY_WP_VERSION, Version.VERSION);
-            metadata.put(World2.METADATA_KEY_WP_BUILD, Version.BUILD);
-            metadata.put(World2.METADATA_KEY_TIMESTAMP, new Date());
-            if (WPPluginManager.getInstance() != null) {
-                List<String[]> pluginArray = new ArrayList<>();
-                WPPluginManager.getInstance().getAllPlugins().stream()
-                    .filter(plugin -> ! plugin.getClass().getName().startsWith("org.pepsoft.worldpainter"))
-                    .forEach(plugin -> pluginArray.add(new String[]{plugin.getName(), plugin.getVersion()}));
-                if (! pluginArray.isEmpty()) {
-                    metadata.put(World2.METADATA_KEY_PLUGINS, pluginArray.toArray(new String[pluginArray.size()][]));
-                }
-            }
-            wrappedOut.writeObject(metadata);
+            wrappedOut.writeObject(getMetadata());
             wrappedOut.writeObject(world);
+        }
+    }
+
+    /**
+     * Save the world to a binary stream, such that it can later be loaded using {@link #load(InputStream)}. The stream
+     * is closed before returning.
+     *
+     * <p>This version uses a format that compresses every region separately, for faster access to individual regions
+     * without having to load the entire world.
+     *
+     * @param out The stream to which to save the world.
+     * @throws IOException If an I/O error occurred saving the world.
+     */
+    // TODO this saves multiple copies of layers, etc.! Either solve that on loading, or else use this only for
+    //  exporting
+    public void saveCompartmentalised(OutputStream out) throws IOException {
+        try (ZipOutputStream wrappedOut = new ZipOutputStream(out)) {
+            final ObjectMapper objectMapper = new ObjectMapper()
+                    .disable(AUTO_CLOSE_TARGET)
+                    .disable(WRITE_DATES_AS_TIMESTAMPS);
+            wrappedOut.putNextEntry(new ZipEntry("metadata.json"));
+            try {
+                objectMapper.writeValue(wrappedOut, getMetadata());
+            } finally {
+                wrappedOut.closeEntry();
+            }
+            world.save(wrappedOut);
         }
     }
 
@@ -110,7 +129,7 @@ public class WorldIO {
         } catch (ZipException | StreamCorruptedException | IllegalArgumentException | ClassNotFoundException | InvalidClassException | EOFException e) {
             throw new UnloadableWorldException(e.getClass().getSimpleName() + " while loading world", e, metadata);
         } catch (IOException e) {
-            if (e.getMessage().equals("Not in GZIP format")) {
+            if ("Not in GZIP format".equals(e.getMessage())) {
                 throw new UnloadableWorldException("Not in GZIP format", e, metadata);
             } else {
                 throw e;
@@ -121,24 +140,43 @@ public class WorldIO {
         }
     }
 
+    @NotNull
+    private Map<String, Object> getMetadata() {
+        final Map<String, Object> metadata = new HashMap<>();
+        metadata.put(World2.METADATA_KEY_NAME, world.getName());
+        metadata.put(World2.METADATA_KEY_WP_VERSION, Version.VERSION);
+        metadata.put(World2.METADATA_KEY_WP_BUILD, Version.BUILD);
+        metadata.put(World2.METADATA_KEY_TIMESTAMP, new Date());
+        if (WPPluginManager.getInstance() != null) {
+            final List<String[]> pluginArray = new ArrayList<>();
+            WPPluginManager.getInstance().getAllPlugins().stream()
+                    .filter(plugin -> ! plugin.getClass().getName().startsWith("org.pepsoft.worldpainter"))
+                    .forEach(plugin -> pluginArray.add(new String[]{plugin.getName(), plugin.getVersion()}));
+            if (! pluginArray.isEmpty()) {
+                metadata.put(World2.METADATA_KEY_PLUGINS, pluginArray.toArray(new String[pluginArray.size()][]));
+            }
+        }
+        return metadata;
+    }
+
     private World2 migrate(Object object) {
         if (object instanceof World) {
             World oldWorld = (World) object;
-            World2 newWorld = new World2(JAVA_MCREGION, oldWorld.getMinecraftSeed(), oldWorld.getTileFactory(), 128);
+            World2 newWorld = new World2(JAVA_MCREGION, oldWorld.getMinecraftSeed(), oldWorld.getTileFactory());
             newWorld.setCreateGoodiesChest(oldWorld.isCreateGoodiesChest());
             newWorld.setImportedFrom(oldWorld.getImportedFrom());
             newWorld.setName(oldWorld.getName());
             newWorld.setSpawnPoint(oldWorld.getSpawnPoint());
-            Dimension dim0 = newWorld.getDimension(0);
+            Dimension dim0 = newWorld.getDimension(NORMAL_DETAIL);
             newWorld.setAskToConvertToAnvil(true);
             newWorld.setUpIs(Direction.WEST);
             newWorld.setAskToRotate(true);
             newWorld.setAllowMerging(false);
             dim0.setEventsInhibited(true);
             try {
-                dim0.setBedrockWall(oldWorld.isBedrockWall());
+                dim0.setWallType(oldWorld.isBedrockWall() ? Dimension.WallType.BEDROCK : null);
                 dim0.setBorder((oldWorld.getBorder() != null) ? Dimension.Border.valueOf(oldWorld.getBorder().name()) : null);
-                dim0.setDarkLevel(oldWorld.isDarkLevel());
+                dim0.setRoofType(oldWorld.isDarkLevel() ? Dimension.WallType.BEDROCK : null);
                 for (Map.Entry<Layer, ExporterSettings> entry: oldWorld.getAllLayerSettings().entrySet()) {
                     dim0.setLayerSettings(entry.getKey(), entry.getValue());
                 }
@@ -171,8 +209,8 @@ public class WorldIO {
                 resourcesSettings.setChance(LAPIS_LAZULI_ORE, 1);
                 resourcesSettings.setChance(DIAMOND_ORE,      1);
                 resourcesSettings.setChance(REDSTONE_ORE,     6);
-                resourcesSettings.setChance(WATER,            1);
-                resourcesSettings.setChance(LAVA,             1);
+                resourcesSettings.setChance(STATIONARY_WATER, 1);
+                resourcesSettings.setChance(STATIONARY_LAVA,  1);
                 resourcesSettings.setChance(DIRT,             9);
                 resourcesSettings.setChance(GRAVEL,           9);
                 resourcesSettings.setChance(EMERALD_ORE,      0);
@@ -182,8 +220,8 @@ public class WorldIO {
                 resourcesSettings.setMaxLevel(LAPIS_LAZULI_ORE, Terrain.LAPIS_LAZULI_LEVEL);
                 resourcesSettings.setMaxLevel(DIAMOND_ORE,      Terrain.DIAMOND_LEVEL);
                 resourcesSettings.setMaxLevel(REDSTONE_ORE,     Terrain.REDSTONE_LEVEL);
-                resourcesSettings.setMaxLevel(WATER,            Terrain.WATER_LEVEL);
-                resourcesSettings.setMaxLevel(LAVA,             Terrain.LAVA_LEVEL);
+                resourcesSettings.setMaxLevel(STATIONARY_WATER, Terrain.WATER_LEVEL);
+                resourcesSettings.setMaxLevel(STATIONARY_LAVA,  Terrain.LAVA_LEVEL);
                 resourcesSettings.setMaxLevel(DIRT,             Terrain.DIRT_LEVEL);
                 resourcesSettings.setMaxLevel(GRAVEL,           Terrain.GRAVEL_LEVEL);
                 resourcesSettings.setMaxLevel(EMERALD_ORE,      Terrain.GOLD_LEVEL);

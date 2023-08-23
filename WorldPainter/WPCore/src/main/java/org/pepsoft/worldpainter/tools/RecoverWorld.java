@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
 import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
 import static org.pepsoft.worldpainter.Generator.DEFAULT;
@@ -70,7 +71,7 @@ public class RecoverWorld {
 
         // Load the plugins
         if (trustedCert != null) {
-            PluginManager.loadPlugins(new File(Configuration.getConfigDir(), "plugins"), trustedCert.getPublicKey(), DESCRIPTOR_PATH);
+            PluginManager.loadPlugins(new File(Configuration.getConfigDir(), "plugins"), trustedCert.getPublicKey(), DESCRIPTOR_PATH, Version.VERSION_OBJ, false);
         } else {
             logger.error("Trusted root certificate not available; not loading plugins");
         }
@@ -141,11 +142,11 @@ public class RecoverWorld {
                 if (worlds.size() > 0) {
                     World2 world = worlds.get(0);
                     if (world.getPlatform() != null) {
-                        newWorld = new World2(world.getPlatform(), maxHeight);
+                        newWorld = new World2(world.getPlatform(), minHeight, maxHeight);
                     } else if (maxHeight == DEFAULT_MAX_HEIGHT_ANVIL) {
-                        newWorld = new World2(JAVA_ANVIL, maxHeight);
+                        newWorld = new World2(JAVA_ANVIL, minHeight, maxHeight);
                     } else {
-                        newWorld = new World2(JAVA_MCREGION, maxHeight);
+                        newWorld = new World2(JAVA_MCREGION, minHeight, maxHeight);
                     }
                     if (world.getName() != null) {
                         newWorld.setName(worlds.get(0).getName() + " (recovered)");
@@ -174,9 +175,9 @@ public class RecoverWorld {
                 } else {
                     System.err.println("No world recovered; all world settings lost");
                     if (maxHeight == DEFAULT_MAX_HEIGHT_ANVIL) {
-                        newWorld = new World2(JAVA_ANVIL, maxHeight);
+                        newWorld = new World2(JAVA_ANVIL, minHeight, maxHeight);
                     } else {
-                        newWorld = new World2(JAVA_MCREGION, maxHeight);
+                        newWorld = new World2(JAVA_MCREGION, minHeight, maxHeight);
                     }
                 }
                 newWorld.addHistoryEntry(HistoryEntry.WORLD_RECOVERED);
@@ -191,9 +192,10 @@ public class RecoverWorld {
             TileFactory tileFactory = dimension.getTileFactory();
             if (tileFactory == null) {
                 System.err.println("Dimension " + dimension.getName() + " tile factory lost; creating default tile factory");
-                tileFactory = TileFactoryFactory.createNoiseTileFactory(dimension.getSeed(), Terrain.GRASS, minHeight, maxHeight, 58, 62, false, true, 20, 1.0);
+                tileFactory = TileFactoryFactory.createNoiseTileFactory(dimension.getSeed(), Terrain.GRASS, minHeight, maxHeight, 58, DEFAULT_WATER_LEVEL, false, true, 20, 1.0);
             }
-            Dimension newDimension = new Dimension(newWorld, dimension.getMinecraftSeed(), tileFactory, dimension.getDim(), minHeight, maxHeight);
+            final Dimension.Anchor anchor = dimension.getAnchor();
+            Dimension newDimension = new Dimension(newWorld, anchor.getDefaultName(), dimension.getMinecraftSeed(), tileFactory, anchor);
             try {
                 for (Map.Entry<Layer, ExporterSettings> settingsEntry: dimension.getAllLayerSettings().entrySet()) {
                     if (settingsEntry.getValue() != null) {
@@ -205,7 +207,7 @@ public class RecoverWorld {
             } catch (NullPointerException e) {
                 System.err.println("Layer settings lost for dimension " + dimension.getName());
             }
-            newDimension.setBedrockWall(dimension.isBedrockWall());
+            newDimension.setWallType(dimension.getWallType());
             if ((dimension.getBorderLevel() > 0) && (dimension.getBorderSize() > 0)) {
                 newDimension.setBorder(dimension.getBorder());
                 newDimension.setBorderLevel(dimension.getBorderLevel());
@@ -219,7 +221,7 @@ public class RecoverWorld {
             } else {
                 System.err.println("Contour settings lost for dimension " + dimension.getName());
             }
-            newDimension.setDarkLevel(dimension.isDarkLevel());
+            newDimension.setRoofType(dimension.getRoofType());
             if (dimension.getGridSize() > 0) {
                 newDimension.setGridEnabled(dimension.isGridEnabled());
                 newDimension.setGridSize(dimension.getGridSize());
@@ -227,12 +229,9 @@ public class RecoverWorld {
                 System.err.println("Grid settings lost for dimension " + dimension.getName());
             }
             newDimension.setMinecraftSeed(dimension.getMinecraftSeed());
-            newDimension.setOverlay(dimension.getOverlay());
-            newDimension.setOverlayEnabled(dimension.isOverlayEnabled());
-            newDimension.setOverlayOffsetX(dimension.getOverlayOffsetX());
-            newDimension.setOverlayOffsetY(dimension.getOverlayOffsetY());
-            newDimension.setOverlayScale(dimension.getOverlayScale());
-            newDimension.setOverlayTransparency(dimension.getOverlayTransparency());
+            for (Overlay overlay: dimension.getOverlays()) {
+                newDimension.addOverlay(overlay);
+            }
             newDimension.setPopulate(dimension.isPopulate());
             if (dimension.getSubsurfaceMaterial() != null) {
                 newDimension.setSubsurfaceMaterial(dimension.getSubsurfaceMaterial());

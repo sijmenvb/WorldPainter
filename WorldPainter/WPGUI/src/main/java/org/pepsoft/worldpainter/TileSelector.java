@@ -10,10 +10,12 @@
  */
 package org.pepsoft.worldpainter;
 
+import org.pepsoft.util.swing.TiledImageViewerContainer;
 import org.pepsoft.worldpainter.TileRenderer.LightOrigin;
 import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
 import org.pepsoft.worldpainter.layers.Layer;
 import org.pepsoft.worldpainter.layers.renderers.VoidRenderer;
+import org.pepsoft.worldpainter.ramps.ColourRamp;
 import org.pepsoft.worldpainter.tools.BiomesTileProvider;
 import org.pepsoft.worldpainter.tools.WPTileSelectionViewer;
 
@@ -22,24 +24,29 @@ import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.*;
+import java.util.Set;
 
 import static org.pepsoft.worldpainter.Constants.*;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
+import static org.pepsoft.worldpainter.Dimension.Role.*;
 import static org.pepsoft.worldpainter.Generator.DEFAULT;
 import static org.pepsoft.worldpainter.Generator.LARGE_BIOMES;
+import static org.pepsoft.worldpainter.WPTileProvider.Effect.FADE_TO_FIFTY_PERCENT;
 
 /**
  *
  * @author pepijn
  */
+@SuppressWarnings("FieldCanBeLocal") // Managed by NetBeans
 public class TileSelector extends javax.swing.JPanel {
     /** Creates new form TileSelector */
     public TileSelector() {
         initComponents();
-        jPanel1.setBackground(new Color(VoidRenderer.getColour()));
+        viewer.setBackground(new Color(VoidRenderer.getColour()));
         viewer.setZoom(viewer.getZoom() - 2);
         viewer.addMouseWheelListener(e -> {
             int rotation = e.getWheelRotation();
@@ -60,7 +67,9 @@ public class TileSelector extends javax.swing.JPanel {
                 Point tileLocation = getTileLocation(e.getX(), e.getY());
                 if (viewer.isSelectedTile(tileLocation)) {
                     viewer.removeSelectedTile(tileLocation);
-                } else if (allowNonExistentTileSelection || ((dimension != null) && dimension.isTilePresent(tileLocation.x, tileLocation.y))) {
+                } else if (allowNonExistentTileSelection
+                        || ((dimension != null) && dimension.isTilePresent(tileLocation.x, tileLocation.y))
+                        || (allowBackgroundTileSelection && (backgroundDimension != null) && backgroundDimension.isTilePresent(tileLocation.x >> backgroundZoom, tileLocation.y >> backgroundZoom))) {
                     viewer.addSelectedTile(tileLocation);
                 }
                 viewer.setSelectedRectangleCorner1(null);
@@ -86,17 +95,22 @@ public class TileSelector extends javax.swing.JPanel {
                 if (e.getButton() != MouseEvent.BUTTON1) {
                     return;
                 }
+                final boolean deselect = e.isControlDown() || e.isMetaDown();
                 if ((selectionCorner1 != null) && (selectionCorner2 != null)) {
-                    int tileX1 = Math.min(selectionCorner1.x, selectionCorner2.x);
-                    int tileX2 = Math.max(selectionCorner1.x, selectionCorner2.x);
-                    int tileY1 = Math.min(selectionCorner1.y, selectionCorner2.y);
-                    int tileY2 = Math.max(selectionCorner1.y, selectionCorner2.y);
+                    final int tileX1 = Math.min(selectionCorner1.x, selectionCorner2.x);
+                    final int tileX2 = Math.max(selectionCorner1.x, selectionCorner2.x);
+                    final int tileY1 = Math.min(selectionCorner1.y, selectionCorner2.y);
+                    final int tileY2 = Math.max(selectionCorner1.y, selectionCorner2.y);
                     for (int x = tileX1; x <= tileX2; x++) {
                         for (int y = tileY1; y <= tileY2; y++) {
-                            Point tileLocation = new Point(x, y);
-                            if (viewer.isSelectedTile(tileLocation)) {
+                            final Point tileLocation = new Point(x, y);
+                            if (deselect && viewer.isSelectedTile(tileLocation)) {
                                 viewer.removeSelectedTile(tileLocation);
-                            } else if (allowNonExistentTileSelection || ((dimension != null) && dimension.isTilePresent(tileLocation.x, tileLocation.y))) {
+                            } else if ((! deselect)
+                                    && (allowNonExistentTileSelection
+                                        || ((dimension != null) && dimension.isTilePresent(tileLocation.x, tileLocation.y))
+                                        || (allowBackgroundTileSelection && (backgroundDimension != null) && backgroundDimension.isTilePresent(tileLocation.x >> backgroundZoom, tileLocation.y >> backgroundZoom)))
+                                    && (! viewer.isSelectedTile(tileLocation))) {
                                 viewer.addSelectedTile(tileLocation);
                             }
                         }
@@ -144,7 +158,7 @@ public class TileSelector extends javax.swing.JPanel {
         };
         viewer.addMouseListener(mouseAdapter);
         viewer.addMouseMotionListener(mouseAdapter);
-        jPanel1.add(viewer, BorderLayout.CENTER);
+        jPanel1.add(viewerContainer, BorderLayout.CENTER);
         
         setControlStates();
         
@@ -220,12 +234,13 @@ public class TileSelector extends javax.swing.JPanel {
     }
 
     public void setDimension(Dimension dimension) {
+        selectableTileCoords.clear();
         this.dimension = dimension;
         if (dimension != null) {
-            int biomeAlgorithm = -1;
-            if ((dimension.getDim() == DIM_NORMAL) && ((dimension.getBorder() == null) || (! dimension.getBorder().isEndless()))) {
+            if ((dimension.getAnchor().dim == DIM_NORMAL) && ((dimension.getBorder() == null) || (! dimension.getBorder().isEndless()))) {
                 World2 world = dimension.getWorld();
                 if (world != null) {
+                    int biomeAlgorithm = -1;
                     Platform platform = world.getPlatform();
                     if (platform == JAVA_MCREGION) {
                         biomeAlgorithm = BIOME_ALGORITHM_1_1;
@@ -236,12 +251,39 @@ public class TileSelector extends javax.swing.JPanel {
                             biomeAlgorithm = BIOME_ALGORITHM_1_7_LARGE;
                         }
                     }
+                    if (biomeAlgorithm != -1) {
+                        viewer.setTileProvider(-2, new BiomesTileProvider(biomeAlgorithm, dimension.getMinecraftSeed(), colourScheme, 0, true));
+                    }
                 }
             }
-            WPTileProvider tileProvider = new WPTileProvider(dimension, colourScheme, customBiomeManager, hiddenLayers, contourLines, contourSeparation, lightOrigin, true, (biomeAlgorithm != -1) ? new BiomesTileProvider(biomeAlgorithm, dimension.getMinecraftSeed(), colourScheme, 0, true) : null);
+
+            WPTileProvider tileProvider = new WPTileProvider(dimension, colourScheme, customBiomeManager, hiddenLayers, contourLines, contourSeparation, lightOrigin, colourRamp);
 //            tileProvider.setZoom(zoom);
             viewer.setTileProvider(tileProvider);
-            viewer.setMarkerCoords(((dimension.getDim() == DIM_NORMAL) || (dimension.getDim() == DIM_NORMAL_CEILING)) ? dimension.getWorld().getSpawnPoint() : null);
+
+            final Dimension.Anchor anchor = dimension.getAnchor();
+            if (anchor.role == DETAIL) {
+                backgroundDimension = dimension.getWorld().getDimension(new Dimension.Anchor(anchor.dim, MASTER, anchor.invert, 0));
+                backgroundZoom = 4;
+            } else if (anchor.role == CAVE_FLOOR) {
+                backgroundDimension = dimension.getWorld().getDimension(new Dimension.Anchor(anchor.dim, DETAIL, anchor.invert, 0));
+                backgroundZoom = 0;
+            } else {
+                backgroundDimension = null;
+                backgroundZoom = 0;
+            }
+            if (backgroundDimension != null) {
+                WPTileProvider backgroundProvider = new WPTileProvider(backgroundDimension, colourScheme, customBiomeManager, hiddenLayers, contourLines, contourSeparation, lightOrigin, false, FADE_TO_FIFTY_PERCENT, true, colourRamp);
+                viewer.setTileProvider(-1, backgroundProvider);
+                viewer.setTileProviderZoom(backgroundProvider, backgroundZoom);
+            }
+            calculateSelectableTiles();
+
+            if (dimension.getBorder() != null) {
+                viewer.setTileProvider(-2, new WPBorderTileProvider(dimension, colourScheme));
+            }
+
+            viewer.setMarkerCoords((dimension.getAnchor().dim == DIM_NORMAL) ? dimension.getWorld().getSpawnPoint() : null);
             buttonSpawn.setEnabled(true);
 //            moveToCentre();
         } else {
@@ -252,19 +294,20 @@ public class TileSelector extends javax.swing.JPanel {
         viewer.clearSelectedTiles();
         setControlStates();
     }
-    
+
     public void refresh() {
-        if ((dimension != null) && ((dimension.getDim() == DIM_NORMAL) || (dimension.getDim() == DIM_NORMAL_CEILING))) {
+        if ((dimension != null) && (dimension.getAnchor().dim == DIM_NORMAL)) {
             viewer.setMarkerCoords(dimension.getWorld().getSpawnPoint());
         }
         viewer.refresh();
+        calculateSelectableTiles();
     }
 
-    public Collection<Layer> getHiddenLayers() {
+    public Set<Layer> getHiddenLayers() {
         return hiddenLayers;
     }
 
-    public void setHiddenLayers(Collection<Layer> hiddenLayers) {
+    public void setHiddenLayers(Set<Layer> hiddenLayers) {
         this.hiddenLayers = hiddenLayers;
     }
 
@@ -275,13 +318,22 @@ public class TileSelector extends javax.swing.JPanel {
     public void setCustomBiomeManager(CustomBiomeManager customBiomeManager) {
         this.customBiomeManager = customBiomeManager;
     }
-    
+
+    public ColourRamp getColourRamp() {
+        return colourRamp;
+    }
+
+    public void setColourRamp(ColourRamp colourRamp) {
+        this.colourRamp = colourRamp;
+    }
+
     public Set<Point> getSelectedTiles() {
         return viewer.getSelectedTiles();
     }
     
     public void setSelectedTiles(Set<Point> selectedTiles) {
         viewer.setSelectedTiles(selectedTiles);
+        setControlStates();
         notifyListeners();
     }
 
@@ -290,31 +342,31 @@ public class TileSelector extends javax.swing.JPanel {
     }
 
     public void setAllowNonExistentTileSelection(boolean allowNonExistentTileSelection) {
-        if (this.allowNonExistentTileSelection != allowNonExistentTileSelection) {
+        if (allowNonExistentTileSelection != this.allowNonExistentTileSelection) {
             this.allowNonExistentTileSelection = allowNonExistentTileSelection;
-            if ((! allowNonExistentTileSelection) && (dimension != null)) {
-                Set<Point> selectedTiles = new HashSet<>(viewer.getSelectedTiles());
-                boolean tilesRemoved = false;
-                for (Iterator<Point> i = selectedTiles.iterator(); i.hasNext(); ) {
-                    Point tileCoords = i.next();
-                    if (! dimension.isTilePresent(tileCoords.x, tileCoords.y)) {
-                        i.remove();
-                        tilesRemoved = true;
-                    }
-                }
-                if (tilesRemoved) {
-                    viewer.setSelectedTiles(selectedTiles);
-                    setControlStates();
-                    notifyListeners();
-                }
+            if (! allowNonExistentTileSelection) {
+                clearSelection();
+            }
+        }
+    }
+
+    public boolean isAllowBackgroundTileSelection() {
+        return allowBackgroundTileSelection;
+    }
+
+    public void setAllowBackgroundTileSelection(boolean allowBackgroundTileSelection) {
+        if (allowBackgroundTileSelection != this.allowBackgroundTileSelection) {
+            this.allowBackgroundTileSelection = allowBackgroundTileSelection;
+            calculateSelectableTiles();
+            if (! allowBackgroundTileSelection) {
+                clearSelection();
             }
         }
     }
 
     public void selectAllTiles() {
         boolean selectionChanged = false;
-        for (Tile tile: dimension.getTiles()) {
-            Point tileCoords = new Point(tile.getX(), tile.getY());
+        for (Point tileCoords: selectableTileCoords) {
             if (! viewer.isSelectedTile(tileCoords)) {
                 viewer.addSelectedTile(tileCoords);
                 selectionChanged = true;
@@ -333,15 +385,16 @@ public class TileSelector extends javax.swing.JPanel {
     }
     
     public void invertSelection() {
-        for (Tile tile: dimension.getTiles()) {
-            Point tileCoords = new Point(tile.getX(), tile.getY());
+        final Set<Point> allTiles = selectableTileCoords;
+        for (Point tileCoords: allTiles) {
             if (! viewer.isSelectedTile(tileCoords)) {
                 viewer.addSelectedTile(tileCoords);
             } else {
                 viewer.removeSelectedTile(tileCoords);
             }
         }
-        new HashSet<>(viewer.getSelectedTiles()).stream().filter(tileCoords -> dimension.getTile(tileCoords) == null).forEach(viewer::removeSelectedTile);
+        // Deselect all tiles where no tiles exist:
+        new HashSet<>(viewer.getSelectedTiles()).stream().filter(tileCoords -> ! allTiles.contains(tileCoords)).forEach(viewer::removeSelectedTile);
         setControlStates();
         notifyListeners();
     }
@@ -353,7 +406,15 @@ public class TileSelector extends javax.swing.JPanel {
     public void moveToCentre() {
         viewer.moveToOrigin();
     }
-    
+
+    public void moveTo(int x, int y) {
+        viewer.moveTo(x, y);
+    }
+
+    public void moveTo(Point coords) {
+        viewer.moveTo(coords);
+    }
+
     public void addListener(Listener listener) {
         listeners.add(listener);
     }
@@ -361,7 +422,23 @@ public class TileSelector extends javax.swing.JPanel {
     public void removeListener(Listener listener) {
         listeners.remove(listener);
     }
-    
+
+    private void calculateSelectableTiles() {
+        selectableTileCoords.clear();
+        selectableTileCoords.addAll(dimension.getTileCoords());
+        if (allowBackgroundTileSelection && (backgroundDimension != null)) {
+            final int scale = 1 << backgroundZoom;
+            for (Point tileCoords: backgroundDimension.getTileCoords()) {
+                final int scaledTileX = tileCoords.x << backgroundZoom, scaledTileY = tileCoords.y << backgroundZoom;
+                for (int dx = 0; dx < scale; dx++) {
+                    for (int dy = 0; dy < scale; dy++) {
+                        selectableTileCoords.add(new Point(scaledTileX + dx, scaledTileY + dy));
+                    }
+                }
+            }
+        }
+    }
+
     private void setControlStates() {
         Set<Point> selectedTiles = viewer.getSelectedTiles();
         boolean allowSelectAll, allowInvertSelection, allowClearSelection;
@@ -370,9 +447,9 @@ public class TileSelector extends javax.swing.JPanel {
         } else if (selectedTiles.isEmpty()) {
             allowSelectAll = allowInvertSelection = true;
         } else {
-            int existingTileCount = dimension.getTiles().size(), selectedExistingTileCount = 0;
+            int existingTileCount = dimension.getTileCount(), selectedExistingTileCount = 0;
             for (Point selectedTile: selectedTiles) {
-                if (dimension.getTile(selectedTile) != null) {
+                if (selectableTileCoords.contains(selectedTile)) {
                     selectedExistingTileCount++;
                 }
             }
@@ -396,7 +473,7 @@ public class TileSelector extends javax.swing.JPanel {
      * WARNING: Do NOT modify this code. The content of this method is
      * always regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings("ConstantConditions") // Managed by NetBeans
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
@@ -490,13 +567,16 @@ public class TileSelector extends javax.swing.JPanel {
 
     private final WPTileSelectionViewer viewer = new WPTileSelectionViewer(false, true);
     private final List<Listener> listeners = new ArrayList<>();
-    private Dimension dimension;
+    private final Set<Point> selectableTileCoords = new HashSet<>();
+    private final TiledImageViewerContainer viewerContainer = new TiledImageViewerContainer(viewer);
+    private Dimension dimension, backgroundDimension;
     private ColourScheme colourScheme;
-    private Collection<Layer> hiddenLayers;
-    private int contourSeparation = 10;
-    private boolean contourLines, allowNonExistentTileSelection = false;
+    private Set<Layer> hiddenLayers;
+    private int contourSeparation = 10, backgroundZoom;
+    private boolean contourLines, allowNonExistentTileSelection = false, allowBackgroundTileSelection = true;
     private TileRenderer.LightOrigin lightOrigin;
     private CustomBiomeManager customBiomeManager;
+    private ColourRamp colourRamp;
 
     private static final long serialVersionUID = 1L;
     

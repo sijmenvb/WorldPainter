@@ -4,16 +4,13 @@
  */
 package org.pepsoft.worldpainter.themes.impl.simple;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.SortedMap;
-import java.util.TreeMap;
-import javax.swing.JButton;
+import org.pepsoft.worldpainter.Terrain;
+
+import javax.swing.*;
 import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
 import javax.swing.table.TableModel;
-import org.pepsoft.worldpainter.Terrain;
+import java.util.*;
 
 /**
  *
@@ -26,13 +23,22 @@ public class TerrainRangesTableModel implements TableModel {
         rows = terrainRanges.size();
         int i = 0;
         for (Map.Entry<Integer, Terrain> row: terrainRanges.entrySet()) {
+            // The level in terrainRanges represents the last level the *previous* terrain should be used. This is so
+            // the headMap() method can be used. But we want to present it as the first level *this* terrain should be
+            // used, so add one:
             levels[i] = row.getKey() + 1;
             terrains[i] = row.getValue();
+            if (terrains[i] == null) {
+                throw new IllegalArgumentException("terrainRanges contains null value: " + terrainRanges);
+            }
             i++;
         }
     }
 
     public void addRow(int level, Terrain terrain) {
+        if (terrain == null) {
+            throw new NullPointerException("terrain");
+        }
         SortedMap<Integer, Terrain> sortedMap = new TreeMap<>();
         sortedMap.put(level, terrain);
         for (int i = 0; i < rows; i++) {
@@ -70,6 +76,8 @@ public class TerrainRangesTableModel implements TableModel {
     public SortedMap<Integer, Terrain> getTerrainRanges() {
         SortedMap<Integer, Terrain> terrainRanges = new TreeMap<>();
         for (int i = 0; i < rows; i++) {
+            // We present the level as the first level the terrain should be used for. But it is actually stored in
+            // terrainRanges as the last level the *previous* level should be used, so subtract one:
             terrainRanges.put(levels[i] - 1, terrains[i]);
         }
         return terrainRanges;
@@ -158,6 +166,9 @@ public class TerrainRangesTableModel implements TableModel {
 
     @Override
     public void setValueAt(Object aValue, int rowIndex, int columnIndex) {
+        if (aValue == null) {
+            throw new NullPointerException("aValue (rowIndex: " + rowIndex + ", columnIndex: " + columnIndex + ")");
+        }
         switch (columnIndex) {
             case 0:
                 levels[rowIndex] = (Integer) aValue;

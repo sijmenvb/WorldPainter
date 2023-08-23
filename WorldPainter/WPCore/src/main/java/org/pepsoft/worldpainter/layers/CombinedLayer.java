@@ -5,8 +5,8 @@
 package org.pepsoft.worldpainter.layers;
 
 import org.pepsoft.minecraft.Chunk;
-import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.Dimension;
+import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.exporting.*;
 import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 
@@ -16,10 +16,12 @@ import java.awt.event.ActionEvent;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.util.*;
 import java.util.List;
+import java.util.*;
 
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE;
+import static org.pepsoft.worldpainter.exporting.SecondPassLayerExporter.Stage.ADD_FEATURES;
+import static org.pepsoft.worldpainter.exporting.SecondPassLayerExporter.Stage.CARVE;
 import static org.pepsoft.worldpainter.layers.Layer.DataSize.*;
 
 /**
@@ -27,33 +29,64 @@ import static org.pepsoft.worldpainter.layers.Layer.DataSize.*;
  * @author pepijn
  */
 public class CombinedLayer extends CustomLayer implements LayerContainer {
-    public CombinedLayer(String name, String description, int colour) {
-        super(name, description, NIBBLE, 55, colour);
+    public CombinedLayer(String name, String description, Object paint) {
+        super(name, description, NIBBLE, 55, paint);
     }
 
     public Set<Layer> apply(Dimension dimension) {
+        return apply(dimension, null);
+    }
+
+    public Set<Layer> apply(Dimension dimension, Set<Point> selectedTiles) {
         Set<Layer> addedLayers = new HashSet<>();
-        for (Tile tile : dimension.getTiles()) {
-            addedLayers.addAll(apply(tile));
+        if (selectedTiles == null) {
+            for (Tile tile: dimension.getTiles()) {
+                addedLayers.addAll(apply(tile));
+            }
+        } else {
+            for (Point coords: selectedTiles) {
+                final Tile tile = dimension.getTile(coords);
+                if (tile != null) {
+                    addedLayers.addAll(apply(tile));
+                }
+            }
         }
         return addedLayers;
     }
 
     public Set<Layer> apply(Tile tile) {
-        Set<Layer> addedLayers = new HashSet<>();
-        if (!tile.hasLayer(this)) {
+        final boolean terrainConfigured = terrain != null;
+        final int biome = getBiome();
+        final boolean biomeConfigured = biome != -1;
+        final Set<Layer> addedLayers = new HashSet<>();
+        if (! tile.hasLayer(this)) {
             return Collections.emptySet();
         }
         tile.inhibitEvents();
         try {
+            if (applyTerrainAndBiomeOnExport && (terrainConfigured || biomeConfigured)) {
+                for (int x = 0; x < TILE_SIZE; x++) {
+                    for (int y = 0; y < TILE_SIZE; y++) {
+                        final float strength = tile.getLayerValue(this, x, y) / 15.0f;
+                        if (strength > 0.0f) {
+                            if (terrainConfigured && ((strength >= 0.5f) || ((Math.random() / 2) < strength))) {
+                                tile.setTerrain(x, y, terrain);
+                            }
+                            if (biomeConfigured && ((strength >= 0.5f) || ((Math.random() / 2) < strength))) {
+                                tile.setLayerValue(Biome.INSTANCE, x, y, biome);
+                            }
+                        }
+                    }
+                }
+            }
             for (Layer layer : layers) {
                 boolean layerAdded = false;
                 final float factor = factors.get(layer);
-                DataSize dataSize = layer.getDataSize();
+                final DataSize dataSize = layer.getDataSize();
                 if ((dataSize == BIT) || (dataSize == BIT_PER_CHUNK)) {
                     for (int x = 0; x < TILE_SIZE; x++) {
                         for (int y = 0; y < TILE_SIZE; y++) {
-                            float strength = Math.min(tile.getLayerValue(this, x, y) / 15.0f * factor, 1.0f);
+                            final float strength = Math.min(tile.getLayerValue(this, x, y) / 15.0f * factor, 1.0f);
                             if ((strength > 0.95f) || (Math.random() < strength)) {
                                 tile.setBitLayerValue(layer, x, y, true);
                                 layerAdded = true;
@@ -61,10 +94,10 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
                         }
                     }
                 } else {
-                    int maxValue = (dataSize == NIBBLE) ? 15 : 255;
+                    final int maxValue = (dataSize == NIBBLE) ? 15 : 255;
                     for (int x = 0; x < TILE_SIZE; x++) {
                         for (int y = 0; y < TILE_SIZE; y++) {
-                            int value = Math.min((int) (tile.getLayerValue(this, x, y) * factor + 0.5f), maxValue);
+                            final int value = Math.min(Math.round(tile.getLayerValue(this, x, y) * factor), maxValue);
                             if (value > 0) {
                                 tile.setLayerValue(layer, x, y, value);
                                 layerAdded = true;
@@ -88,6 +121,11 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
         super.setName(name);
     }
 
+    @Override
+    public String getType() {
+        return "Combined Layer";
+    }
+
     public Terrain getTerrain() {
         return terrain;
     }
@@ -103,7 +141,12 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
 
     public void setLayers(List<Layer> layers) {
         if (layers == null) {
-            throw new NullPointerException();
+            throw new NullPointerException("layers");
+        }
+        for (int i = 0; i < layers.size(); i++) {
+            if (layers.get(i) == null) {
+                throw new IllegalArgumentException("layers[" + i + "] == null");
+            }
         }
         this.layers = layers;
     }
@@ -119,21 +162,31 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
         this.factors = factors;
     }
 
+    public boolean isApplyTerrainAndBiomeOnExport() {
+        return applyTerrainAndBiomeOnExport;
+    }
+
+    public void setApplyTerrainAndBiomeOnExport(boolean applyTerrainAndBiomeOnExport) {
+        this.applyTerrainAndBiomeOnExport = applyTerrainAndBiomeOnExport;
+    }
+
+    @Override
+    public Class<? extends LayerExporter> getExporterType() {
+        return CombinedLayerExporter.class;
+    }
+
     /**
-     * Returns a dummy exporter, all methods of which throw an
-     * {@link UnsupportedOperationException}, since combined layers must be
-     * exported by {@link #apply(Dimension) applying} them and then exporting
-     * its constituent layers, if any.
+     * Returns a dummy exporter, all methods of which throw an {@link UnsupportedOperationException}, since combined
+     * layers must be exported by {@link #apply(Dimension, Set) applying} them and then exporting its constituent
+     * layers, if any.
      *
-     * <p>The exporter does implement {@link FirstPassLayerExporter} and
-     * {@link SecondPassLayerExporter} though, to signal the fact that it can
-     * contain layers for both phases.
+     * <p>The exporter does implement {@link FirstPassLayerExporter} and {@link SecondPassLayerExporter} though,
+     * to signal the fact that it can contain layers for both phases.
      *
-     * @return A dummy exporter which always throws
-     * {@code UnsupportedOperationException}.
+     * @return A dummy exporter which always throws {@code UnsupportedOperationException}.
      */
     @Override
-    public LayerExporter getExporter() {
+    public LayerExporter getExporter(Dimension dimension, Platform platform, ExporterSettings settings) {
         return EXPORTER;
     }
 
@@ -182,33 +235,30 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
     public boolean restoreCustomTerrain() {
         if (customTerrainPresent) {
             if (customTerrainMaterial == null) {
-                // This should not be possible, but due to earlier bugs there
-                // are worlds in the wild with a custom terrain without a stored
-                // custom material. Not much we can do
+                // This should not be possible, but due to earlier bugs there are worlds in the wild with a custom
+                // terrain without a stored custom material. Not much we can do
                 terrain = null;
                 return false;
-            } else if (customTerrainMaterial.equals(Terrain.getCustomMaterial(terrain.getCustomTerrainIndex()))) {
-                // The exact same custom terrain is present, in the same slot.
-                // Keep using it
-                return true;
-            } else if (Terrain.getCustomMaterial(terrain.getCustomTerrainIndex()) == null) {
-                // The slot that was previously used is empty, store the custom
-                // terrain in it
-                Terrain.setCustomMaterial(terrain.getCustomTerrainIndex(), customTerrainMaterial);
-                return true;
             } else {
-                // The slot that was previously used contains a different mixed
-                // material. Find another empty slot
+                // See if the same material is already present and if so keep using it. Find an empty slot otherwise
+                int slot = -1;
                 for (int i = 0; i < Terrain.CUSTOM_TERRAIN_COUNT; i++) {
-                    if (Terrain.getCustomMaterial(i) == null) {
-                        Terrain.setCustomMaterial(i, customTerrainMaterial);
-                        terrain = Terrain.getCustomTerrain(i);
-                        return true;
+                    if (customTerrainMaterial.equals(Terrain.getCustomMaterial(i))) {
+                        slot = i;
+                        break;
+                    } else if ((slot == -1) && (Terrain.getCustomMaterial(i) == null)) {
+                        slot = i;
                     }
                 }
-                // No more slots available. Not much we can do
-                terrain = null;
-                return false;
+                if (slot != -1) {
+                    Terrain.setCustomMaterial(slot, customTerrainMaterial);
+                    terrain = Terrain.getCustomTerrain(slot);
+                    return true;
+                } else {
+                    // No more slots available. Not much we can do
+                    terrain = null;
+                    return false;
+                }
             }
         } else {
             return (terrain == null) || (! terrain.isCustom());
@@ -248,7 +298,7 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
     private Terrain terrain;
     private List<Layer> layers = Collections.emptyList();
     private Map<Layer, Float> factors = Collections.emptyMap();
-    private boolean customTerrainPresent;
+    private boolean customTerrainPresent, applyTerrainAndBiomeOnExport = true;
     private transient MixedMaterial customTerrainMaterial;
 
     private static final LayerExporter EXPORTER = new CombinedLayerExporter();
@@ -260,17 +310,22 @@ public class CombinedLayer extends CustomLayer implements LayerContainer {
         }
 
         @Override
-        public void setSettings(ExporterSettings settings) {
+        public void render(Tile tile, Chunk chunk) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public void render(Dimension dimension, Tile tile, Chunk chunk, Platform platform) {
+        public Set<Stage> getStages() {
+            return EnumSet.of(CARVE, ADD_FEATURES);
+        }
+
+        @Override
+        public List<Fixup> carve(Rectangle area, Rectangle exportedArea, MinecraftWorld minecraftWorld) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public List<Fixup> render(Dimension dimension, Rectangle area, Rectangle exportedArea, MinecraftWorld minecraftWorld, Platform platform) {
+        public List<Fixup> addFeatures(Rectangle area, Rectangle exportedArea, MinecraftWorld minecraftWorld) {
             throw new UnsupportedOperationException();
         }
     }

@@ -26,7 +26,11 @@ public class CreateMountain extends MouseOrTabletOperation {
         // 5. optional bias of the slope according to the cardinal direction to create skewed mountains
         // 6. snake out from the summit, going mostly down but sometimes up
         // 7. when creating a local summit (going from going up to going down), have a chance of spawning one or more diverging ridges
-        Dimension dimension = getDimension();
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
 //        GroundCoverLayer deepSnowLayer = null;
 //        boolean shouldAddLayer = true;
 //        for (Layer layer: dimension.getCustomLayers()) {
@@ -99,7 +103,7 @@ public class CreateMountain extends MouseOrTabletOperation {
                         return true;
                     });
                     float heightAtHead = dimension.getHeightAt(intNewX, intNewY);
-                    if ((heightAtHead == Float.MIN_VALUE) || (heightAtHead >= newZ)) {
+                    if ((heightAtHead == -Float.MAX_VALUE) || (heightAtHead >= newZ)) {
                         // Off the map, or reached higher ground
                         i.remove();
                     } else {
@@ -145,9 +149,9 @@ public class CreateMountain extends MouseOrTabletOperation {
         GeometryUtil.visitFilledCircle((int) Math.ceil(z / 1.5), (dx, dy, d) -> {
             int localX = x + dx;
             int localY = y + dy;
-            float localZ = z - d * 2 + dx / 1.5f - Math.min(d / 50, 1) * RANDOM_VARIATION.getHeight(localX, localY); // TODO: make slope and bias configurable, and take it into account for radius of visited circle
+            float localZ = z - d * 2 + dx / 1.5f - Math.min(d / 50, 1) * (float) RANDOM_VARIATION.getHeight(localX, localY); // TODO: make slope and bias configurable, and take it into account for radius of visited circle
             float existingHeight = dimension.getHeightAt(localX, localY);
-            if ((existingHeight > Float.MIN_VALUE) && localZ >= existingHeight) {
+            if ((existingHeight != -Float.MAX_VALUE) && localZ >= existingHeight) {
                 dimension.setHeightAt(localX, localY, localZ);
                 touchedBlocks.set(localX, localY);
             }
@@ -201,5 +205,5 @@ public class CreateMountain extends MouseOrTabletOperation {
         Ridge start;
     }
 
-    private static final NoiseHeightMap RANDOM_VARIATION = new NoiseHeightMap(20f, 1f, 3);
+    private static final NoiseHeightMap RANDOM_VARIATION = new NoiseHeightMap(20.0, 1.0, 3);
 }

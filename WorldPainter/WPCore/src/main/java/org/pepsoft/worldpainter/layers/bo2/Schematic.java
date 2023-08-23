@@ -4,8 +4,7 @@
  */
 package org.pepsoft.worldpainter.layers.bo2;
 
-import org.jnbt.CompoundTag;
-import org.jnbt.NBTInputStream;
+import org.jnbt.*;
 import org.pepsoft.minecraft.AbstractNBTItem;
 import org.pepsoft.minecraft.Entity;
 import org.pepsoft.minecraft.Material;
@@ -21,31 +20,37 @@ import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
 import static org.pepsoft.minecraft.Constants.BLK_AIR;
+import static org.pepsoft.minecraft.Constants.TAG_POS;
 
 /**
  *
  * @author pepijn
  */
 public final class Schematic extends AbstractNBTItem implements WPObject, Bo2ObjectProvider {
+    @SuppressWarnings("unchecked") // Responsibility of creator of schematic
     public Schematic(String name, CompoundTag tag, Map<String, Serializable> attributes) {
         super(tag);
         this.name = name;
         materials = getString("Materials");
-        if (! materials.equalsIgnoreCase("Alpha")) {
+        if (materials == null) {
+            throw new IllegalArgumentException("Invalid schematic file; Materials tag missing");
+        } else if (! materials.equalsIgnoreCase("Alpha")) {
             throw new IllegalArgumentException("Unsupported materials type " + materials);
         }
         blocks = getByteArray("Blocks");
         addBlocks = getByteArray("AddBlocks");
         data = getByteArray("Data");
         List<CompoundTag> entityTags = getList("Entities");
-        if (entityTags.isEmpty()) {
+        // entities has been observed to be missing sporadically in the wild, so check for that, and guess that it also
+        // applies to tileEntities
+        if ((entityTags == null) || entityTags.isEmpty()) {
             entities = null;
         } else {
             entities = new ArrayList<>(entityTags.size());
-            entities.addAll(entityTags.stream().map(Entity::fromNBT).collect(Collectors.toList()));
+            entities.addAll(entityTags.stream().map((CompoundTag entityTag) -> Entity.fromNBT(entityTag, ((ListTag<DoubleTag>) entityTag.getTag(TAG_POS)).getValue().stream().mapToDouble(DoubleTag::getValue).toArray())).collect(Collectors.toList()));
         }
         List<CompoundTag> tileEntityTags = getList("TileEntities");
-        if (tileEntityTags.isEmpty()) {
+        if ((tileEntityTags == null) || tileEntityTags.isEmpty()) {
             tileEntities = null;
         } else {
             tileEntities = new ArrayList<>(tileEntityTags.size());
@@ -86,6 +91,7 @@ public final class Schematic extends AbstractNBTItem implements WPObject, Bo2Obj
             weOriginX = weOriginY = weOriginZ = 0;
         }
         this.attributes = attributes;
+        guessConnectBlocks();
     }
 
     // WPObject
@@ -156,12 +162,6 @@ public final class Schematic extends AbstractNBTItem implements WPObject, Bo2Obj
     @Override
     public Map<String, Serializable> getAttributes() {
         return attributes;
-    }
-
-    @Override
-    @SuppressWarnings("unchecked") // Responsibility of caller
-    public <T extends Serializable> T getAttribute(AttributeKey<T> key) {
-        return key.get(attributes);
     }
 
     @Override
@@ -260,18 +260,20 @@ public final class Schematic extends AbstractNBTItem implements WPObject, Bo2Obj
      */
     public static Schematic load(String name, InputStream stream) throws IOException {
         InputStream in = new BufferedInputStream(stream);
-        //noinspection TryFinallyCanBeTryWithResources // Not possible due to assignment of 'in' inside block
         try {
-            byte[] magicNumber = new byte[2];
+            final byte[] magicNumber = new byte[2];
             in.mark(2);
             in.read(magicNumber);
             in.reset();
             if ((magicNumber[0] == (byte) 0x1f) && (magicNumber[1] == (byte) 0x8b)) {
                 in = new GZIPInputStream(in);
             }
-            NBTInputStream nbtIn = new NBTInputStream(in);
-            CompoundTag tag = (CompoundTag) nbtIn.readTag();
-            return new Schematic(name, tag, null);
+            final NBTInputStream nbtIn = new NBTInputStream(in);
+            final Tag tag = nbtIn.readTag();
+            if (! (tag instanceof CompoundTag)) {
+                throw new IllegalArgumentException("Invalid schematic file; unexpected NBT tag type " + tag.getClass().getSimpleName());
+            }
+            return new Schematic(name, (CompoundTag) tag, null);
         } finally {
             in.close();
         }
@@ -292,12 +294,22 @@ public final class Schematic extends AbstractNBTItem implements WPObject, Bo2Obj
             attributes.put(ATTRIBUTE_OFFSET.key, new Point3i(-origin.x, -origin.y, -origin.z));
             origin = null;
         }
-        if (version == 0) {
+        if (version < 1) {
             if (! attributes.containsKey(ATTRIBUTE_LEAF_DECAY_MODE.key)) {
                 attributes.put(ATTRIBUTE_LEAF_DECAY_MODE.key, LEAF_DECAY_ON);
             }
-            version = 1;
         }
+        if (version < 2) {
+            if (entities != null) {
+                for (Entity entity: entities) {
+                    entity.setRelPos(entity.getPos());
+                }
+            }
+        }
+        if (version < 3) {
+            guessConnectBlocks();
+        }
+        version = 3;
     }
     
     private String name;
@@ -312,7 +324,7 @@ public final class Schematic extends AbstractNBTItem implements WPObject, Bo2Obj
     @Deprecated
     private Point3i origin;
     private Map<String, Serializable> attributes;
-    private int version = 1;
+    private int version = 3;
     
     private static final long serialVersionUID = 1L;
 }

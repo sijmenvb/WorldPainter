@@ -1,13 +1,12 @@
 package org.dynmap;
 
 import org.dynmap.common.DynmapServerInterface;
+import org.pepsoft.util.mdc.MDCWrappingRuntimeException;
 import org.pepsoft.worldpainter.Configuration;
-import org.pepsoft.worldpainter.biomeschemes.BiomeSchemeManager;
 import org.pepsoft.worldpainter.dynmap.WPDynmapServer;
 
 import java.io.File;
-
-import static org.pepsoft.worldpainter.Constants.V_1_12_2;
+import java.io.IOException;
 
 /**
  * Private implementation of {@code DynmapCore} from dynmap in order to work offline.
@@ -23,6 +22,10 @@ public class DynmapCore {
         return server;
     }
 
+    public MapManager getMapManager() {
+        return MapManager.mapman;
+    }
+
     public boolean isCTMSupportEnabled() {
         return false;
     }
@@ -32,7 +35,7 @@ public class DynmapCore {
     }
 
     public String getDynmapPluginPlatformVersion() {
-        return "1.8";
+        return "1.20.1"; // TODO what should this be, exactly? It seems to control which blocks Dynmap support, so ideally it should keep track with the latest version supported by WorldPainter?
     }
 
     public boolean getLeafTransparency() {
@@ -40,14 +43,25 @@ public class DynmapCore {
     }
 
     public File getPluginJarFile() {
-        return BiomeSchemeManager.getMinecraftJarNoNewerThan(V_1_12_2);
+        // Dynmap doesn't actually load the models or textures from this file, it seems to be able to find everything on
+        // the class path, but it still needs it to exist. It does catch and ignore IOExceptions though, so create an
+        // empty dummy file and return that so it will immediately fail.
+        try {
+            final File tmpFile = File.createTempFile("wp-empty", "zip");
+            tmpFile.deleteOnExit();
+            return tmpFile;
+        } catch (IOException e) {
+            throw new MDCWrappingRuntimeException(e);
+        }
     }
 
     public boolean dumpMissingBlocks() {
-        return true;
+        return false;
     }
 
-    private WPDynmapServer server = new WPDynmapServer();
+    private final WPDynmapServer server = new WPDynmapServer();
+
+    public static final DynmapCore INSTANCE = new DynmapCore();
 
     // Copied from dynmap
     public enum CompassMode {

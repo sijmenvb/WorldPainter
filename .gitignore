@@ -9,3 +9,7 @@ JIDE Docking Framework/javadoc/
 JIDE Docking Framework/
 WorldPainter/AppleJavaExtensions.jar
 .project
+deployment/
+WorldPainter/WPUtils/.classpath
+WPValueObjects/.classpath
+WPValueObjects/.settings/

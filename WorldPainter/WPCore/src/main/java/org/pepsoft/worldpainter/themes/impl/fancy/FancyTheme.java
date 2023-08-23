@@ -15,6 +15,7 @@ import org.pepsoft.worldpainter.themes.Theme;
 
 import java.util.Random;
 
+import static java.awt.Color.WHITE;
 import static org.pepsoft.minecraft.Material.SNOW_BLOCK;
 
 /**
@@ -22,8 +23,9 @@ import static org.pepsoft.minecraft.Material.SNOW_BLOCK;
  * @author SchmitzP
  */
 public class FancyTheme implements Theme, Cloneable {
-    public FancyTheme(int maxHeight, int waterHeight, HeightMap heightMap, Terrain baseTerrain) {
-        setMaxHeight(maxHeight);
+    public FancyTheme(int minHeight, int maxHeight, int waterHeight, HeightMap heightMap, Terrain baseTerrain) {
+        this.minHeight = minHeight;
+        this.maxHeight = maxHeight;
         setWaterHeight(waterHeight);
         setHeightMap(heightMap);
         setDesertMaxHeight(waterHeight + 20);
@@ -40,10 +42,10 @@ public class FancyTheme implements Theme, Cloneable {
     @Override
     public void apply(Tile tile, int x, int y) {
         final int worldX = (tile.getX() << 7) | x, worldY = (tile.getY() << 7) | y;
-        float temperature = temperatureMap.getHeight(worldX, worldY);
+        double temperature = temperatureMap.getHeight(worldX, worldY);
         float height = tile.getHeight(x, y);
-        temperature = temperature - Math.max(height - waterHeight, 0) / 2f + randomNoiseMap.getHeight(worldX, worldY);
-        float humidity = humidityMap.getHeight(worldX, worldY) + randomNoiseMap.getHeight(worldX, worldY);
+        temperature = temperature - Math.max(height - waterHeight, 0) / 2 + randomNoiseMap.getHeight(worldX, worldY);
+        double humidity = humidityMap.getHeight(worldX, worldY) + randomNoiseMap.getHeight(worldX, worldY);
         final float slopeNOSO = Math.abs(getHeight(    worldX, worldY - 1) - getHeight(    worldX, worldY + 1));
         final float slopeNWSE = Math.abs(getHeight(worldX + 1, worldY - 1) - getHeight(worldX - 1, worldY + 1));
         final float slopeEAWE = Math.abs(getHeight(worldX + 1,     worldY) - getHeight(worldX - 1,     worldY));
@@ -113,17 +115,20 @@ public class FancyTheme implements Theme, Cloneable {
     }
 
     @Override
+    public int getMinHeight() {
+        return minHeight;
+    }
+
+    @Override
     public final int getMaxHeight() {
         return maxHeight;
     }
 
-    public final void setMaxHeight(int maxHeight) {
-        setMaxHeight(maxHeight, HeightTransform.IDENTITY);
-    }
-
     @Override
-    public final void setMaxHeight(int maxHeight, HeightTransform transform) {
+    public final void setMinMaxHeight(int minHeight, int maxHeight, HeightTransform transform) {
+        this.minHeight = minHeight;
         this.maxHeight = maxHeight;
+        // TODO apply transform
     }
 
     @Override
@@ -209,7 +214,7 @@ public class FancyTheme implements Theme, Cloneable {
     }
 
     protected float getHeight(int x, int y) {
-        return heightMap.getHeight(x, y);
+        return (float) heightMap.getHeight(x, y);
     }
 
     private boolean isWaterNear(int x, int y) {
@@ -226,11 +231,11 @@ public class FancyTheme implements Theme, Cloneable {
         return false;
     }
 
-    protected GroundCoverLayer snowLayer = new GroundCoverLayer("Mountain Snow", MixedMaterial.create("Deep Snow", SNOW_BLOCK), 0xffffff);
+    protected GroundCoverLayer snowLayer = new GroundCoverLayer("Mountain Snow", MixedMaterial.create("Deep Snow", SNOW_BLOCK), WHITE);
     protected Terrain terrainDirtAndGravel = Terrain.CUSTOM_1;
     protected Terrain terrainStoneAndGravel = Terrain.CUSTOM_2;
 
-    private int maxHeight, waterHeight, desertMaxHeight;
+    private int minHeight, maxHeight, waterHeight, desertMaxHeight;
     /**
      * Humidity in %.
      */

@@ -11,19 +11,19 @@
 
 package org.pepsoft.worldpainter;
 
-import org.pepsoft.minecraft.CustomGenerator;
-import org.pepsoft.minecraft.SeededGenerator;
-import org.pepsoft.minecraft.SuperflatGenerator;
-import org.pepsoft.minecraft.SuperflatPreset;
 import org.pepsoft.util.DesktopUtils;
-import org.pepsoft.util.IconUtils;
+import org.pepsoft.worldpainter.Dimension.Anchor;
+import org.pepsoft.worldpainter.World2.BorderSettings;
 import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
+import org.pepsoft.worldpainter.exporting.WorldExportSettings;
 import org.pepsoft.worldpainter.layers.CustomLayer;
 import org.pepsoft.worldpainter.layers.Layer;
 import org.pepsoft.worldpainter.layers.Populate;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
-import org.pepsoft.worldpainter.superflat.EditSuperflatPresetDialog;
 import org.pepsoft.worldpainter.util.EnumListCellRenderer;
+import org.pepsoft.worldpainter.util.FileFilter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -31,36 +31,41 @@ import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.io.File;
 import java.io.IOException;
+import java.lang.ref.Reference;
+import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.*;
+import java.util.stream.Collectors;
 
-import static java.util.stream.Collectors.toSet;
+import static java.util.function.Function.identity;
+import static javax.swing.JOptionPane.YES_NO_OPTION;
+import static javax.swing.JOptionPane.YES_OPTION;
 import static org.pepsoft.minecraft.Constants.DIFFICULTY_HARD;
 import static org.pepsoft.minecraft.Constants.DIFFICULTY_PEACEFUL;
-import static org.pepsoft.worldpainter.Constants.*;
-import static org.pepsoft.worldpainter.DefaultPlugin.*;
+import static org.pepsoft.minecraft.datapack.DataPack.isDataPackFile;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowError;
+import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
+import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_MCREGION;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
+import static org.pepsoft.worldpainter.ExceptionHandler.doWithoutExceptionReporting;
 import static org.pepsoft.worldpainter.GameType.*;
-import static org.pepsoft.worldpainter.Generator.CUSTOM;
-import static org.pepsoft.worldpainter.Generator.DEFAULT;
-import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
-import static org.pepsoft.worldpainter.Platform.Capability.POPULATE;
+import static org.pepsoft.worldpainter.Platform.Capability.*;
+import static org.pepsoft.worldpainter.exporting.WorldExportSettings.EXPORT_EVERYTHING;
 import static org.pepsoft.worldpainter.util.BackupUtils.cleanUpBackups;
+import static org.pepsoft.worldpainter.util.FileUtils.selectFileForOpen;
 import static org.pepsoft.worldpainter.util.MaterialUtils.gatherBlocksWithoutIds;
 
 /**
  *
  * @author pepijn
  */
-public class ExportWorldDialog extends WorldPainterDialog {
+@SuppressWarnings({"unused", "FieldCanBeLocal", "rawtypes", "Convert2Lambda", "Anonymous2MethodRef", "ConstantConditions"}) // Managed by NetBeans
+public class ExportWorldDialog extends WPDialogWithPaintSelection {
     /** Creates new form ExportWorldDialog */
-    public ExportWorldDialog(java.awt.Frame parent, World2 world, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, Collection<Layer> hiddenLayers, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin, WorldPainter view) {
+    public ExportWorldDialog(Window parent, World2 world, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, Set<Layer> hiddenLayers, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin, WorldPainter view) {
         super(parent);
         this.world = world;
-        selectedTiles = world.getTilesToExport();
-        selectedDimension = (selectedTiles != null) ? world.getDimensionsToExport().iterator().next() : DIM_NORMAL;
-        final Dimension dim0 = world.getDimension(0);
-        dim0GeneratorName = (dim0.getGenerator() instanceof CustomGenerator) ? (((CustomGenerator) dim0.getGenerator()).getName()) : null;
-        dim0SuperflatPreset = (dim0.getGenerator() instanceof SuperflatGenerator) ? (((SuperflatGenerator) dim0.getGenerator()).getSettings()) : null;
+        final Dimension dim0 = world.getDimension(NORMAL_DETAIL);
         this.colourScheme = colourScheme;
         this.hiddenLayers = hiddenLayers;
         this.contourLines = contourLines;
@@ -70,132 +75,50 @@ public class ExportWorldDialog extends WorldPainterDialog {
         this.view = view;
         initComponents();
 
-        Configuration config = Configuration.getInstance();
+        final Configuration config = Configuration.getInstance();
         if (config.isEasyMode()) {
-            jLabel4.setVisible(false);
-            comboBoxGenerator.setVisible(false);
-            buttonGeneratorOptions.setVisible(false);
             checkBoxMapFeatures.setVisible(false);
-
             jLabel1.setVisible(false);
-            comboBoxMinecraftVersion.setVisible(false);
+            labelPlatform.setVisible(false);
         }
 
-        Platform platform = world.getPlatform();
-        if (config.getExportDirectory(platform) != null) {
-            fieldDirectory.setText(config.getExportDirectory(platform).getAbsolutePath());
-        } else {
-            File exportDir = PlatformManager.getInstance().getDefaultExportDir(platform);
-            if (exportDir != null) {
-                fieldDirectory.setText(exportDir.getAbsolutePath());
+        supportedPlatforms.addAll(PlatformManager.getInstance().getAllPlatforms());
+        final Platform platform = world.getPlatform();
+        if (supportedPlatforms.contains(platform)) {
+            labelPlatformWarning.setVisible(false);
+            if (config.getExportDirectory(platform) != null) {
+                fieldDirectory.setText(config.getExportDirectory(platform).getAbsolutePath());
             } else {
-                fieldDirectory.setText(DesktopUtils.getDocumentsFolder().getAbsolutePath());
+                File exportDir = PlatformManager.getInstance().getDefaultExportDir(platform);
+                if (exportDir != null) {
+                    fieldDirectory.setText(exportDir.getAbsolutePath());
+                } else {
+                    fieldDirectory.setText(DesktopUtils.getDocumentsFolder().getAbsolutePath());
+                }
             }
+        } else {
+            fieldDirectory.setText(null);
         }
         fieldName.setText(world.getName());
 
-        nameOnlyMaterials = gatherBlocksWithoutIds(world, platform);
-
-        surfacePropertiesEditor.setColourScheme(colourScheme);
-        surfacePropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
-        surfacePropertiesEditor.setDimension(dim0);
-        surfacePropertiesEditor.addBorderListener(this::borderChanged);
-        dimensionPropertiesEditors.put(DIM_NORMAL, surfacePropertiesEditor);
-        if (world.getDimension(DIM_NETHER) != null) {
-            netherPropertiesEditor.setColourScheme(colourScheme);
-            netherPropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
-            netherPropertiesEditor.setDimension(world.getDimension(DIM_NETHER));
-            dimensionPropertiesEditors.put(DIM_NETHER, netherPropertiesEditor);
-        } else {
-            jTabbedPane1.setEnabledAt(2, false);
-        }
-        if (world.getDimension(DIM_END) != null) {
-            endPropertiesEditor.setColourScheme(colourScheme);
-            endPropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
-            endPropertiesEditor.setDimension(world.getDimension(DIM_END));
-            dimensionPropertiesEditors.put(DIM_END, endPropertiesEditor);
-        } else {
-            jTabbedPane1.setEnabledAt(4, false);
-        }
-        if (world.getDimension(DIM_NORMAL_CEILING) != null) {
-            surfaceCeilingPropertiesEditor.setColourScheme(colourScheme);
-            surfaceCeilingPropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
-            surfaceCeilingPropertiesEditor.setDimension(world.getDimension(DIM_NORMAL_CEILING));
-            dimensionPropertiesEditors.put(DIM_NORMAL_CEILING, surfaceCeilingPropertiesEditor);
-        } else {
-            jTabbedPane1.setEnabledAt(1, false);
-        }
-        if (world.getDimension(DIM_NETHER_CEILING) != null) {
-            netherCeilingPropertiesEditor.setColourScheme(colourScheme);
-            netherCeilingPropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
-            netherCeilingPropertiesEditor.setDimension(world.getDimension(DIM_NETHER_CEILING));
-            dimensionPropertiesEditors.put(DIM_NETHER_CEILING, netherCeilingPropertiesEditor);
-        } else {
-            jTabbedPane1.setEnabledAt(3, false);
-        }
-        if (world.getDimension(DIM_END_CEILING) != null) {
-            endCeilingPropertiesEditor.setColourScheme(colourScheme);
-            endCeilingPropertiesEditor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
-            endCeilingPropertiesEditor.setDimension(world.getDimension(DIM_END_CEILING));
-            dimensionPropertiesEditors.put(DIM_END_CEILING, endCeilingPropertiesEditor);
-        } else {
-            jTabbedPane1.setEnabledAt(5, false);
-        }
+        createDimensionPropertiesEditors();
         checkBoxGoodies.setSelected(world.isCreateGoodiesChest());
-        List<Platform> availablePlatforms = PlatformManager.getInstance().getAllPlatforms();
-        Set<Platform> incompatiblePlatforms = availablePlatforms.stream().filter(availablePlatform -> {
-            if (! availablePlatform.isCompatible(world)) {
-                return false;
-            } else {
-                Map<String, Set<String>> namedBlocks = gatherBlocksWithoutIds(world, availablePlatform);
-                return (! namedBlocks.isEmpty()) && (! availablePlatform.capabilities.contains(NAME_BASED));
-            }
-
-        }).collect(toSet());
-        comboBoxMinecraftVersion.setToolTipText("Only map formats compatible with this world are displayed");
-        comboBoxMinecraftVersion.setModel(new DefaultComboBoxModel<>(availablePlatforms.toArray(new Platform[availablePlatforms.size()])));
-        comboBoxMinecraftVersion.setRenderer(new DefaultListCellRenderer() {
-            @Override
-            public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
-                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-                if (value instanceof Platform) {
-                    if (! incompatiblePlatforms.isEmpty()) {
-                        if (incompatiblePlatforms.contains(value)) {
-                            setIcon(WARNING_ICON);
-                        } else {
-                            setIcon(SPACER_ICON);
-                        }
-                    } else {
-                        setIcon(SPACER_ICON);
-                    }
-                    setText(((Platform) value).displayName);
-                } else {
-                    setIcon(SPACER_ICON);
-                }
-                return this;
-            }
-        });
-        comboBoxMinecraftVersion.setSelectedItem(platform);
-        if (availablePlatforms.size() < 2) {
-            comboBoxMinecraftVersion.setEnabled(false);
-        }
-        comboBoxGenerator.setModel(new DefaultComboBoxModel<>(platform.supportedGenerators.toArray(new Generator[platform.supportedGenerators.size()])));
-        comboBoxGenerator.setSelectedItem(dim0.getGenerator().getType());
-        updateGeneratorButtonTooltip();
-        comboBoxGenerator.setEnabled(comboBoxGenerator.getItemCount() > 1);
-        comboBoxGenerator.setRenderer(new EnumListCellRenderer());
+        labelPlatform.setText("<html><u>" + platform.displayName + "</u></html>");
+        labelPlatform.setToolTipText("Click to change the map format");
         comboBoxGameType.setModel(new DefaultComboBoxModel<>(platform.supportedGameTypes.toArray(new GameType[platform.supportedGameTypes.size()])));
         comboBoxGameType.setSelectedItem(world.getGameType());
         comboBoxGameType.setEnabled(comboBoxGameType.getItemCount() > 1);
         comboBoxGameType.setRenderer(new EnumListCellRenderer());
         checkBoxAllowCheats.setSelected(world.isAllowCheats());
-        if (selectedTiles != null) {
-            radioButtonExportSelection.setText("export " + selectedTiles.size() + " selected tiles");
-            radioButtonExportSelection.setSelected(true);
+        if (world.getDataPacks() != null) {
+            for (File dataPackFile: world.getDataPacks()) {
+                dataPacksListModel.addElement(dataPackFile);
+            }
         }
+        listDataPacks.setModel(dataPacksListModel);
+        listDataPacks.setEnabled(platform.capabilities.contains(DATA_PACKS));
         checkBoxMapFeatures.setSelected(world.isMapFeatures());
         comboBoxDifficulty.setSelectedIndex(world.getDifficulty());
-        borderChanged(dim0.getBorder());
 
         DocumentListener documentListener = new DocumentListener() {
             @Override
@@ -216,8 +139,19 @@ public class ExportWorldDialog extends WorldPainterDialog {
         fieldDirectory.getDocument().addDocumentListener(documentListener);
         fieldName.getDocument().addDocumentListener(documentListener);
 
+        // Minecraft world border
+        World2.BorderSettings borderSettings = world.getBorderSettings();
+        spinnerMcBorderCentreX.setValue(borderSettings.getCentreX());
+        spinnerMcBorderCentreY.setValue(borderSettings.getCentreY());
+        spinnerMcBorderSize.setValue(borderSettings.getSize());
+//        spinnerMcBorderBuffer.setValue(borderSettings.getSafeZone());
+//        spinnerMcBorderDamage.setValue(borderSettings.getDamagePerBlock());
+//        spinnerMcBorderWarningTime.setValue(borderSettings.getWarningTime());
+//        spinnerMcBorderWarningDistance.setValue(borderSettings.getWarningBlocks());
+
         disableDisabledLayersWarning = true;
-dims:   for (Dimension dim: world.getDimensions()) {
+        dims:
+        for (Dimension dim: world.getDimensions()) {
             for (CustomLayer customLayer: dim.getCustomLayers()) {
                 if (! customLayer.isExport()) {
                     disableDisabledLayersWarning = false;
@@ -235,20 +169,19 @@ dims:   for (Dimension dim: world.getDimensions()) {
         setLocationRelativeTo(parent);
     }
 
-    private void borderChanged(Dimension.Border border) {
-        endlessBorder = (border != null) && border.isEndless();
-        if (endlessBorder && comboBoxGenerator.isEnabled()) {
-            savedGenerator = comboBoxGenerator.getSelectedIndex();
-            comboBoxGenerator.setSelectedIndex(1);
-            comboBoxGenerator.setEnabled(false);
-            savedMapFeatures = checkBoxMapFeatures.isSelected();
-            checkBoxMapFeatures.setSelected(false);
-//            setControlStates();
-        } else if ((! endlessBorder) && (! comboBoxGenerator.isEnabled())) {
-            comboBoxGenerator.setSelectedIndex(savedGenerator);
-            comboBoxGenerator.setEnabled(true);
-            checkBoxMapFeatures.setSelected(savedMapFeatures);
-//            setControlStates();
+    private void createDimensionPropertiesEditors() {
+        final SortedMap<Anchor, Dimension> dimensions = world.getDimensions().stream().collect(Collectors.toMap(
+                Dimension::getAnchor,
+                identity(),
+                (u,v) -> { throw new IllegalStateException(String.format("Duplicate key %s", u)); },
+                TreeMap::new));
+        for (Dimension dimension: dimensions.values()) {
+            final DimensionPropertiesEditor editor = new DimensionPropertiesEditor();
+            editor.setColourScheme(colourScheme);
+            editor.setDimension(dimension);
+            editor.setMode(DimensionPropertiesEditor.Mode.EXPORT);
+            jTabbedPane1.addTab(dimension.getName(), editor);
+            dimensionPropertiesEditors.put(dimension.getAnchor(), editor);
         }
     }
 
@@ -260,133 +193,92 @@ dims:   for (Dimension dim: world.getDimensions()) {
      * @param platform The platform to check for compatibility.
      * @return {@code true} is the platform is compatible with the loaded world.
      */
+    @SuppressWarnings("HtmlRequiredLangAttribute") // Not real HTML
     private boolean checkCompatibility(Platform platform) {
+        final Map<String, Set<String>> nameOnlyMaterials = gatherBlocksWithoutIds(world, platform);
         if ((! nameOnlyMaterials.isEmpty()) && (! platform.capabilities.contains(NAME_BASED))) {
-            StringBuilder sb = new StringBuilder();
+            final StringBuilder sb = new StringBuilder();
             sb.append("<html>");
             sb.append("<p>The world cannot be exported in format ").append(platform.displayName).append(" because it contains the following incompatible block types:");
             sb.append("<table><tr><th align='left'>Block Type</th><th align='left'>Source</th></tr>");
             nameOnlyMaterials.forEach((name, sources) ->
                     sb.append("<tr><td>").append(name).append("</td><td>").append(String.join(",", sources)).append("</td></tr>"));
             sb.append("</table>");
-            DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, sb.toString(), "Map Format Not Compatible", JOptionPane.ERROR_MESSAGE);
-            comboBoxMinecraftVersion.requestFocusInWindow();
+            beepAndShowError(this, sb.toString(), "Map Format Not Compatible");
             return false;
         }
-        if (! platform.isCompatible(world)) {
-            DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, String.format(/* language=HTML */ "<html>" +
-                    "<p>The world cannot be exported in format %s because it is not compatible, for one of these reasons:" +
-                    "<ul><li>The format does not support the world depth of %d blocks" +
-                    "<li>The format does not support the world height of %d blocks" +
-                    "<li>The format does not support one or more of the dimensions in this world" +
-                    "</ul>" +
-                    "</html>", platform.displayName, -world.getPlatform().minZ, world.getMaxHeight()), "Map Format Not Compatible", JOptionPane.ERROR_MESSAGE);
-            comboBoxMinecraftVersion.requestFocusInWindow();
+        final String incompatibilityReason = PlatformManager.getInstance().getPlatformProvider(platform).isCompatible(platform, world);
+        if (incompatibilityReason != null) {
+            beepAndShowError(this, String.format(/* language=HTML */ "<html>" +
+                    "<p>The world cannot be exported in format %s because it is not compatible:</p>" +
+                    "<p>%s</p>" +
+                    "</html>", platform.displayName, incompatibilityReason), "Map Format Not Compatible");
             return false;
         }
         return true;
     }
 
-    private void export() {
+    protected final void export(WorldExportSettings exportSettings) {
+        exportSettings = (exportSettings != null)
+                ? exportSettings
+                : ((world.getExportSettings() != null) ? world.getExportSettings() : EXPORT_EVERYTHING);
+        final boolean exportAllDimensions = exportSettings.getDimensionsToExport() == null, inhibitWarnings = (exportSettings != EXPORT_EVERYTHING);
+        final Set<Point> selectedTiles = exportAllDimensions ? null : exportSettings.getTilesToExport();
+        final int selectedDimension = exportAllDimensions ? DIM_NORMAL : exportSettings.getDimensionsToExport().iterator().next();
+
         // Check for errors
         if (! new File(fieldDirectory.getText().trim()).isDirectory()) {
             fieldDirectory.requestFocusInWindow();
-            DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, "The selected output directory does not exist or is not a directory.", "Error", JOptionPane.ERROR_MESSAGE);
+            beepAndShowError(this, "The selected output directory does not exist or is not a directory.", "Error");
             return;
         }
         if (fieldName.getText().trim().isEmpty()) {
             fieldName.requestFocusInWindow();
-            DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, "You have not specified a name for the map.", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        if ((! radioButtonExportEverything.isSelected()) && ((selectedTiles == null) || selectedTiles.isEmpty())) {
-            radioButtonExportEverything.requestFocusInWindow();
-            DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, "No tiles have been selected for export.", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        if ((comboBoxGenerator.getSelectedItem() == CUSTOM) && ((dim0GeneratorName == null) || dim0GeneratorName.trim().isEmpty())) {
-            buttonGeneratorOptions.requestFocusInWindow();
-            DesktopUtils.beep();
-            JOptionPane.showMessageDialog(this, "The custom world generator name has not been set.\nUse the [...] button to set it.", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        Platform platform = (Platform) comboBoxMinecraftVersion.getSelectedItem();
-        if (! checkCompatibility(platform)) {
+            beepAndShowError(this, "You have not specified a name for the map.", "Error");
             return;
         }
 
         // Check for warnings
-        StringBuilder sb = new StringBuilder("<html>Please confirm that you want to export the world<br>notwithstanding the following warnings:<br><ul>");
+        final Platform platform = world.getPlatform();
+        final StringBuilder sb = new StringBuilder("<ul>");
         boolean showWarning = false;
-        Configuration config = Configuration.getInstance();
-        if ((platform == JAVA_ANVIL_1_18) && (! config.isBeta118WarningDisplayed())) {
-            sb.append("<li><strong>Minecraft 1.18 support is still in preview!</strong><br>" +
-                    "Be careful and keep backups. If you encounter<br>" +
-                    "problems, please report them on GitHub:<br>" +
-                    "https://www.worldpainter.net/issues<br>" +
-                    "This warning will only be displayed once.");
-            showWarning = true;
-        }
-        Generator generatorType = Generator.values()[comboBoxGenerator.getSelectedIndex()];
-        final Dimension dim0 = world.getDimension(DIM_NORMAL);
-        if ((surfacePropertiesEditor.isPopulateSelected()
-                || dim0.getAllLayers(true).contains(Populate.INSTANCE))
-                && (! platform.capabilities.contains(POPULATE))) {
-            sb.append("<li>Population and not supported for<br>map format " + platform.displayName + "; it will not have an effect");
-            showWarning = true;
-        } else if ((! radioButtonExportSelection.isSelected()) || (selectedDimension == DIM_NORMAL)) {
-            // The surface dimension is going to be exported
-            if ((generatorType == Generator.FLAT) && (surfacePropertiesEditor.isPopulateSelected() || dim0.getAllLayers(true).contains(Populate.INSTANCE))) {
-                sb.append("<li>The Superflat world type is selected and Populate is in use.<br>Minecraft will <em>not</em> populate generated chunks for Superflat maps.");
+        for (DimensionPropertiesEditor editor: dimensionPropertiesEditors.values()) {
+            final Generator generatorType = editor.getSelectedGeneratorType();
+            final Dimension dimension = editor.getDimension();
+            if ((editor.isPopulateSelected() || dimension.getAllLayers(true).contains(Populate.INSTANCE)) && (! platform.capabilities.contains(POPULATE))) {
+                sb.append("<li>Population not supported for<br>map format " + platform.displayName + "; it will not have an effect");
                 showWarning = true;
-            }
-        }
-        if (! platform.supportedGenerators.contains(generatorType)) {
-            sb.append("<li>Map format " + platform.displayName + " does not support world type " + generatorType.getDisplayName() + ".<br>The world type will be reset to " + platform.supportedGenerators.get(0).getDisplayName() + ".");
-            generatorType = platform.supportedGenerators.get(0);
-            showWarning = true;
-        }
-        if (radioButtonExportSelection.isSelected()) {
-            if (selectedDimension == DIM_NORMAL) {
-                boolean spawnInSelection = false;
-                Point spawnPoint = world.getSpawnPoint();
-                for (Point tile: selectedTiles) {
-                    if ((spawnPoint.x >= (tile.x << 7)) && (spawnPoint.x < ((tile.x + 1) << 7)) && (spawnPoint.y >= (tile.y << 7)) && (spawnPoint.y < ((tile.y + 1) << 7))) {
-                        spawnInSelection = true;
-                        break;
-                    }
-                }
-                if (! spawnInSelection) {
-                    sb.append("<li>The spawn point is not inside the selected area.");
+            } else if (exportAllDimensions || (selectedDimension == dimension.getAnchor().dim)) {
+                // The dimension is going to be exported
+                if ((generatorType == Generator.FLAT) && (editor.isPopulateSelected() || dimension.getAllLayers(true).contains(Populate.INSTANCE))) {
+                    sb.append("<li>The Superflat world type is selected and Populate is in use.<br>Minecraft will <em>not</em> populate generated chunks for Superflat maps.");
                     showWarning = true;
                 }
             }
-            String dim;
-            switch (selectedDimension) {
-                case DIM_NORMAL:
-                    dim = "Surface";
-                    break;
-                case DIM_NETHER:
-                    dim = "Nether";
-                    break;
-                case DIM_END:
-                    dim = "End";
-                    break;
-                default:
-                    throw new InternalError();
+            if ((generatorType != null) && (! platform.supportedGenerators.contains(generatorType))) {
+                sb.append("<li>Map format " + platform.displayName + " does not support world type " + generatorType.getDisplayName() + ".<br>The world type will be reset to " + platform.supportedGenerators.get(0).getDisplayName() + ".");
+                editor.setSelectedGeneratorType(platform.supportedGenerators.get(0));
+                showWarning = true;
             }
-            sb.append("<li>A tile selection is active! Only " + selectedTiles.size() + " tiles of the<br>" + dim + " dimension are going to be exported.");
-            showWarning = showWarning || (! disableTileSelectionWarning);
+        }
+        if ((selectedTiles != null) && (selectedDimension == DIM_NORMAL)) {
+            boolean spawnInSelection = false;
+            Point spawnPoint = world.getSpawnPoint();
+            for (Point tile: selectedTiles) {
+                if ((spawnPoint.x >= (tile.x << 7)) && (spawnPoint.x < ((tile.x + 1) << 7)) && (spawnPoint.y >= (tile.y << 7)) && (spawnPoint.y < ((tile.y + 1) << 7))) {
+                    spawnInSelection = true;
+                    break;
+                }
+            }
+            if (! spawnInSelection) {
+                sb.append("<li>The spawn point is not inside the selected area.<br>It will temporarily be moved to the middle of the selected area.");
+                showWarning = true;
+            }
         }
         int disabledLayerCount = 0;
         for (Dimension dimension: world.getDimensions()) {
             for (CustomLayer customLayer: dimension.getCustomLayers()) {
-                if (! customLayer.isExport()) {
+                if ((customLayer.getExporterType() != null) && (! customLayer.isExport())) {
                     disabledLayerCount++;
                 }
             }
@@ -399,16 +291,51 @@ dims:   for (Dimension dim: world.getDimensions()) {
             }
             showWarning = showWarning || (! disableDisabledLayersWarning);
         }
-        sb.append("</ul>Do you want to continue with the export?</html>");
-        if (showWarning) {
-            DesktopUtils.beep();
-            if (JOptionPane.showConfirmDialog(this, sb.toString(), "Review Warnings", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) {
-                return;
+        for (int i = 0; i < dataPacksListModel.size(); i++) {
+            final File dataPackFile = dataPacksListModel.getElementAt(i);
+            if (! dataPackFile.exists()) {
+                sb.append("<li>Data pack file " + dataPackFile.getName() + " cannot be found.<br>It will not be installed.");
+                showWarning = true;
+            } else if (! dataPackFile.isFile()) {
+                sb.append("<li>Data pack file " + dataPackFile.getName() + " is not a regular file.<br>It will not be installed.");
+                showWarning = true;
+            } else if (! dataPackFile.canRead()) {
+                sb.append("<li>Data pack file " + dataPackFile.getName() + " is not accessible.<br>It will not be installed.");
+                showWarning = true;
             }
         }
+        sb.append("</ul>");
+        if (showWarning) {
+            final String warnings = sb.toString();
+            if (inhibitWarnings && (warningsForWorld != null) && (warningsForWorld.get() == world) && warnings.equals(previouslyAcknowledgedWarnings)) {
+                logger.warn("Skipping previously acknowledged warnings for this world: {}", previouslyAcknowledgedWarnings);
+            } else {
+                DesktopUtils.beep();
+                String text = "<html>Please confirm that you want to export the world<br>" +
+                        "notwithstanding the following warnings:<br>"
+                        + warnings
+                        + "Do you want to continue with the export?";
+                if (inhibitWarnings) {
+                    text += "<br>" +
+                            "<br>" +
+                            "<strong>Note:</strong> on the next Test Export this screen will be skipped<br>" +
+                            "if the warnings are identical.</html>";
+                }
+                if (JOptionPane.showConfirmDialog(this, text, "Review Warnings", YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) {
+                    previouslyAcknowledgedWarnings = null;
+                    warningsForWorld = null;
+                    return;
+                }
+                previouslyAcknowledgedWarnings = warnings;
+                warningsForWorld = new WeakReference<>(world);
+            }
+        } else {
+            previouslyAcknowledgedWarnings = null;
+            warningsForWorld = null;
+        }
 
-        File baseDir = new File(fieldDirectory.getText().trim());
-        String name = fieldName.getText().trim();
+        final File baseDir = new File(fieldDirectory.getText().trim());
+        final String name = fieldName.getText().trim();
 
         // Make sure the minimum free disk space is met
         try {
@@ -419,122 +346,111 @@ dims:   for (Dimension dim: world.getDimensions()) {
             throw new RuntimeException("I/O error while cleaning backups", e);
         }
 
-        if (! surfacePropertiesEditor.saveSettings()) {
-            jTabbedPane1.setSelectedIndex(0);
+        if (! saveDimensionSettings()) {
+            return;
+        }
+        if (! checkCompatibility(world.getPlatform())) {
             return;
         }
 
-        if (world.getDimension(DIM_NETHER) != null) {
-            if (! netherPropertiesEditor.saveSettings()) {
-                jTabbedPane1.setSelectedIndex(2);
-                return;
-            }
-        }
-        if (world.getDimension(DIM_END) != null) {
-            if (! endPropertiesEditor.saveSettings()) {
-                jTabbedPane1.setSelectedIndex(4);
-                return;
-            }
-        }
-        if (world.getDimension(DIM_NORMAL_CEILING) != null) {
-            if (! surfaceCeilingPropertiesEditor.saveSettings()) {
-                jTabbedPane1.setSelectedIndex(1);
-                return;
-            }
-        }
-        if (world.getDimension(DIM_NETHER_CEILING) != null) {
-            if (! netherCeilingPropertiesEditor.saveSettings()) {
-                jTabbedPane1.setSelectedIndex(3);
-                return;
-            }
-        }
-        if (world.getDimension(DIM_END_CEILING) != null) {
-            if (! endCeilingPropertiesEditor.saveSettings()) {
-                jTabbedPane1.setSelectedIndex(5);
-                return;
-            }
-        }
-        world.setPlatform(platform);
         world.setCreateGoodiesChest(checkBoxGoodies.isSelected());
         world.setGameType((GameType) comboBoxGameType.getSelectedItem());
         world.setAllowCheats(checkBoxAllowCheats.isSelected());
-        if (! endlessBorder) {
-            switch (generatorType) {
-                case FLAT:
-                    dim0.setGenerator(new SuperflatGenerator(dim0SuperflatPreset));
-                    break;
-                case DEFAULT:
-                case LARGE_BIOMES:
-                case BUFFET:
-                case CUSTOMIZED:
-                    dim0.setGenerator(new SeededGenerator(generatorType, dim0.getMinecraftSeed()));
-                    break;
-                case CUSTOM:
-                    dim0.setGenerator(new CustomGenerator(dim0GeneratorName.trim()));
-                    break;
-                case UNKNOWN:
-                    // Do nothing
-                    break;
-            }
-            world.setMapFeatures(checkBoxMapFeatures.isSelected());
-        }
-        if (radioButtonExportEverything.isSelected()) {
-            world.setDimensionsToExport(null);
-            world.setTilesToExport(null);
-        } else {
-            world.setDimensionsToExport(Collections.singleton(selectedDimension));
-            world.setTilesToExport(selectedTiles);
-        }
+        world.setMapFeatures(checkBoxMapFeatures.isSelected());
         world.setDifficulty(comboBoxDifficulty.getSelectedIndex());
-        
+        world.setDataPacks(dataPacksListModel.isEmpty() ? null : Collections.list(dataPacksListModel.elements()));
+
+        // Minecraft world border
+        BorderSettings borderSettings = world.getBorderSettings();
+        borderSettings.setCentreX((Integer) spinnerMcBorderCentreX.getValue());
+        borderSettings.setCentreY((Integer) spinnerMcBorderCentreY.getValue());
+        borderSettings.setSize((Integer) spinnerMcBorderSize.getValue());
+//        borderSettings.setSafeZone((Integer) spinnerMcBorderBuffer.getValue());
+//        borderSettings.setDamagePerBlock((Float) spinnerMcBorderDamage.getValue());
+//        borderSettings.setWarningTime((Integer) spinnerMcBorderWarningTime.getValue());
+//        borderSettings.setWarningBlocks((Integer) spinnerMcBorderWarningDistance.getValue());
+
         fieldDirectory.setEnabled(false);
         fieldName.setEnabled(false);
         buttonSelectDirectory.setEnabled(false);
         buttonExport.setEnabled(false);
+        buttonTestExport.setEnabled(false);
         buttonCancel.setEnabled(false);
-        surfacePropertiesEditor.setEnabled(false);
-        netherPropertiesEditor.setEnabled(false);
-        endPropertiesEditor.setEnabled(false);
+        for (DimensionPropertiesEditor editor: dimensionPropertiesEditors.values()) {
+            editor.setEnabled(false);
+        }
         checkBoxGoodies.setEnabled(false);
         comboBoxGameType.setEnabled(false);
         checkBoxAllowCheats.setEnabled(false);
-        comboBoxGenerator.setEnabled(false);
-        comboBoxMinecraftVersion.setEnabled(false);
-        radioButtonExportEverything.setEnabled(false);
-        radioButtonExportSelection.setEnabled(false);
-        labelSelectTiles.setForeground(null);
-        labelSelectTiles.setCursor(null);
         checkBoxMapFeatures.setEnabled(false);
         comboBoxDifficulty.setEnabled(false);
+        listDataPacks.setEnabled(false);
+        buttonAddDataPack.setEnabled(false);
+        buttonRemoveDataPack.setEnabled(false);
 
+        final Configuration config = Configuration.getInstance();
         config.setExportDirectory(world.getPlatform(), baseDir);
-        if (platform == JAVA_ANVIL_1_18) {
-            config.setBeta118WarningDisplayed(true);
-        }
 
-        ExportProgressDialog dialog = new ExportProgressDialog(this, world, baseDir, name);
+        final ExportProgressDialog dialog = new ExportProgressDialog(this, world, exportSettings, baseDir, name, previouslyAcknowledgedWarnings);
         view.setInhibitUpdates(true);
         try {
             dialog.setVisible(true);
         } finally {
             view.setInhibitUpdates(false);
         }
-        ok();
+        if (! dialog.isAllowRetry()) {
+            ok();
+        } else {
+            fieldName.setEnabled(true);
+            buttonCancel.setEnabled(true);
+            for (DimensionPropertiesEditor editor: dimensionPropertiesEditors.values()) {
+                editor.setEnabled(true);
+            }
+            checkBoxGoodies.setEnabled(true);
+            comboBoxGameType.setEnabled(true);
+            checkBoxMapFeatures.setEnabled(true);
+            listDataPacks.setEnabled(platform.capabilities.contains(DATA_PACKS));
+            setControlStates();
+        }
+    }
+
+    private boolean saveDimensionSettings() {
+        for (DimensionPropertiesEditor editor: dimensionPropertiesEditors.values()) {
+            if (! editor.saveSettings()) {
+                jTabbedPane1.setSelectedComponent(editor);
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    private void testExport() {
+        final TestExportDialog dialog = new TestExportDialog(this, world, colourScheme, customBiomeManager, hiddenLayers, contourLines, contourSeparation, lightOrigin);
+        dialog.setVisible(true);
+        if (! dialog.isCancelled()) {
+            export(world.getExportSettings());
+        }
     }
 
     private void setControlStates() {
         boolean notHardcore = comboBoxGameType.getSelectedItem() != HARDCORE;
-        Platform platform = (Platform) comboBoxMinecraftVersion.getSelectedItem();
-        if (radioButtonExportSelection.isSelected()) {
-            labelSelectTiles.setForeground(Color.BLUE);
-            labelSelectTiles.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        } else {
-            labelSelectTiles.setForeground(null);
-            labelSelectTiles.setCursor(null);
-        }
-        checkBoxAllowCheats.setEnabled((comboBoxMinecraftVersion.getSelectedItem() != JAVA_MCREGION) && notHardcore);
-        buttonGeneratorOptions.setEnabled((! endlessBorder) && ((comboBoxGenerator.getSelectedItem() == Generator.FLAT) || (comboBoxGenerator.getSelectedItem() == CUSTOM)));
+        final boolean platformSupported = supportedPlatforms.contains(world.getPlatform());
+        checkBoxAllowCheats.setEnabled((world.getPlatform() != JAVA_MCREGION) && notHardcore);
         comboBoxDifficulty.setEnabled(notHardcore);
+        fieldDirectory.setEnabled(platformSupported);
+        buttonSelectDirectory.setEnabled(platformSupported);
+        buttonExport.setEnabled(platformSupported);
+        buttonTestExport.setEnabled(platformSupported);
+        final boolean dataPacksEnabled = listDataPacks.isEnabled();
+        buttonAddDataPack.setEnabled(dataPacksEnabled);
+        buttonRemoveDataPack.setEnabled(dataPacksEnabled && (listDataPacks.getSelectedIndex() != -1));
+        if (! platformSupported) {
+            buttonExport.setToolTipText(labelPlatformWarning.getToolTipText());
+            buttonTestExport.setToolTipText(labelPlatformWarning.getToolTipText());
+        } else {
+            buttonExport.setToolTipText(null);
+            buttonTestExport.setToolTipText(null);
+        }
     }
 
     private void selectDir() {
@@ -543,42 +459,71 @@ dims:   for (Dimension dim: world.getDimensions()) {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setSelectedFile(new File(fieldDirectory.getText().trim()));
         fileChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+        if (doWithoutExceptionReporting(() -> fileChooser.showOpenDialog(this)) == JFileChooser.APPROVE_OPTION) {
             fieldDirectory.setText(fileChooser.getSelectedFile().getAbsolutePath());
         }
     }
     
-    private void selectTiles() {
-        if (radioButtonExportSelection.isSelected()) {
-            ExportTileSelectionDialog dialog = new ExportTileSelectionDialog(this, world, selectedDimension, selectedTiles, colourScheme, customBiomeManager, hiddenLayers, contourLines, contourSeparation, lightOrigin);
-            dialog.setVisible(true);
-            selectedDimension = dialog.getSelectedDimension();
-            selectedTiles = dialog.getSelectedTiles();
-            radioButtonExportSelection.setText("export " + selectedTiles.size() + " selected tiles");
-            setControlStates();
-            disableTileSelectionWarning = true;
+    private void changePlatform() {
+        if (! saveDimensionSettings()) {
+            return;
+        }
+        if (App.getInstance().changeWorldHeight(this)) {
+            while (jTabbedPane1.getTabCount() > 1) {
+                jTabbedPane1.removeTabAt(jTabbedPane1.getTabCount() - 1);
+            }
+            createDimensionPropertiesEditors();
+            platformChanged();
         }
     }
 
-    private void updateGeneratorButtonTooltip() {
-        switch ((Generator) comboBoxGenerator.getSelectedItem()) {
-            case FLAT:
-                buttonGeneratorOptions.setToolTipText("Edit the Superflat mode preset");
-                break;
-            case CUSTOM:
-                buttonGeneratorOptions.setToolTipText("Set the custom world generator name");
-                break;
-            default:
-                buttonGeneratorOptions.setToolTipText(null);
-                break;
+    private void addDataPack() {
+        final File dataPackFile = selectFileForOpen(this, "Select a data pack", null, new FileFilter() {
+            @Override
+            public String getExtensions() {
+                return "*.zip";
+            }
+
+            @Override
+            public boolean accept(File f) {
+                return f.isDirectory() || f.getName().toLowerCase().endsWith(".zip");
+            }
+
+            @Override
+            public String getDescription() {
+                return "Data packs (*.zip)";
+            }
+        });
+        if (dataPackFile != null) {
+            if (! isDataPackFile(dataPackFile)) {
+                beepAndShowError(this, "The selected file \"" + dataPackFile.getName() + "\" is not a Minecraft data pack.", "Not A Data Pack");
+                return;
+            } else if (dataPackFile.getName().equalsIgnoreCase("worldpainter.zip")) {
+                beepAndShowError(this, "The WorldPainter data pack is managed by WorldPainter.", "Cannot Add WorldPainter Data Pack");
+                return;
+            } else {
+                for (Enumeration<File> e = dataPacksListModel.elements(); e.hasMoreElements(); ) {
+                    final File existingDataPack = e.nextElement();
+                    if (existingDataPack.getName().equalsIgnoreCase(dataPackFile.getName())) {
+                        if (JOptionPane.showConfirmDialog(this, "There is already a data pack selected with the mame \"" + dataPackFile.getName() + "\"\nDo you want to replaced it?", "Data Pack Name Already Present", YES_NO_OPTION) == YES_OPTION) {
+                            dataPacksListModel.removeElement(existingDataPack);
+                            break;
+                        } else {
+                            return;
+                        }
+                    }
+                }
+            }
+            dataPacksListModel.addElement(dataPackFile);
         }
     }
 
-    // Change the line adding jTabbedPane1 to the vertical group to:
-    //
-    //     .addComponent(jTabbedPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 100, Short.MAX_VALUE)
-    //
-    // in order to fix a bug where the tabbed pane is made much too tall.
+    private void removeSelectedDataPacks() {
+        final int[] selectedIndices = listDataPacks.getSelectedIndices();
+        for (int i = selectedIndices.length - 1; i >= 0; i--) {
+            dataPacksListModel.remove(selectedIndices[i]);
+        }
+    }
 
     /** This method is called from within the constructor to
      * initialize the form.
@@ -590,53 +535,50 @@ dims:   for (Dimension dim: world.getDimensions()) {
     private void initComponents() {
 
         buttonGroup2 = new javax.swing.ButtonGroup();
-        jLabel2 = new javax.swing.JLabel();
-        fieldDirectory = new javax.swing.JTextField();
-        buttonSelectDirectory = new javax.swing.JButton();
-        jLabel3 = new javax.swing.JLabel();
-        fieldName = new javax.swing.JTextField();
         buttonCancel = new javax.swing.JButton();
         buttonExport = new javax.swing.JButton();
         jTabbedPane1 = new javax.swing.JTabbedPane();
-        surfacePropertiesEditor = new org.pepsoft.worldpainter.DimensionPropertiesEditor();
-        surfaceCeilingPropertiesEditor = new org.pepsoft.worldpainter.DimensionPropertiesEditor();
-        netherPropertiesEditor = new org.pepsoft.worldpainter.DimensionPropertiesEditor();
-        netherCeilingPropertiesEditor = new org.pepsoft.worldpainter.DimensionPropertiesEditor();
-        endPropertiesEditor = new org.pepsoft.worldpainter.DimensionPropertiesEditor();
-        endCeilingPropertiesEditor = new org.pepsoft.worldpainter.DimensionPropertiesEditor();
+        jPanel1 = new javax.swing.JPanel();
         checkBoxGoodies = new javax.swing.JCheckBox();
-        comboBoxMinecraftVersion = new javax.swing.JComboBox<>();
         jLabel1 = new javax.swing.JLabel();
-        radioButtonExportEverything = new javax.swing.JRadioButton();
-        radioButtonExportSelection = new javax.swing.JRadioButton();
-        labelSelectTiles = new javax.swing.JLabel();
-        checkBoxAllowCheats = new javax.swing.JCheckBox();
+        labelPlatform = new javax.swing.JLabel();
+        labelPlatformWarning = new javax.swing.JLabel();
         jLabel4 = new javax.swing.JLabel();
-        comboBoxGenerator = new javax.swing.JComboBox<>();
         jLabel5 = new javax.swing.JLabel();
         comboBoxGameType = new javax.swing.JComboBox<>();
-        buttonGeneratorOptions = new javax.swing.JButton();
-        checkBoxMapFeatures = new javax.swing.JCheckBox();
+        checkBoxAllowCheats = new javax.swing.JCheckBox();
         jLabel6 = new javax.swing.JLabel();
         comboBoxDifficulty = new javax.swing.JComboBox();
+        checkBoxMapFeatures = new javax.swing.JCheckBox();
+        jLabel7 = new javax.swing.JLabel();
+        jSeparator1 = new javax.swing.JSeparator();
+        jLabel8 = new javax.swing.JLabel();
+        jLabel9 = new javax.swing.JLabel();
+        jLabel10 = new javax.swing.JLabel();
+        jLabel2 = new javax.swing.JLabel();
+        jLabel3 = new javax.swing.JLabel();
+        fieldDirectory = new javax.swing.JTextField();
+        fieldName = new javax.swing.JTextField();
+        buttonSelectDirectory = new javax.swing.JButton();
+        jLabel11 = new javax.swing.JLabel();
+        jScrollPane1 = new javax.swing.JScrollPane();
+        listDataPacks = new javax.swing.JList<>();
+        buttonAddDataPack = new javax.swing.JButton();
+        buttonRemoveDataPack = new javax.swing.JButton();
+        jLabel12 = new javax.swing.JLabel();
+        panelMinecraftWorldBorder = new javax.swing.JPanel();
+        jLabel79 = new javax.swing.JLabel();
+        spinnerMcBorderCentreX = new javax.swing.JSpinner();
+        jLabel80 = new javax.swing.JLabel();
+        spinnerMcBorderCentreY = new javax.swing.JSpinner();
+        jLabel81 = new javax.swing.JLabel();
+        spinnerMcBorderSize = new javax.swing.JSpinner();
+        jLabel85 = new javax.swing.JLabel();
+        jLabel86 = new javax.swing.JLabel();
+        buttonTestExport = new javax.swing.JButton();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         setTitle("Exporting");
-
-        jLabel2.setText("Directory:");
-
-        fieldDirectory.setText("jTextField1");
-
-        buttonSelectDirectory.setText("...");
-        buttonSelectDirectory.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                buttonSelectDirectoryActionPerformed(evt);
-            }
-        });
-
-        jLabel3.setText("Name:");
-
-        fieldName.setText("jTextField2");
 
         buttonCancel.setText("Cancel");
         buttonCancel.addActionListener(new java.awt.event.ActionListener() {
@@ -653,63 +595,29 @@ dims:   for (Dimension dim: world.getDimensions()) {
         });
 
         jTabbedPane1.setTabPlacement(javax.swing.JTabbedPane.RIGHT);
-        jTabbedPane1.addTab("Surface", surfacePropertiesEditor);
-        jTabbedPane1.addTab("Surface Ceiling", surfaceCeilingPropertiesEditor);
-        jTabbedPane1.addTab("Nether", netherPropertiesEditor);
-        jTabbedPane1.addTab("Nether Ceiling", netherCeilingPropertiesEditor);
-        jTabbedPane1.addTab("End", endPropertiesEditor);
-        jTabbedPane1.addTab("End Ceiling", endCeilingPropertiesEditor);
 
         checkBoxGoodies.setSelected(true);
-        checkBoxGoodies.setText("Include chest of goodies");
+        checkBoxGoodies.setText(" ");
         checkBoxGoodies.setToolTipText("Include a chest with tools and resources near spawn for you as the level designer");
-
-        comboBoxMinecraftVersion.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                comboBoxMinecraftVersionActionPerformed(evt);
-            }
-        });
 
         jLabel1.setText("Map format:");
 
-        buttonGroup2.add(radioButtonExportEverything);
-        radioButtonExportEverything.setSelected(true);
-        radioButtonExportEverything.setText("export everything");
-        radioButtonExportEverything.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonExportEverythingActionPerformed(evt);
-            }
-        });
-
-        buttonGroup2.add(radioButtonExportSelection);
-        radioButtonExportSelection.setText("export selected tiles");
-        radioButtonExportSelection.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                radioButtonExportSelectionActionPerformed(evt);
-            }
-        });
-
-        labelSelectTiles.setText("<html><u>select tiles</u></html>");
-        labelSelectTiles.addMouseListener(new java.awt.event.MouseAdapter() {
+        labelPlatform.setForeground(new java.awt.Color(0, 0, 255));
+        labelPlatform.setText("<html><u>[EXPERIMENTAL] Minecraft 1.17</u></html>");
+        labelPlatform.setCursor(new java.awt.Cursor(java.awt.Cursor.HAND_CURSOR));
+        labelPlatform.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mouseClicked(java.awt.event.MouseEvent evt) {
-                labelSelectTilesMouseClicked(evt);
+                labelPlatformMouseClicked(evt);
             }
         });
 
-        checkBoxAllowCheats.setSelected(true);
-        checkBoxAllowCheats.setText("Allow cheats");
-        checkBoxAllowCheats.setToolTipText("Whether to allow cheats (single player commands)");
+        labelPlatformWarning.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/error.png"))); // NOI18N
+        labelPlatformWarning.setText("<html><b>unknown format</b></html>");
+        labelPlatformWarning.setToolTipText("<html>This map format is unknown and cannot be Exported. Most likely it<br>\nis supported by a plugin that is not installed or cannot be loaded.</html>");
 
-        jLabel4.setText("World type:");
+        jLabel4.setText("Game settings");
 
-        comboBoxGenerator.setToolTipText("<html>The world generator type to use for new land <em>outside</em> the WorldPainter-generated part</html>");
-        comboBoxGenerator.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                comboBoxGeneratorActionPerformed(evt);
-            }
-        });
-
-        jLabel5.setText("Mode:");
+        jLabel5.setText("Game mode:");
 
         comboBoxGameType.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -717,21 +625,265 @@ dims:   for (Dimension dim: world.getDimensions()) {
             }
         });
 
-        buttonGeneratorOptions.setText("...");
-        buttonGeneratorOptions.setToolTipText("Edit the Superflat mode preset");
-        buttonGeneratorOptions.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                buttonGeneratorOptionsActionPerformed(evt);
-            }
-        });
-
-        checkBoxMapFeatures.setSelected(true);
-        checkBoxMapFeatures.setText("Structures");
-        checkBoxMapFeatures.setToolTipText("<html>Whether Minecraft should generate NPC villages,<br>\nabandoned mines , strongholds, jungle temples and<br>\ndesert temples (only applies to areas with Populate)</html>");
+        checkBoxAllowCheats.setSelected(true);
+        checkBoxAllowCheats.setText(" ");
+        checkBoxAllowCheats.setToolTipText("Whether to allow cheats (single player commands)");
 
         jLabel6.setText("Difficulty:");
 
         comboBoxDifficulty.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "Peaceful", "Easy", "Normal", "Hard" }));
+
+        checkBoxMapFeatures.setSelected(true);
+        checkBoxMapFeatures.setText(" ");
+
+        jLabel7.setText("General settings");
+
+        jLabel8.setLabelFor(checkBoxAllowCheats);
+        jLabel8.setText("Allow cheats:");
+
+        jLabel9.setLabelFor(checkBoxMapFeatures);
+        jLabel9.setText("Generate structures:");
+
+        jLabel10.setLabelFor(checkBoxGoodies);
+        jLabel10.setText("Include chest of goodies:");
+
+        jLabel2.setText("Directory:");
+
+        jLabel3.setText("Name:");
+
+        fieldDirectory.setText("jTextField1");
+
+        fieldName.setText("jTextField2");
+
+        buttonSelectDirectory.setText("...");
+        buttonSelectDirectory.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonSelectDirectoryActionPerformed(evt);
+            }
+        });
+
+        jLabel11.setText("Data packs:");
+
+        listDataPacks.addListSelectionListener(new javax.swing.event.ListSelectionListener() {
+            public void valueChanged(javax.swing.event.ListSelectionEvent evt) {
+                listDataPacksValueChanged(evt);
+            }
+        });
+        jScrollPane1.setViewportView(listDataPacks);
+
+        buttonAddDataPack.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_add.png"))); // NOI18N
+        buttonAddDataPack.setToolTipText("Add a data pack");
+        buttonAddDataPack.setMargin(new java.awt.Insets(2, 2, 2, 2));
+        buttonAddDataPack.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonAddDataPackActionPerformed(evt);
+            }
+        });
+
+        buttonRemoveDataPack.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_delete.png"))); // NOI18N
+        buttonRemoveDataPack.setToolTipText("Remove the selected data pack(s)");
+        buttonRemoveDataPack.setEnabled(false);
+        buttonRemoveDataPack.setMargin(new java.awt.Insets(2, 2, 2, 2));
+        buttonRemoveDataPack.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonRemoveDataPackActionPerformed(evt);
+            }
+        });
+
+        jLabel12.setText("<html><i>Use at own risk. WorldPainter does</i> not <i>check the validity or version! <i></html>");
+
+        panelMinecraftWorldBorder.setBorder(javax.swing.BorderFactory.createTitledBorder("World Border"));
+
+        jLabel79.setText("Centre:");
+
+        spinnerMcBorderCentreX.setModel(new javax.swing.SpinnerNumberModel(0, -99999, 99999, 1));
+
+        jLabel80.setText(", ");
+
+        spinnerMcBorderCentreY.setModel(new javax.swing.SpinnerNumberModel(0, -99999, 99999, 1));
+
+        jLabel81.setText("Size:");
+
+        spinnerMcBorderSize.setModel(new javax.swing.SpinnerNumberModel(0, 0, 60000000, 1));
+
+        jLabel85.setText(" blocks");
+
+        jLabel86.setText(" blocks");
+
+        javax.swing.GroupLayout panelMinecraftWorldBorderLayout = new javax.swing.GroupLayout(panelMinecraftWorldBorder);
+        panelMinecraftWorldBorder.setLayout(panelMinecraftWorldBorderLayout);
+        panelMinecraftWorldBorderLayout.setHorizontalGroup(
+            panelMinecraftWorldBorderLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelMinecraftWorldBorderLayout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(panelMinecraftWorldBorderLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addGroup(panelMinecraftWorldBorderLayout.createSequentialGroup()
+                        .addComponent(jLabel79)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(spinnerMcBorderCentreX, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addGap(0, 0, 0)
+                        .addComponent(jLabel80)
+                        .addGap(0, 0, 0)
+                        .addComponent(spinnerMcBorderCentreY, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addGap(0, 0, 0)
+                        .addComponent(jLabel85))
+                    .addGroup(panelMinecraftWorldBorderLayout.createSequentialGroup()
+                        .addComponent(jLabel81)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(spinnerMcBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addGap(0, 0, 0)
+                        .addComponent(jLabel86)))
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+        panelMinecraftWorldBorderLayout.setVerticalGroup(
+            panelMinecraftWorldBorderLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(panelMinecraftWorldBorderLayout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(panelMinecraftWorldBorderLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel79)
+                    .addComponent(spinnerMcBorderCentreX, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel80)
+                    .addComponent(spinnerMcBorderCentreY, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel85))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(panelMinecraftWorldBorderLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel81)
+                    .addComponent(spinnerMcBorderSize, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel86))
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        javax.swing.GroupLayout jPanel1Layout = new javax.swing.GroupLayout(jPanel1);
+        jPanel1.setLayout(jPanel1Layout);
+        jPanel1Layout.setHorizontalGroup(
+            jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel1Layout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(jSeparator1)
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addComponent(jLabel2)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(fieldDirectory)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonSelectDirectory))
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addComponent(jLabel3)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(fieldName))
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addComponent(jScrollPane1)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(buttonAddDataPack, javax.swing.GroupLayout.Alignment.TRAILING)
+                            .addComponent(buttonRemoveDataPack, javax.swing.GroupLayout.Alignment.TRAILING)))
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(jLabel7)
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel10)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(checkBoxGoodies))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel1)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(labelPlatform, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(labelPlatformWarning, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addComponent(jLabel12, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                            .addComponent(jLabel4)
+                            .addComponent(jLabel11))
+                        .addGap(0, 0, Short.MAX_VALUE))
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel8)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(checkBoxAllowCheats))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel6)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(comboBoxDifficulty, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel5)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(comboBoxGameType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel9)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(checkBoxMapFeatures)))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, 18, Short.MAX_VALUE)
+                        .addComponent(panelMinecraftWorldBorder, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                .addContainerGap())
+        );
+        jPanel1Layout.setVerticalGroup(
+            jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel1Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(jLabel7)
+                .addGap(18, 18, 18)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel2)
+                    .addComponent(fieldDirectory, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(buttonSelectDirectory))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel3)
+                    .addComponent(fieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel1)
+                    .addComponent(labelPlatform, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(labelPlatformWarning, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(checkBoxGoodies)
+                    .addComponent(jLabel10))
+                .addGap(18, 18, 18)
+                .addComponent(jSeparator1, javax.swing.GroupLayout.PREFERRED_SIZE, 10, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(jLabel4)
+                .addGap(18, 18, 18)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                            .addComponent(jLabel5)
+                            .addComponent(comboBoxGameType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                            .addComponent(jLabel6)
+                            .addComponent(comboBoxDifficulty, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                            .addComponent(checkBoxAllowCheats)
+                            .addComponent(jLabel8))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                            .addComponent(jLabel9)
+                            .addComponent(checkBoxMapFeatures))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(jLabel11))
+                    .addComponent(panelMinecraftWorldBorder, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(jLabel12, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 0, Short.MAX_VALUE)
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addComponent(buttonAddDataPack)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonRemoveDataPack)))
+                .addContainerGap())
+        );
+
+        jTabbedPane1.addTab("General", jPanel1);
+
+        buttonTestExport.setText("Test Export...");
+        buttonTestExport.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonTestExportActionPerformed(evt);
+            }
+        });
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -740,89 +892,26 @@ dims:   for (Dimension dim: world.getDimensions()) {
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(fieldName)
-                    .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                        .addComponent(fieldDirectory)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(buttonSelectDirectory))
                     .addGroup(layout.createSequentialGroup()
-                        .addComponent(jLabel5)
+                        .addGap(0, 0, Short.MAX_VALUE)
+                        .addComponent(buttonTestExport)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(comboBoxGameType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(checkBoxAllowCheats)
-                        .addGap(18, 18, 18)
-                        .addComponent(jLabel6)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(comboBoxDifficulty, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(18, 18, 18)
-                        .addComponent(jLabel1)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(comboBoxMinecraftVersion, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(18, 18, Short.MAX_VALUE)
                         .addComponent(buttonExport)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(buttonCancel))
-                    .addComponent(jTabbedPane1)
-                    .addGroup(layout.createSequentialGroup()
-                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addComponent(jLabel2)
-                            .addComponent(jLabel3))
-                        .addGap(0, 0, Short.MAX_VALUE))
-                    .addGroup(layout.createSequentialGroup()
-                        .addComponent(checkBoxGoodies)
-                        .addGap(18, 18, 18)
-                        .addComponent(jLabel4)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(comboBoxGenerator, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(buttonGeneratorOptions)
-                        .addGap(18, 18, 18)
-                        .addComponent(checkBoxMapFeatures)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
-                        .addComponent(radioButtonExportEverything)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(radioButtonExportSelection)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(labelSelectTiles, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                    .addComponent(jTabbedPane1))
                 .addContainerGap())
         );
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(jLabel2)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(fieldDirectory, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(buttonSelectDirectory))
-                .addGap(18, 18, 18)
-                .addComponent(jLabel3)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(fieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addGap(18, 18, 18)
-                .addComponent(jTabbedPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 100, Short.MAX_VALUE)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(checkBoxGoodies)
-                    .addComponent(radioButtonExportEverything)
-                    .addComponent(radioButtonExportSelection)
-                    .addComponent(labelSelectTiles, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel4)
-                    .addComponent(comboBoxGenerator, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(buttonGeneratorOptions)
-                    .addComponent(checkBoxMapFeatures))
+                .addComponent(jTabbedPane1)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(buttonCancel)
                     .addComponent(buttonExport)
-                    .addComponent(comboBoxMinecraftVersion, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel1)
-                    .addComponent(checkBoxAllowCheats)
-                    .addComponent(jLabel5)
-                    .addComponent(comboBoxGameType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel6)
-                    .addComponent(comboBoxDifficulty, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                    .addComponent(buttonTestExport))
                 .addContainerGap())
         );
 
@@ -834,83 +923,52 @@ dims:   for (Dimension dim: world.getDimensions()) {
     }//GEN-LAST:event_buttonCancelActionPerformed
 
     private void buttonExportActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonExportActionPerformed
-        export();
+        export(EXPORT_EVERYTHING);
     }//GEN-LAST:event_buttonExportActionPerformed
 
     private void buttonSelectDirectoryActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonSelectDirectoryActionPerformed
         selectDir();
     }//GEN-LAST:event_buttonSelectDirectoryActionPerformed
 
-    private void radioButtonExportEverythingActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonExportEverythingActionPerformed
-        setControlStates();
-    }//GEN-LAST:event_radioButtonExportEverythingActionPerformed
-
-    private void labelSelectTilesMouseClicked(java.awt.event.MouseEvent evt) {//GEN-FIRST:event_labelSelectTilesMouseClicked
-        selectTiles();
-    }//GEN-LAST:event_labelSelectTilesMouseClicked
-
-    private void radioButtonExportSelectionActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonExportSelectionActionPerformed
-        if (radioButtonExportSelection.isSelected()) {
-            selectTiles();
+    private void platformChanged() {
+        Platform newPlatform = world.getPlatform();
+        labelPlatform.setText("<html><u>" + newPlatform.displayName + "</u></html>");
+        GameType gameType = (GameType) comboBoxGameType.getSelectedItem();
+        comboBoxGameType.setModel(new DefaultComboBoxModel<>(newPlatform.supportedGameTypes.toArray(new GameType[newPlatform.supportedGameTypes.size()])));
+        if (newPlatform.supportedGameTypes.contains(gameType)) {
+            comboBoxGameType.setSelectedItem(gameType);
         } else {
-            setControlStates();
+            comboBoxGameType.setSelectedItem(SURVIVAL);
         }
-    }//GEN-LAST:event_radioButtonExportSelectionActionPerformed
+        comboBoxGameType.setEnabled(newPlatform.supportedGameTypes.size() > 1);
+        if (newPlatform != JAVA_MCREGION) {
+            checkBoxAllowCheats.setSelected(gameType == CREATIVE);
+        } else {
+            checkBoxAllowCheats.setSelected(false);
+        }
+        listDataPacks.setEnabled(newPlatform.capabilities.contains(DATA_PACKS));
 
-    private void comboBoxMinecraftVersionActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxMinecraftVersionActionPerformed
-        Platform newPlatform = (Platform) comboBoxMinecraftVersion.getSelectedItem();
-        if (newPlatform != null) {
-            Generator generator = (Generator) comboBoxGenerator.getSelectedItem();
-            GameType gameType = (GameType) comboBoxGameType.getSelectedItem();
-            comboBoxGenerator.setModel(new DefaultComboBoxModel<>(newPlatform.supportedGenerators.toArray(new Generator[newPlatform.supportedGenerators.size()])));
-            if (newPlatform.supportedGenerators.contains(generator)) {
-                comboBoxGenerator.setSelectedItem(generator);
-            } else {
-                comboBoxGenerator.setSelectedItem(DEFAULT);
-            }
-            comboBoxGenerator.setEnabled(newPlatform.supportedGenerators.size() > 1);
-            comboBoxGameType.setModel(new DefaultComboBoxModel<>(newPlatform.supportedGameTypes.toArray(new GameType[newPlatform.supportedGameTypes.size()])));
-            if (newPlatform.supportedGameTypes.contains(gameType)) {
-                comboBoxGameType.setSelectedItem(gameType);
-            } else {
-                comboBoxGameType.setSelectedItem(SURVIVAL);
-            }
-            comboBoxGameType.setEnabled(newPlatform.supportedGameTypes.size() > 1);
-            if (newPlatform != JAVA_MCREGION) {
-                checkBoxAllowCheats.setSelected(gameType == CREATIVE);
-            } else {
-                checkBoxAllowCheats.setSelected(false);
-            }
+        if (supportedPlatforms.contains(newPlatform)) {
+            labelPlatformWarning.setVisible(false);
             File exportDir = Configuration.getInstance().getExportDirectory(newPlatform);
-            if ((exportDir == null) || (! exportDir.isDirectory())) {
+            if ((exportDir == null) || (!exportDir.isDirectory())) {
                 exportDir = PlatformManager.getInstance().getDefaultExportDir(newPlatform);
             }
             if ((exportDir != null) && exportDir.isDirectory()) {
                 fieldDirectory.setText(exportDir.getAbsolutePath());
             }
-
-            nameOnlyMaterials = gatherBlocksWithoutIds(world, newPlatform);
-
-            // Temporary workaround TODO make the chest work again
-            if ((newPlatform == JAVA_ANVIL_1_15) || (newPlatform == JAVA_ANVIL_1_17) || (newPlatform == JAVA_ANVIL_1_18)) {
-                checkBoxGoodies.setEnabled(false);
-                checkBoxGoodies.setSelected(false);
-            } else {
-                checkBoxGoodies.setEnabled(true);
-                checkBoxGoodies.setSelected(world.isCreateGoodiesChest());
-            }
-
-            dimensionPropertiesEditors.forEach((dim, editor) -> editor.setPlatform(newPlatform));
-
-            // Otherwise the JComboBox malfunctions:
-            SwingUtilities.invokeLater(() -> buttonExport.setEnabled(checkCompatibility(newPlatform)));
-            pack();
+        } else {
+            labelPlatformWarning.setVisible(true);
         }
+
+        checkBoxGoodies.setSelected(world.isCreateGoodiesChest());
+
+        pack();
         setControlStates();
-    }//GEN-LAST:event_comboBoxMinecraftVersionActionPerformed
+    }
 
     private void comboBoxGameTypeActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxGameTypeActionPerformed
-        if ((comboBoxMinecraftVersion.getSelectedItem() != JAVA_MCREGION) && (comboBoxGameType.getSelectedItem() == CREATIVE)) {
+        if ((world.getPlatform() != JAVA_MCREGION) && (comboBoxGameType.getSelectedItem() == CREATIVE)) {
             checkBoxAllowCheats.setSelected(true);
             comboBoxDifficulty.setSelectedIndex(DIFFICULTY_PEACEFUL);
         } else if (comboBoxGameType.getSelectedItem() == HARDCORE) {
@@ -920,87 +978,87 @@ dims:   for (Dimension dim: world.getDimensions()) {
         setControlStates();
     }//GEN-LAST:event_comboBoxGameTypeActionPerformed
 
-    private void buttonGeneratorOptionsActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonGeneratorOptionsActionPerformed
-        if (comboBoxGenerator.getSelectedItem() == CUSTOM) {
-            String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the custom world generator name:", dim0GeneratorName);
-            if (editedGeneratorOptions != null) {
-                dim0GeneratorName = editedGeneratorOptions;
-            }
-        } else {
-            if (dim0GeneratorName != null) {
-                String editedGeneratorOptions = JOptionPane.showInputDialog(this, "Edit the Superflat mode preset:", dim0GeneratorName);
-                if (editedGeneratorOptions != null) {
-                    dim0GeneratorName = editedGeneratorOptions;
-                }
-            } else {
-                Platform platform = (Platform) comboBoxMinecraftVersion.getSelectedItem();
-                SuperflatPreset mySuperflatPreset = (dim0SuperflatPreset != null)
-                        ? dim0SuperflatPreset
-                        : SuperflatPreset.defaultPreset(platform);
-                EditSuperflatPresetDialog dialog = new EditSuperflatPresetDialog(this, world.getPlatform(), mySuperflatPreset);
-                dialog.setVisible(true);
-                if (! dialog.isCancelled()) {
-                    dim0SuperflatPreset = mySuperflatPreset;
-                }
-            }
-        }
-    }//GEN-LAST:event_buttonGeneratorOptionsActionPerformed
+    private void labelPlatformMouseClicked(java.awt.event.MouseEvent evt) {//GEN-FIRST:event_labelPlatformMouseClicked
+        changePlatform();
+    }//GEN-LAST:event_labelPlatformMouseClicked
 
-    private void comboBoxGeneratorActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxGeneratorActionPerformed
+    private void buttonTestExportActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonTestExportActionPerformed
+        testExport();
+    }//GEN-LAST:event_buttonTestExportActionPerformed
+
+    private void buttonAddDataPackActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonAddDataPackActionPerformed
+        addDataPack();
+    }//GEN-LAST:event_buttonAddDataPackActionPerformed
+
+    private void buttonRemoveDataPackActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonRemoveDataPackActionPerformed
+        removeSelectedDataPacks();
+    }//GEN-LAST:event_buttonRemoveDataPackActionPerformed
+
+    private void listDataPacksValueChanged(javax.swing.event.ListSelectionEvent evt) {//GEN-FIRST:event_listDataPacksValueChanged
         setControlStates();
-        updateGeneratorButtonTooltip();
-    }//GEN-LAST:event_comboBoxGeneratorActionPerformed
+    }//GEN-LAST:event_listDataPacksValueChanged
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
+    private javax.swing.JButton buttonAddDataPack;
     private javax.swing.JButton buttonCancel;
     private javax.swing.JButton buttonExport;
-    private javax.swing.JButton buttonGeneratorOptions;
     private javax.swing.ButtonGroup buttonGroup2;
+    private javax.swing.JButton buttonRemoveDataPack;
     private javax.swing.JButton buttonSelectDirectory;
+    private javax.swing.JButton buttonTestExport;
     private javax.swing.JCheckBox checkBoxAllowCheats;
     private javax.swing.JCheckBox checkBoxGoodies;
     private javax.swing.JCheckBox checkBoxMapFeatures;
     private javax.swing.JComboBox comboBoxDifficulty;
     private javax.swing.JComboBox<GameType> comboBoxGameType;
-    private javax.swing.JComboBox<Generator> comboBoxGenerator;
-    private javax.swing.JComboBox<Platform> comboBoxMinecraftVersion;
-    private org.pepsoft.worldpainter.DimensionPropertiesEditor endCeilingPropertiesEditor;
-    private org.pepsoft.worldpainter.DimensionPropertiesEditor endPropertiesEditor;
     private javax.swing.JTextField fieldDirectory;
     private javax.swing.JTextField fieldName;
     private javax.swing.JLabel jLabel1;
+    private javax.swing.JLabel jLabel10;
+    private javax.swing.JLabel jLabel11;
+    private javax.swing.JLabel jLabel12;
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
     private javax.swing.JLabel jLabel5;
     private javax.swing.JLabel jLabel6;
+    private javax.swing.JLabel jLabel7;
+    private javax.swing.JLabel jLabel79;
+    private javax.swing.JLabel jLabel8;
+    private javax.swing.JLabel jLabel80;
+    private javax.swing.JLabel jLabel81;
+    private javax.swing.JLabel jLabel85;
+    private javax.swing.JLabel jLabel86;
+    private javax.swing.JLabel jLabel9;
+    private javax.swing.JPanel jPanel1;
+    private javax.swing.JScrollPane jScrollPane1;
+    private javax.swing.JSeparator jSeparator1;
     private javax.swing.JTabbedPane jTabbedPane1;
-    private javax.swing.JLabel labelSelectTiles;
-    private org.pepsoft.worldpainter.DimensionPropertiesEditor netherCeilingPropertiesEditor;
-    private org.pepsoft.worldpainter.DimensionPropertiesEditor netherPropertiesEditor;
-    private javax.swing.JRadioButton radioButtonExportEverything;
-    private javax.swing.JRadioButton radioButtonExportSelection;
-    private org.pepsoft.worldpainter.DimensionPropertiesEditor surfaceCeilingPropertiesEditor;
-    private org.pepsoft.worldpainter.DimensionPropertiesEditor surfacePropertiesEditor;
+    private javax.swing.JLabel labelPlatform;
+    private javax.swing.JLabel labelPlatformWarning;
+    private javax.swing.JList<File> listDataPacks;
+    private javax.swing.JPanel panelMinecraftWorldBorder;
+    private javax.swing.JSpinner spinnerMcBorderCentreX;
+    private javax.swing.JSpinner spinnerMcBorderCentreY;
+    private javax.swing.JSpinner spinnerMcBorderSize;
     // End of variables declaration//GEN-END:variables
 
     private final World2 world;
     private final ColourScheme colourScheme;
-    private final Collection<Layer> hiddenLayers;
+    private final Set<Layer> hiddenLayers;
     private final boolean contourLines;
     private final int contourSeparation;
     private final TileRenderer.LightOrigin lightOrigin;
     private final CustomBiomeManager customBiomeManager;
     private final WorldPainter view;
-    private final Map<Integer, DimensionPropertiesEditor> dimensionPropertiesEditors = new HashMap<>();
-    private int selectedDimension, savedGenerator;
-    private Set<Point> selectedTiles;
-    private boolean disableTileSelectionWarning, disableDisabledLayersWarning, endlessBorder, savedMapFeatures;
-    private String dim0GeneratorName;
-    private SuperflatPreset dim0SuperflatPreset; // TODO: finish
-    private Map<String, Set<String>> nameOnlyMaterials = new HashMap<>();
+    private final Map<Anchor, DimensionPropertiesEditor> dimensionPropertiesEditors = new HashMap<>();
+    private final List<Platform> supportedPlatforms = new ArrayList<>();
+    private final DefaultListModel<File> dataPacksListModel = new DefaultListModel<>();
+    private boolean disableDisabledLayersWarning;
 
-    private static final Icon WARNING_ICON = IconUtils.loadScaledIcon("org/pepsoft/worldpainter/icons/error.png");
-    private static final Icon SPACER_ICON = IconUtils.loadScaledIcon("org/pepsoft/worldpainter/icons/spacer.png");
+    private static String previouslyAcknowledgedWarnings;
+    private static Reference<World2> warningsForWorld;
+
+    private static final Logger logger = LoggerFactory.getLogger(ExportWorldDialog.class);
     private static final long serialVersionUID = 1L;
 }

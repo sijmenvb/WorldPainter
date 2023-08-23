@@ -5,71 +5,126 @@
  */
 package org.pepsoft.worldpainter.layers.tunnel;
 
+import org.pepsoft.util.DesktopUtils;
+import org.pepsoft.util.swing.BetterJPopupMenu;
+import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.*;
+import org.pepsoft.worldpainter.Dimension.Anchor;
+import org.pepsoft.worldpainter.Dimension.Role;
+import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
 import org.pepsoft.worldpainter.exporting.IncidentalLayerExporter;
+import org.pepsoft.worldpainter.heightMaps.ConstantHeightMap;
+import org.pepsoft.worldpainter.heightMaps.NoiseHeightMap;
 import org.pepsoft.worldpainter.layers.*;
 import org.pepsoft.worldpainter.layers.groundcover.GroundCoverLayer;
 import org.pepsoft.worldpainter.layers.plants.PlantLayer;
 import org.pepsoft.worldpainter.layers.tunnel.TunnelLayer.Mode;
+import org.pepsoft.worldpainter.themes.JSpinnerTableCellEditor;
+import org.pepsoft.worldpainter.themes.SimpleTheme;
 
 import javax.swing.*;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
-import java.awt.Dimension;
 import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import static java.util.Collections.singletonList;
+import static java.util.Collections.singletonMap;
+import static javax.swing.JOptionPane.*;
+import static org.pepsoft.util.AwtUtils.doLaterOnEventThread;
+import static org.pepsoft.util.CollectionUtils.listOf;
+import static org.pepsoft.worldpainter.Dimension.Role.CAVE_FLOOR;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.Platform.Capability.BIOMES_3D;
+import static org.pepsoft.worldpainter.Platform.Capability.NAMED_BIOMES;
+import static org.pepsoft.worldpainter.layers.tunnel.TunnelLayersTableModel.*;
+import static org.pepsoft.worldpainter.themes.Filter.EVERYWHERE;
+import static org.pepsoft.worldpainter.util.BiomeUtils.getAllBiomes;
 
 /**
  *
  * @author SchmitzP
  */
+@SuppressWarnings({"unused", "FieldCanBeLocal"}) // Managed by NetBeans
 public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> implements ChangeListener, ListSelectionListener {
-    public TunnelLayerDialog(Window parent, Platform platform, TunnelLayer layer, boolean extendedBlockIds, ColourScheme colourScheme, int maxHeight, int baseHeight, int waterLevel) {
+    public TunnelLayerDialog(Window parent, Platform platform, TunnelLayer layer, Dimension dimension, boolean extendedBlockIds, ColourScheme colourScheme, CustomBiomeManager customBiomeManager, int minHeight, int maxHeight, int baseHeight, int waterLevel) {
         super(parent);
         this.platform = platform;
         this.layer = layer;
+        this.dimension = dimension;
+        this.colourScheme = colourScheme;
+        this.customBiomeManager = customBiomeManager;
         this.baseHeight = baseHeight;
         this.waterLevel = waterLevel;
+        this.minHeight = minHeight;
         this.maxHeight = maxHeight;
         
         initComponents();
-        tableFloorLayers.getSelectionModel().addListSelectionListener(this);
-        mixedMaterialSelectorFloor.setExtendedBlockIds(extendedBlockIds);
-        mixedMaterialSelectorFloor.setColourScheme(colourScheme);
-        mixedMaterialSelectorRoof.setExtendedBlockIds(extendedBlockIds);
-        mixedMaterialSelectorRoof.setColourScheme(colourScheme);
-        mixedMaterialSelectorWall.setExtendedBlockIds(extendedBlockIds);
-        mixedMaterialSelectorWall.setColourScheme(colourScheme);
-        labelPreview.setPreferredSize(new Dimension(128, 0));
         programmaticChange = true;
         try {
+            tableFloorLayers.getSelectionModel().addListSelectionListener(this);
+            tableRoofLayers.getSelectionModel().addListSelectionListener(this);
+            mixedMaterialChooserFloor.setPlatform(platform);
+            mixedMaterialChooserFloor.setExtendedBlockIds(extendedBlockIds);
+            mixedMaterialChooserFloor.setColourScheme(colourScheme);
+            mixedMaterialChooserRoof.setPlatform(platform);
+            mixedMaterialChooserRoof.setExtendedBlockIds(extendedBlockIds);
+            mixedMaterialChooserRoof.setColourScheme(colourScheme);
+            mixedMaterialChooserWall.setPlatform(platform);
+            mixedMaterialChooserWall.setExtendedBlockIds(extendedBlockIds);
+            mixedMaterialChooserWall.setColourScheme(colourScheme);
+            labelPreview.setPreferredSize(new java.awt.Dimension(128, 0));
+            ((SpinnerNumberModel) spinnerFloorLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerFloorLevel.getModel()).setMaximum(maxHeight - 1);
+            ((SpinnerNumberModel) spinnerRoofLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerRoofLevel.getModel()).setMaximum(maxHeight - 1);
+            ((SpinnerNumberModel) spinnerFloorMin.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerFloorMin.getModel()).setMaximum(maxHeight - 1);
+            ((SpinnerNumberModel) spinnerFloorMax.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerFloorMax.getModel()).setMaximum(maxHeight - 1);
+            ((SpinnerNumberModel) spinnerRoofMin.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerRoofMin.getModel()).setMaximum(maxHeight - 1);
+            ((SpinnerNumberModel) spinnerRoofMax.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerRoofMax.getModel()).setMaximum(maxHeight - 1);
+            ((SpinnerNumberModel) spinnerFloodLevel.getModel()).setMinimum(minHeight);
             ((SpinnerNumberModel) spinnerFloodLevel.getModel()).setMaximum(maxHeight - 1);
+            comboBoxBiome.setRenderer(new BiomeListCellRenderer(colourScheme, customBiomeManager, "None", platform));
+            if (platform.capabilities.contains(BIOMES_3D) || platform.capabilities.contains(NAMED_BIOMES)) {
+                comboBoxBiome.setModel(new DefaultComboBoxModel<>(listOf(singletonList(null), getAllBiomes(platform, customBiomeManager)).toArray(new Integer[0])));
+            } else {
+                comboBoxBiome.setModel(new DefaultComboBoxModel<>(new Integer[] {null}));
+                comboBoxBiome.setEnabled(false);
+            }
+            radioButtonFloorCustomDimension.setEnabled(dimension.getAnchor().role == DETAIL);
         } finally {
             programmaticChange = false;
         }
         
         loadSettings();
-        
-        updatePreview();
-        
+
         getRootPane().setDefaultButton(buttonOK);
         
         noiseSettingsEditorFloor.addChangeListener(this);
         noiseSettingsEditorRoof.addChangeListener(this);
 
         scaleToUI();
+        pack();
+        scaleWindowToUI();
         setLocationRelativeTo(parent);
+
+        // TODO this causes the preview only to become bigger, never smaller:
+//        addComponentListener(new ComponentAdapter() {
+//            @Override
+//            public void componentResized(ComponentEvent e) {
+//                updatePreview();
+//            }
+//        });
+        doLaterOnEventThread(this::updatePreview);
     }
 
     // AbstractEditLayerDialog
@@ -95,6 +150,40 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
 
     @Override
     protected void ok() {
+        if (tableFloorLayers.isEditing()) {
+            tableFloorLayers.getCellEditor().stopCellEditing();
+        }
+        if (tableRoofLayers.isEditing()) {
+            tableRoofLayers.getCellEditor().stopCellEditing();
+        }
+        if ((! radioButtonFloorCustomDimension.isSelected()) && (layer.getFloorDimensionId() != null)) {
+            DesktopUtils.beep();
+            if (JOptionPane.showConfirmDialog(this, "The floor dimension will be deleted.\nThis cannot be undone! Proceed?", "Confirm Floor Deletion", YES_NO_OPTION, WARNING_MESSAGE) != YES_OPTION) {
+                return;
+            }
+            final App app = App.getInstance();
+            final Dimension currentDimension = app.getDimension();
+            final int dim = currentDimension.getAnchor().dim;
+            final World2 world = app.getWorld();
+            world.removeDimension(new Anchor(dim, CAVE_FLOOR, false, layer.getFloorDimensionId()));
+            layer.setFloorDimensionId(null);
+        } else if (radioButtonFloorCustomDimension.isSelected() && (layer.getFloorDimensionId() == null)) {
+            final Dimension floorDimension = createFloorDimension();
+            if (floorDimension != null) {
+                layer.setFloorDimensionId(floorDimension.getAnchor().id);
+                final Configuration config = Configuration.getInstance();
+                if (! config.isMessageDisplayedCountAtLeast(PAINT_TUNNEL_LAYER_KEY, 3)) {
+                    doLaterOnEventThread(() -> JOptionPane.showMessageDialog(App.getInstance(),
+                            "Use the paint tools to paint the Custom Cave/Tunnel Layer in the desired shape.\n" +
+                            "Then right-click on the [" + layer.getName() + "] button on the [" + layer.getPalette() + "] panel\n" +
+                            "and select \"Edit floor dimension\" to paint on, and vertically shape, the cave floor."));
+                    config.setMessageDisplayed(PAINT_TUNNEL_LAYER_KEY);
+                }
+            } else {
+                // Cancelled by user
+                return;
+            }
+        }
         saveSettingsTo(layer, true);
         super.ok();
     }
@@ -112,14 +201,13 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     }
 
     private void generatePreview() {
-        TunnelLayer layer = new TunnelLayer("tmp", 0);
+        final TunnelLayer layer = new TunnelLayer("tmp", null);
         saveSettingsTo(layer, false);
-        TunnelLayerExporter exporter = new TunnelLayerExporter(layer);
-        Insets insets = labelPreview.getInsets();
-        int width = labelPreview.getWidth() - insets.left - insets.right;
-        int height = labelPreview.getHeight() - insets.top - insets.bottom;
+        final Insets insets = labelPreview.getInsets();
+        final int width = labelPreview.getWidth() - insets.left - insets.right;
+        final int height = labelPreview.getHeight() - insets.top - insets.bottom;
         if ((width > 0) && (height > 0)) {
-            BufferedImage preview = exporter.generatePreview(width, height, waterLevel, baseHeight, Math.min(maxHeight - baseHeight, height - baseHeight));
+            final BufferedImage preview = TunnelLayerExporter.generatePreview(layer, width, height, waterLevel, minHeight, baseHeight, Math.min(maxHeight - baseHeight, height - baseHeight + minHeight));
             labelPreview.setIcon(new ImageIcon(preview));
         } else {
             labelPreview.setIcon(null);
@@ -130,9 +218,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         programmaticChange = true;
         try {
             spinnerFloorLevel.setValue(layer.getFloorLevel());
-            spinnerFloorMin.setValue(layer.getFloorMin());
+            spinnerFloorMin.setValue(Math.max(layer.getFloorMin(), minHeight));
             spinnerFloorMax.setValue(Math.min(layer.getFloorMax(), maxHeight - 1));
-            mixedMaterialSelectorFloor.setMaterial(layer.getFloorMaterial());
+            mixedMaterialChooserFloor.setMaterial(layer.getFloorMaterial());
             switch (layer.getFloorMode()) {
                 case CONSTANT_DEPTH:
                     radioButtonFloorFixedDepth.setSelected(true);
@@ -143,6 +231,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                 case INVERTED_DEPTH:
                     radioButtonFloorInverse.setSelected(true);
                     break;
+                case CUSTOM_DIMENSION:
+                    radioButtonFloorCustomDimension.setSelected(true);
+                    break;
             }
             NoiseSettings floorNoise = layer.getFloorNoise();
             if (floorNoise == null) {
@@ -150,9 +241,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
             }
             noiseSettingsEditorFloor.setNoiseSettings(floorNoise);
             spinnerRoofLevel.setValue(layer.getRoofLevel());
-            spinnerRoofMin.setValue(layer.getRoofMin());
+            spinnerRoofMin.setValue(Math.max(layer.getRoofMin(), minHeight));
             spinnerRoofMax.setValue(Math.min(layer.getRoofMax(), maxHeight - 1));
-            mixedMaterialSelectorRoof.setMaterial(layer.getRoofMaterial());
+            mixedMaterialChooserRoof.setMaterial(layer.getRoofMaterial());
             switch (layer.getRoofMode()) {
                 case CONSTANT_DEPTH:
                     radioButtonRoofFixedDepth.setSelected(true);
@@ -163,6 +254,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                 case INVERTED_DEPTH:
                     radioButtonRoofInverse.setSelected(true);
                     break;
+                case FIXED_HEIGHT_ABOVE_FLOOR:
+                    radioButtonRoofFixedHeight.setSelected(true);
+                    break;
             }
             NoiseSettings roofNoise = layer.getRoofNoise();
             if (roofNoise == null) {
@@ -171,18 +265,42 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
             noiseSettingsEditorRoof.setNoiseSettings(roofNoise);
             spinnerWallFloorDepth.setValue(layer.getFloorWallDepth());
             spinnerWallRoofDepth.setValue(layer.getRoofWallDepth());
-            mixedMaterialSelectorWall.setMaterial(layer.getWallMaterial());
+            mixedMaterialChooserWall.setMaterial(layer.getWallMaterial());
             textFieldName.setText(layer.getName());
-            colourEditor1.setColour(layer.getColour());
+            paintPicker1.setPaint(layer.getPaint());
+            paintPicker1.setOpacity(layer.getOpacity());
             checkBoxRemoveWater.setSelected(layer.isRemoveWater());
-            checkBoxFlood.setSelected(layer.getFloodLevel() > 0);
-            spinnerFloodLevel.setValue((layer.getFloodLevel() > 0) ? layer.getFloodLevel() : waterLevel);
+            checkBoxFlood.setSelected(layer.getFloodLevel() != Integer.MIN_VALUE);
+            spinnerFloodLevel.setValue((layer.getFloodLevel() != Integer.MIN_VALUE) ? layer.getFloodLevel() : waterLevel);
             checkBoxFloodWithLava.setSelected(layer.isFloodWithLava());
 
-            Map<Layer, TunnelLayer.LayerSettings> floorLayers = layer.getFloorLayers();
-            floorLayersTableModel = new TunnelFloorLayersTableModel(floorLayers, maxHeight);
+            List<TunnelLayer.LayerSettings> floorLayers = layer.getFloorLayers();
+            floorLayersTableModel = new TunnelLayersTableModel(floorLayers, minHeight, maxHeight);
             tableFloorLayers.setModel(floorLayersTableModel);
-            tableFloorLayers.getColumnModel().getColumn(TunnelFloorLayersTableModel.COLUMN_NAME).setCellRenderer(new LayerTableCellRenderer());
+            tableFloorLayers.getColumnModel().getColumn(COLUMN_NAME).setCellRenderer(new LayerTableCellRenderer());
+            SpinnerModel spinnerModel = new SpinnerNumberModel(50, 0, 100, 1);
+            tableFloorLayers.getColumnModel().getColumn(COLUMN_INTENSITY).setCellEditor(new JSpinnerTableCellEditor(spinnerModel));
+            tableFloorLayers.getColumnModel().getColumn(COLUMN_VARIATION).setCellRenderer(new NoiseSettingsTableCellRenderer());
+            spinnerModel = new SpinnerNumberModel(minHeight, minHeight, maxHeight - 1, 1);
+            tableFloorLayers.getColumnModel().getColumn(COLUMN_MIN_LEVEL).setCellEditor(new JSpinnerTableCellEditor(spinnerModel));
+            spinnerModel = new SpinnerNumberModel(maxHeight - 1, minHeight, maxHeight - 1, 1);
+            tableFloorLayers.getColumnModel().getColumn(COLUMN_MAX_LEVEL).setCellEditor(new JSpinnerTableCellEditor(spinnerModel));
+
+            List<TunnelLayer.LayerSettings> roofLayers = layer.getRoofLayers();
+            roofLayersTableModel = new TunnelLayersTableModel(roofLayers, minHeight, maxHeight);
+            tableRoofLayers.setModel(roofLayersTableModel);
+            tableRoofLayers.getColumnModel().getColumn(COLUMN_NAME).setCellRenderer(new LayerTableCellRenderer());
+            spinnerModel = new SpinnerNumberModel(50, 0, 100, 1);
+            tableRoofLayers.getColumnModel().getColumn(COLUMN_INTENSITY).setCellEditor(new JSpinnerTableCellEditor(spinnerModel));
+            tableRoofLayers.getColumnModel().getColumn(COLUMN_VARIATION).setCellRenderer(new NoiseSettingsTableCellRenderer());
+            spinnerModel = new SpinnerNumberModel(minHeight, minHeight, maxHeight - 1, 1);
+            tableRoofLayers.getColumnModel().getColumn(COLUMN_MIN_LEVEL).setCellEditor(new JSpinnerTableCellEditor(spinnerModel));
+            spinnerModel = new SpinnerNumberModel(maxHeight - 1, minHeight, maxHeight - 1, 1);
+            tableRoofLayers.getColumnModel().getColumn(COLUMN_MAX_LEVEL).setCellEditor(new JSpinnerTableCellEditor(spinnerModel));
+
+            if (platform.capabilities.contains(BIOMES_3D) || platform.capabilities.contains(NAMED_BIOMES)) {
+                comboBoxBiome.setSelectedItem(layer.getTunnelBiome());
+            }
         } finally {
             programmaticChange = false;
         }
@@ -192,9 +310,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
 
     private void saveSettingsTo(TunnelLayer layer, boolean registerMaterials) {
         layer.setFloorLevel((Integer) spinnerFloorLevel.getValue());
-        layer.setFloorMin((Integer) spinnerFloorMin.getValue());
-        layer.setFloorMax((Integer) spinnerFloorMax.getValue());
-        MixedMaterial floorMaterial = mixedMaterialSelectorFloor.getMaterial();
+        layer.setFloorMin(((Integer) spinnerFloorMin.getValue() <= minHeight) ? Integer.MIN_VALUE : ((Integer) spinnerFloorMin.getValue()));
+        layer.setFloorMax(((Integer) spinnerFloorMax.getValue() >= (maxHeight - 1)) ? Integer.MAX_VALUE : ((Integer) spinnerFloorMax.getValue()));
+        MixedMaterial floorMaterial = mixedMaterialChooserFloor.getMaterial();
         if ((floorMaterial != null) && registerMaterials) {
             // Make sure the material is registered, in case it's new
             floorMaterial = MixedMaterialManager.getInstance().register(floorMaterial);
@@ -204,6 +322,8 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
             layer.setFloorMode(Mode.CONSTANT_DEPTH);
         } else if (radioButtonFloorFixedLevel.isSelected()) {
             layer.setFloorMode(Mode.FIXED_HEIGHT);
+        } else if (radioButtonFloorCustomDimension.isSelected()) {
+            layer.setFloorMode(Mode.CUSTOM_DIMENSION);
         } else {
             layer.setFloorMode(Mode.INVERTED_DEPTH);
         }
@@ -214,9 +334,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
             layer.setFloorNoise(floorNoiseSettings);
         }
         layer.setRoofLevel((Integer) spinnerRoofLevel.getValue());
-        layer.setRoofMin((Integer) spinnerRoofMin.getValue());
-        layer.setRoofMax((Integer) spinnerRoofMax.getValue());
-        MixedMaterial roofMaterial = mixedMaterialSelectorRoof.getMaterial();
+        layer.setRoofMin(((Integer) spinnerRoofMin.getValue() <= minHeight) ? Integer.MIN_VALUE : ((Integer) spinnerRoofMin.getValue()));
+        layer.setRoofMax(((Integer) spinnerRoofMax.getValue() >= (maxHeight - 1)) ? Integer.MAX_VALUE : ((Integer) spinnerRoofMax.getValue()));
+        MixedMaterial roofMaterial = mixedMaterialChooserRoof.getMaterial();
         if ((roofMaterial != null) && registerMaterials) {
             // Make sure the material is registered, in case it's new
             roofMaterial = MixedMaterialManager.getInstance().register(roofMaterial);
@@ -226,6 +346,8 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
             layer.setRoofMode(Mode.CONSTANT_DEPTH);
         } else if (radioButtonRoofFixedLevel.isSelected()) {
             layer.setRoofMode(Mode.FIXED_HEIGHT);
+        } else if (radioButtonRoofFixedHeight.isSelected()) {
+            layer.setRoofMode(Mode.FIXED_HEIGHT_ABOVE_FLOOR);
         } else {
             layer.setRoofMode(Mode.INVERTED_DEPTH);
         }
@@ -237,74 +359,111 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         }
         layer.setFloorWallDepth((Integer) spinnerWallFloorDepth.getValue());
         layer.setRoofWallDepth((Integer) spinnerWallRoofDepth.getValue());
-        MixedMaterial wallMaterial = mixedMaterialSelectorWall.getMaterial();
+        MixedMaterial wallMaterial = mixedMaterialChooserWall.getMaterial();
         if ((wallMaterial != null) && registerMaterials) {
             // Make sure the material is registered, in case it's new
             wallMaterial = MixedMaterialManager.getInstance().register(wallMaterial);
         }
         layer.setWallMaterial(wallMaterial);
         layer.setName(textFieldName.getText().trim());
-        layer.setColour(colourEditor1.getColour());
+        layer.setPaint(paintPicker1.getPaint());
+        layer.setOpacity(paintPicker1.getOpacity());
         layer.setRemoveWater(checkBoxRemoveWater.isSelected());
-        layer.setFloodLevel(checkBoxFlood.isSelected() ? (Integer) spinnerFloodLevel.getValue() : 0);
+        layer.setFloodLevel(checkBoxFlood.isSelected() ? (Integer) spinnerFloodLevel.getValue() : Integer.MIN_VALUE);
         layer.setFloodWithLava(checkBoxFloodWithLava.isSelected());
+        if (platform.capabilities.contains(BIOMES_3D) || platform.capabilities.contains(NAMED_BIOMES)) {
+            layer.setTunnelBiome((Integer) comboBoxBiome.getSelectedItem());
+        }
         
-        Map<Layer, TunnelLayer.LayerSettings> floorLayers = floorLayersTableModel.getLayers();
+        List<TunnelLayer.LayerSettings> floorLayers = floorLayersTableModel.getLayers();
         layer.setFloorLayers(((floorLayers != null) && (! floorLayers.isEmpty())) ? floorLayers : null);
+
+        List<TunnelLayer.LayerSettings> roofLayers = roofLayersTableModel.getLayers();
+        layer.setRoofLayers(((roofLayers != null) && (! roofLayers.isEmpty())) ? roofLayers : null);
     }
     
     private void setControlStates() {
-        spinnerFloorMin.setEnabled(! radioButtonFloorFixedLevel.isSelected());
-        spinnerFloorMax.setEnabled(! radioButtonFloorFixedLevel.isSelected());
+        spinnerFloorLevel.setEnabled(! radioButtonFloorCustomDimension.isSelected());
+        spinnerFloorMin.setEnabled((! radioButtonFloorFixedLevel.isSelected()) && (! radioButtonFloorCustomDimension.isSelected()));
+        spinnerFloorMax.setEnabled((! radioButtonFloorFixedLevel.isSelected()) && (! radioButtonFloorCustomDimension.isSelected()));
+        noiseSettingsEditorFloor.setEnabled(! radioButtonFloorCustomDimension.isSelected());
+        mixedMaterialChooserFloor.setEnabled(! radioButtonFloorCustomDimension.isSelected());
+        jTabbedPane1.setEnabledAt(1, ! radioButtonFloorCustomDimension.isSelected());
+
         spinnerRoofMin.setEnabled(! radioButtonRoofFixedLevel.isSelected());
         spinnerRoofMax.setEnabled(! radioButtonRoofFixedLevel.isSelected());
-        spinnerFloodLevel.setEnabled(checkBoxFlood.isSelected());
-        checkBoxFloodWithLava.setEnabled(checkBoxFlood.isSelected());
-        
-        int selectedFloorRow = tableFloorLayers.getSelectedRow();
-        if (selectedFloorRow != -1) {
-            buttonRemoveFloorLayer.setEnabled(tableFloorLayers.getSelectedRowCount() > 0);
-            Layer selectedLayer = floorLayersTableModel.getLayer(selectedFloorRow);
-            buttonEditFloorLayer.setEnabled(selectedLayer instanceof CustomLayer);
-        } else {
-            buttonRemoveFloorLayer.setEnabled(false);
-            buttonEditFloorLayer.setEnabled(false);
+        checkBoxFlood.setEnabled(! radioButtonFloorCustomDimension.isSelected());
+        checkBoxFloodWithLava.setEnabled(checkBoxFlood.isSelected() && (! radioButtonFloorCustomDimension.isSelected()));
+        spinnerFloodLevel.setEnabled(checkBoxFlood.isSelected() && (! radioButtonFloorCustomDimension.isSelected()));
+
+        int selectedFloorRowCount = tableFloorLayers.getSelectedRowCount();
+        buttonRemoveFloorLayer.setEnabled(selectedFloorRowCount > 0);
+        buttonEditFloorLayer.setEnabled((selectedFloorRowCount == 1) && (floorLayersTableModel.getLayer(tableFloorLayers.getSelectedRow()) instanceof CustomLayer));
+
+        int selectedRoofRowCount = tableRoofLayers.getSelectedRowCount();
+        buttonRemoveRoofLayer.setEnabled(selectedRoofRowCount > 0);
+        buttonEditRoofLayer.setEnabled((selectedRoofRowCount == 1) && (roofLayersTableModel.getLayer(tableRoofLayers.getSelectedRow()) instanceof CustomLayer));
+    }
+
+    private void removeFloorLayers() {
+        if (tableFloorLayers.isEditing()) {
+            tableFloorLayers.getCellEditor().stopCellEditing();
+        }
+        int[] selectedRows = tableFloorLayers.getSelectedRows();
+        for (int i = selectedRows.length - 1; i >= 0; i--) {
+            floorLayersTableModel.removeLayer(selectedRows[i]);
         }
     }
 
-    private void removeFloorLayer() {
-        int selectedRow = tableFloorLayers.getSelectedRow();
-        if (selectedRow != -1) {
-            floorLayersTableModel.removeLayer(selectedRow);
+    private void removeRoofLayers() {
+        if (tableRoofLayers.isEditing()) {
+            tableRoofLayers.getCellEditor().stopCellEditing();
+        }
+        int[] selectedRows = tableRoofLayers.getSelectedRows();
+        for (int i = selectedRows.length - 1; i >= 0; i--) {
+            roofLayersTableModel.removeLayer(selectedRows[i]);
         }
     }
 
     private void editFloorLayer() {
-        int selectedRow = tableFloorLayers.getSelectedRow();
+        editLayer(tableFloorLayers, floorLayersTableModel);
+    }
+
+    private void editRoofLayer() {
+        editLayer(tableRoofLayers, roofLayersTableModel);
+    }
+
+    private void editLayer(JTable table, TunnelLayersTableModel tableModel) {
+        final int selectedRow = table.getSelectedRow();
         if (selectedRow != -1) {
-            Layer layer = floorLayersTableModel.getLayer(selectedRow);
+            final Layer layer = tableModel.getLayer(selectedRow);
             if (layer instanceof CustomLayer) {
-                EditLayerDialog<Layer> dialog = new EditLayerDialog<>(this, platform, layer);
-                dialog.setVisible(true);
-                if (! dialog.isCancelled()) {
-                    floorLayersTableModel.layerChanged(selectedRow);
-                }
+                final EditLayerDialog<Layer> dialog = new EditLayerDialog<>(this, platform, layer);
+                dialog.setVisible(() -> tableModel.layerChanged(selectedRow));
             }
         }
     }
 
     private void addFloorLayer() {
-        JPopupMenu popupMenu = new JPopupMenu();
+        addLayer(buttonAddFloorLayer, floorLayersTableModel);
+    }
+
+    private void addRoofLayer() {
+        addLayer(buttonAddRoofLayer, roofLayersTableModel);
+    }
+
+    private void addLayer(Component button, TunnelLayersTableModel tableModel) {
+        JPopupMenu popupMenu = new BetterJPopupMenu();
         LayerManager.getInstance().getLayers().stream()
-            .filter(l -> l.getExporter() instanceof IncidentalLayerExporter)
+            .filter(l -> (l.getExporterType() != null) && IncidentalLayerExporter.class.isAssignableFrom(l.getExporterType()))
             .forEach(l -> {
                 JMenuItem menuItem = new JMenuItem(l.getName(), new ImageIcon(l.getIcon()));
-                menuItem.addActionListener(e -> floorLayersTableModel.addLayer(l));
+                menuItem.addActionListener(e -> tableModel.addLayer(l));
                 popupMenu.add(menuItem);
             });
         App app = App.getInstance();
         Set<CustomLayer> customLayers = app.getCustomLayers().stream()
-            .filter(l -> l.getExporter() instanceof IncidentalLayerExporter)
+            .filter(l -> IncidentalLayerExporter.class.isAssignableFrom(l.getExporterType()))
             .collect(Collectors.toSet());
         if (customLayers.size() > 15) {
             // If there are fifteen or more custom layers, split them by palette
@@ -315,71 +474,154 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                     String palette = entry.getKey();
                     JMenu paletteMenu = new JMenu(palette != null ? palette : "Hidden Layers");
                     entry.getValue().stream()
-                        .filter(l -> l.getExporter() instanceof IncidentalLayerExporter)
+                        .filter(l -> IncidentalLayerExporter.class.isAssignableFrom(l.getExporterType()))
                         .forEach(l -> {
                             JMenuItem menuItem = new JMenuItem(l.getName(), new ImageIcon(l.getIcon()));
-                            menuItem.addActionListener(e -> floorLayersTableModel.addLayer(l));
+                            menuItem.addActionListener(e -> tableModel.addLayer(l));
                             paletteMenu.add(menuItem);
                         });
                     return paletteMenu;
                 }).filter((paletteMenu) -> (paletteMenu.getItemCount() > 0))
-                .forEach((paletteMenu) -> {
-                    popupMenu.add(paletteMenu);
-                });
+                .forEach(popupMenu::add);
         } else {
             customLayers.forEach(l -> {
                 JMenuItem menuItem = new JMenuItem(l.getName(), new ImageIcon(l.getIcon()));
-                menuItem.addActionListener(e -> floorLayersTableModel.addLayer(l));
+                menuItem.addActionListener(e -> tableModel.addLayer(l));
                 popupMenu.add(menuItem);
             });
         }
-        popupMenu.show(buttonAddFloorLayer, buttonAddFloorLayer.getWidth(), 0);
+        popupMenu.show(button, button.getWidth(), 0);
     }
 
     private void newFloorLayer() {
-        JPopupMenu popupMenu = new JPopupMenu();
+        newLayer(buttonNewFloorLayer, floorLayersTableModel);
+    }
+
+    private void newRoofLayer() {
+        newLayer(buttonNewRoofLayer, roofLayersTableModel);
+    }
+
+    private void newLayer(Component button, TunnelLayersTableModel tableModel) {
+        JPopupMenu popupMenu = new BetterJPopupMenu();
         JMenuItem item = new JMenuItem("Custom Objects Layer");
         item.addActionListener(e -> {
-            EditLayerDialog<Bo2Layer> dialog = new EditLayerDialog(TunnelLayerDialog.this, platform, Bo2Layer.class);
-            dialog.setVisible(true);
-            if (! dialog.isCancelled()) {
+            EditLayerDialog<Bo2Layer> dialog = new EditLayerDialog<>(TunnelLayerDialog.this, platform, Bo2Layer.class);
+            dialog.setVisible(() -> {
                 Bo2Layer newLayer = dialog.getLayer();
                 newLayer.setHide(true);
-                floorLayersTableModel.addLayer(newLayer);
-            }
+                tableModel.addLayer(newLayer);
+            });
         });
         popupMenu.add(item);
         item = new JMenuItem("Custom Ground Cover Layer");
         item.addActionListener(e -> {
-            EditLayerDialog<GroundCoverLayer> dialog = new EditLayerDialog(TunnelLayerDialog.this, platform, GroundCoverLayer.class);
-            dialog.setVisible(true);
-            if (! dialog.isCancelled()) {
+            EditLayerDialog<GroundCoverLayer> dialog = new EditLayerDialog<>(TunnelLayerDialog.this, platform, GroundCoverLayer.class);
+            dialog.setVisible(() -> {
                 GroundCoverLayer newLayer = dialog.getLayer();
                 newLayer.setHide(true);
-                floorLayersTableModel.addLayer(newLayer);
-            }
+                tableModel.addLayer(newLayer);
+            });
         });
         popupMenu.add(item);
         item = new JMenuItem("Custom Plants Layer");
         item.addActionListener(e -> {
-            EditLayerDialog<PlantLayer> dialog = new EditLayerDialog(TunnelLayerDialog.this, platform, PlantLayer.class);
-            dialog.setVisible(true);
-            if (! dialog.isCancelled()) {
+            EditLayerDialog<PlantLayer> dialog = new EditLayerDialog<>(TunnelLayerDialog.this, platform, PlantLayer.class);
+            dialog.setVisible(() -> {
                 PlantLayer newLayer = dialog.getLayer();
                 newLayer.setHide(true);
-                floorLayersTableModel.addLayer(newLayer);
-            }
+                tableModel.addLayer(newLayer);
+            });
         });
         popupMenu.add(item);
-        popupMenu.show(buttonNewFloorLayer, buttonNewFloorLayer.getWidth(), 0);
+        popupMenu.show(button, button.getWidth(), 0);
     }
-    
+
+    private void editFloorLayerVariation() {
+        editLayerVariation(tableFloorLayers, floorLayersTableModel);
+    }
+
+    private void editRoofLayerVariation() {
+        editLayerVariation(tableRoofLayers, roofLayersTableModel);
+    }
+
+    private void editLayerVariation(JTable table, TunnelLayersTableModel tableModel) {
+        int selectedRow = table.getSelectedRow();
+        if (selectedRow != -1) {
+            NoiseSettings noiseSettings = (NoiseSettings) tableModel.getValueAt(selectedRow, COLUMN_VARIATION);
+            NoiseSettingsDialog noiseSettingsDialog = new NoiseSettingsDialog(this, (noiseSettings != null) ? noiseSettings : new NoiseSettings(), (Integer) tableModel.getValueAt(selectedRow, COLUMN_INTENSITY));
+            noiseSettingsDialog.setVisible(true);
+            if (! noiseSettingsDialog.isCancelled()) {
+                noiseSettings = noiseSettingsDialog.getNoiseSettings();
+                if (noiseSettings.getRange() == 0) {
+                    tableModel.setValueAt(null, selectedRow, COLUMN_VARIATION);
+                } else {
+                    tableModel.setValueAt(noiseSettings, selectedRow, COLUMN_VARIATION);
+                }
+                tableModel.layerChanged(selectedRow);
+            }
+        }
+    }
+
+    private Dimension createFloorDimension() {
+        final int minHeight = dimension.getMinHeight();
+        final int maxHeight = dimension.getMaxHeight();
+        final FloorDimensionSettingsDialog dialog = new FloorDimensionSettingsDialog(this, colourScheme, platform,
+                minHeight, maxHeight, (int) spinnerFloorLevel.getValue(), noiseSettingsEditorFloor.getNoiseSettings(),
+                checkBoxFlood.isSelected() ? ((int) spinnerFloodLevel.getValue()) : minHeight,
+                checkBoxFloodWithLava.isSelected(), dimension.getSubsurfaceMaterial());
+        dialog.setVisible(true);
+        if (! dialog.isCancelled()) {
+            final int dim = dimension.getAnchor().dim;
+            final boolean invert = dimension.getAnchor().invert;
+            final World2 world = dimension.getWorld();
+            final int id = findNextId(world, dim, CAVE_FLOOR, invert);
+            layer.setFloorDimensionId(id);
+            final long seed = dimension.getSeed() + id;
+            HeightMap heightMap;
+            heightMap = new ConstantHeightMap(dialog.getLevel());
+            if (dialog.getVariation().getRange() != 0) {
+                heightMap = heightMap.minus(dialog.getVariation().getRange()).plus(new NoiseHeightMap(dialog.getVariation()));
+            }
+            final SimpleTheme theme = SimpleTheme.createSingleTerrain(dialog.getTerrain(), minHeight, maxHeight, dialog.getWaterLevel());
+            if (dialog.getBiome() != null) {
+                theme.setLayerMap(singletonMap(EVERYWHERE, Biome.INSTANCE));
+                theme.setDiscreteValues(singletonMap(Biome.INSTANCE, dialog.getBiome()));
+            }
+            final TileFactory tileFactory = new HeightMapTileFactory(seed, heightMap, minHeight, maxHeight, dialog.isFloodWithLava(), theme);
+            final Dimension floorDimension = new Dimension(world, null, seed, tileFactory, new Anchor(dim, CAVE_FLOOR, invert, id));
+            world.addDimension(floorDimension);
+            layer.updateFloorDimension(dimension, textFieldName.getText() + " Floor");
+
+            // Also update the layer with the same settings, so that e.g. the preview works approximately right
+            layer.setFloorLevel(dialog.getLevel());
+            layer.setFloorNoise(dialog.getVariation());
+            layer.setFloodLevel(dialog.getWaterLevel());
+            layer.setFloodWithLava(dialog.isFloodWithLava());
+            layer.setBiome((dialog.getBiome() != null) ? dialog.getBiome() : -1);
+
+            return floorDimension;
+        } else {
+            return null;
+        }
+    }
+
+    private int findNextId(World2 world, int dim, Role role, boolean invert) {
+        int layer = 0;
+        for (Dimension dimension: world.getDimensions()) {
+            final Anchor anchor = dimension.getAnchor();
+            if ((anchor.dim == dim) && (anchor.role == role) && (anchor.invert == invert)) {
+                layer = Math.max(layer, anchor.id + 1);
+            }
+        }
+        return layer;
+    }
+
     /**
      * This method is called from within the constructor to initialize the form.
      * WARNING: Do NOT modify this code. The content of this method is always
      * regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"Convert2Lambda", "Anonymous2MethodRef"}) // Managed by NetBeans
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
@@ -392,12 +634,10 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         jLabel4 = new javax.swing.JLabel();
         textFieldName = new javax.swing.JTextField();
         jLabel11 = new javax.swing.JLabel();
-        colourEditor1 = new org.pepsoft.worldpainter.ColourEditor();
         jTabbedPane1 = new javax.swing.JTabbedPane();
         jPanel1 = new javax.swing.JPanel();
         radioButtonFloorFixedLevel = new javax.swing.JRadioButton();
         spinnerRoofLevel = new javax.swing.JSpinner();
-        mixedMaterialSelectorFloor = new org.pepsoft.worldpainter.MixedMaterialSelector();
         jLabel12 = new javax.swing.JLabel();
         jLabel5 = new javax.swing.JLabel();
         jLabel9 = new javax.swing.JLabel();
@@ -415,7 +655,6 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         jLabel14 = new javax.swing.JLabel();
         checkBoxFloodWithLava = new javax.swing.JCheckBox();
         spinnerRoofMax = new javax.swing.JSpinner();
-        mixedMaterialSelectorRoof = new org.pepsoft.worldpainter.MixedMaterialSelector();
         jLabel13 = new javax.swing.JLabel();
         noiseSettingsEditorRoof = new org.pepsoft.worldpainter.NoiseSettingsEditor();
         jLabel8 = new javax.swing.JLabel();
@@ -431,12 +670,18 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         checkBoxFlood = new javax.swing.JCheckBox();
         radioButtonRoofFixedLevel = new javax.swing.JRadioButton();
         jLabel3 = new javax.swing.JLabel();
-        mixedMaterialSelectorWall = new org.pepsoft.worldpainter.MixedMaterialSelector();
         radioButtonRoofInverse = new javax.swing.JRadioButton();
         jLabel15 = new javax.swing.JLabel();
         jLabel10 = new javax.swing.JLabel();
         labelPreview = new javax.swing.JLabel();
         jLabel21 = new javax.swing.JLabel();
+        jLabel23 = new javax.swing.JLabel();
+        comboBoxBiome = new javax.swing.JComboBox<>();
+        radioButtonFloorCustomDimension = new javax.swing.JRadioButton();
+        radioButtonRoofFixedHeight = new javax.swing.JRadioButton();
+        mixedMaterialChooserRoof = new MixedMaterialChooser(true);
+        mixedMaterialChooserFloor = new MixedMaterialChooser(true);
+        mixedMaterialChooserWall = new MixedMaterialChooser(true);
         jPanel2 = new javax.swing.JPanel();
         jLabel22 = new javax.swing.JLabel();
         jScrollPane1 = new javax.swing.JScrollPane();
@@ -445,6 +690,15 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         buttonAddFloorLayer = new javax.swing.JButton();
         buttonEditFloorLayer = new javax.swing.JButton();
         buttonRemoveFloorLayer = new javax.swing.JButton();
+        jPanel3 = new javax.swing.JPanel();
+        jLabel24 = new javax.swing.JLabel();
+        jScrollPane2 = new javax.swing.JScrollPane();
+        tableRoofLayers = new javax.swing.JTable();
+        buttonNewRoofLayer = new javax.swing.JButton();
+        buttonAddRoofLayer = new javax.swing.JButton();
+        buttonEditRoofLayer = new javax.swing.JButton();
+        buttonRemoveRoofLayer = new javax.swing.JButton();
+        paintPicker1 = new org.pepsoft.worldpainter.layers.renderers.PaintPicker();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         setTitle("Configure Cave/Tunnel Layer");
@@ -477,9 +731,10 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         textFieldName.setColumns(20);
         textFieldName.setText("jTextField1");
 
-        jLabel11.setText("Colour:");
+        jLabel11.setText("Paint");
 
         buttonGroup1.add(radioButtonFloorFixedLevel);
+        radioButtonFloorFixedLevel.setSelected(true);
         radioButtonFloorFixedLevel.setText("fixed level");
         radioButtonFloorFixedLevel.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -633,7 +888,6 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         });
 
         buttonGroup3.add(radioButtonRoofFixedLevel);
-        radioButtonRoofFixedLevel.setSelected(true);
         radioButtonRoofFixedLevel.setText("fixed level");
         radioButtonRoofFixedLevel.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -660,6 +914,43 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         jLabel21.setLabelFor(spinnerFloodLevel);
         jLabel21.setText("Level:");
 
+        jLabel23.setText("Biome:");
+
+        buttonGroup1.add(radioButtonFloorCustomDimension);
+        radioButtonFloorCustomDimension.setText("custom dimension");
+        radioButtonFloorCustomDimension.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonFloorCustomDimensionActionPerformed(evt);
+            }
+        });
+
+        buttonGroup3.add(radioButtonRoofFixedHeight);
+        radioButtonRoofFixedHeight.setSelected(true);
+        radioButtonRoofFixedHeight.setText("fixed height above floor");
+        radioButtonRoofFixedHeight.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonRoofFixedHeightActionPerformed(evt);
+            }
+        });
+
+        mixedMaterialChooserRoof.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
+            public void propertyChange(java.beans.PropertyChangeEvent evt) {
+                mixedMaterialChooserRoofPropertyChange(evt);
+            }
+        });
+
+        mixedMaterialChooserFloor.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
+            public void propertyChange(java.beans.PropertyChangeEvent evt) {
+                mixedMaterialChooserFloorPropertyChange(evt);
+            }
+        });
+
+        mixedMaterialChooserWall.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
+            public void propertyChange(java.beans.PropertyChangeEvent evt) {
+                mixedMaterialChooserWallPropertyChange(evt);
+            }
+        });
+
         javax.swing.GroupLayout jPanel1Layout = new javax.swing.GroupLayout(jPanel1);
         jPanel1.setLayout(jPanel1Layout);
         jPanel1Layout.setHorizontalGroup(
@@ -685,8 +976,10 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                             .addGroup(jPanel1Layout.createSequentialGroup()
                                 .addComponent(jLabel14)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(mixedMaterialSelectorWall, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                                .addComponent(mixedMaterialChooserWall, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                             .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(radioButtonRoofFixedHeight)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addComponent(radioButtonRoofFixedLevel)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addComponent(radioButtonRoofFixedDepth)
@@ -705,18 +998,6 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addComponent(spinnerRoofMax, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                             .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addComponent(jLabel9)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(noiseSettingsEditorRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addComponent(jLabel10)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(mixedMaterialSelectorRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addComponent(jLabel7)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(mixedMaterialSelectorFloor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addGroup(jPanel1Layout.createSequentialGroup()
                                 .addComponent(jLabel3)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addComponent(spinnerFloorLevel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -729,16 +1010,6 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addComponent(spinnerFloorMax, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                             .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addComponent(radioButtonFloorFixedLevel)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(radioButtonFloorFixedDepth)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(radioButtonFloorInverse))
-                            .addGroup(jPanel1Layout.createSequentialGroup()
-                                .addComponent(jLabel5)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(noiseSettingsEditorFloor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addGroup(jPanel1Layout.createSequentialGroup()
                                 .addComponent(checkBoxFlood)
                                 .addGap(18, 18, 18)
                                 .addComponent(jLabel21)
@@ -746,9 +1017,37 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                                 .addComponent(spinnerFloodLevel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                                 .addGap(18, 18, 18)
                                 .addComponent(checkBoxFloodWithLava))
-                            .addComponent(checkBoxRemoveWater))))
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(labelPreview, javax.swing.GroupLayout.DEFAULT_SIZE, 232, Short.MAX_VALUE)
+                            .addComponent(checkBoxRemoveWater)
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(jLabel23)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(comboBoxBiome, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addComponent(radioButtonFloorFixedLevel)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(radioButtonFloorFixedDepth)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(radioButtonFloorInverse)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(radioButtonFloorCustomDimension))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(jLabel9)
+                                    .addComponent(jLabel10))
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(mixedMaterialChooserRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                    .addComponent(noiseSettingsEditorRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                            .addGroup(jPanel1Layout.createSequentialGroup()
+                                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(jLabel5)
+                                    .addComponent(jLabel7))
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(mixedMaterialChooserFloor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                    .addComponent(noiseSettingsEditorFloor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))))))
+                .addGap(18, 18, 18)
+                .addComponent(labelPreview, javax.swing.GroupLayout.DEFAULT_SIZE, 142, Short.MAX_VALUE)
                 .addContainerGap())
         );
         jPanel1Layout.setVerticalGroup(
@@ -762,7 +1061,8 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(radioButtonRoofFixedLevel)
                             .addComponent(radioButtonRoofFixedDepth)
-                            .addComponent(radioButtonRoofInverse))
+                            .addComponent(radioButtonRoofInverse)
+                            .addComponent(radioButtonRoofFixedHeight))
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel8)
@@ -778,14 +1078,15 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel10)
-                            .addComponent(mixedMaterialSelectorRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addComponent(mixedMaterialChooserRoof, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(18, 18, 18)
                         .addComponent(jLabel2)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(radioButtonFloorFixedLevel)
                             .addComponent(radioButtonFloorFixedDepth)
-                            .addComponent(radioButtonFloorInverse))
+                            .addComponent(radioButtonFloorInverse)
+                            .addComponent(radioButtonFloorCustomDimension))
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                             .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
@@ -803,7 +1104,7 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel7)
-                            .addComponent(mixedMaterialSelectorFloor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addComponent(mixedMaterialChooserFloor, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(18, 18, 18)
                         .addComponent(jLabel12)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -815,9 +1116,13 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel14)
-                            .addComponent(mixedMaterialSelectorWall, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addComponent(mixedMaterialChooserWall, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(18, 18, 18)
                         .addComponent(jLabel20)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                            .addComponent(jLabel23)
+                            .addComponent(comboBoxBiome, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(checkBoxRemoveWater)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -834,7 +1139,7 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
 
         jLabel22.setText("You can add custom layers here which will be rendered on the cave/tunnel floors:");
 
-        tableFloorLayers.setSelectionMode(javax.swing.ListSelectionModel.SINGLE_SELECTION);
+        tableFloorLayers.setSelectionMode(javax.swing.ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         tableFloorLayers.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mouseClicked(java.awt.event.MouseEvent evt) {
                 tableFloorLayersMouseClicked(evt);
@@ -849,7 +1154,7 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
             }
         });
 
-        buttonAddFloorLayer.setText("Add Existing");
+        buttonAddFloorLayer.setText("Copy Existing");
         buttonAddFloorLayer.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonAddFloorLayerActionPerformed(evt);
@@ -881,7 +1186,7 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                         .addComponent(jLabel22)
                         .addGap(0, 0, Short.MAX_VALUE))
                     .addGroup(jPanel2Layout.createSequentialGroup()
-                        .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 518, Short.MAX_VALUE)
+                        .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 524, Short.MAX_VALUE)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
                             .addComponent(buttonAddFloorLayer, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
@@ -897,7 +1202,7 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                 .addComponent(jLabel22)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 398, Short.MAX_VALUE)
+                    .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 470, Short.MAX_VALUE)
                     .addGroup(jPanel2Layout.createSequentialGroup()
                         .addComponent(buttonNewFloorLayer)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -910,6 +1215,85 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
         );
 
         jTabbedPane1.addTab("Floor Layers", jPanel2);
+
+        jLabel24.setText("<html>You can add custom layers here which will be rendered on the cave/tunnel roofs:<br>\n<strong>Note:</strong> these layers will be inverted! This includes Custom Objects.<br>\nA later release will make this optional.</html>");
+
+        tableRoofLayers.setSelectionMode(javax.swing.ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        tableRoofLayers.addMouseListener(new java.awt.event.MouseAdapter() {
+            public void mouseClicked(java.awt.event.MouseEvent evt) {
+                tableRoofLayersMouseClicked(evt);
+            }
+        });
+        jScrollPane2.setViewportView(tableRoofLayers);
+
+        buttonNewRoofLayer.setText("Create New");
+        buttonNewRoofLayer.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonNewRoofLayerActionPerformed(evt);
+            }
+        });
+
+        buttonAddRoofLayer.setText("Copy Existing");
+        buttonAddRoofLayer.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonAddRoofLayerActionPerformed(evt);
+            }
+        });
+
+        buttonEditRoofLayer.setText("Edit");
+        buttonEditRoofLayer.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonEditRoofLayerActionPerformed(evt);
+            }
+        });
+
+        buttonRemoveRoofLayer.setText("Remove");
+        buttonRemoveRoofLayer.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonRemoveRoofLayerActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout jPanel3Layout = new javax.swing.GroupLayout(jPanel3);
+        jPanel3.setLayout(jPanel3Layout);
+        jPanel3Layout.setHorizontalGroup(
+            jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel3Layout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addGroup(jPanel3Layout.createSequentialGroup()
+                        .addComponent(jLabel24, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addGap(0, 0, Short.MAX_VALUE))
+                    .addGroup(jPanel3Layout.createSequentialGroup()
+                        .addComponent(jScrollPane2, javax.swing.GroupLayout.DEFAULT_SIZE, 524, Short.MAX_VALUE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addGroup(jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
+                            .addComponent(buttonAddRoofLayer, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonNewRoofLayer, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonEditRoofLayer, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                            .addComponent(buttonRemoveRoofLayer, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))))
+                .addContainerGap())
+        );
+        jPanel3Layout.setVerticalGroup(
+            jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel3Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(jLabel24, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(jScrollPane2, javax.swing.GroupLayout.DEFAULT_SIZE, 438, Short.MAX_VALUE)
+                    .addGroup(jPanel3Layout.createSequentialGroup()
+                        .addComponent(buttonNewRoofLayer)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonAddRoofLayer)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonEditRoofLayer)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(buttonRemoveRoofLayer)))
+                .addContainerGap())
+        );
+
+        jTabbedPane1.addTab("Roof Layers", jPanel3);
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -927,16 +1311,19 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                         .addGap(11, 11, 11))
                     .addGroup(layout.createSequentialGroup()
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addComponent(jLabel1)
+                            .addComponent(jTabbedPane1)
                             .addGroup(layout.createSequentialGroup()
-                                .addComponent(jLabel4)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(textFieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                                .addComponent(jLabel11)
-                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                .addComponent(colourEditor1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addComponent(jTabbedPane1))
+                                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(jLabel1)
+                                    .addGroup(layout.createSequentialGroup()
+                                        .addComponent(jLabel4)
+                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                        .addComponent(textFieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                                        .addComponent(jLabel11)
+                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                        .addComponent(paintPicker1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                                .addGap(0, 0, Short.MAX_VALUE)))
                         .addContainerGap())))
         );
         layout.setVerticalGroup(
@@ -951,7 +1338,7 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
                     .addComponent(jLabel4)
                     .addComponent(textFieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel11)
-                    .addComponent(colourEditor1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                    .addComponent(paintPicker1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addGap(18, 18, 18)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(buttonCancel)
@@ -1035,6 +1422,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     }//GEN-LAST:event_checkBoxFloodWithLavaActionPerformed
 
     private void radioButtonFloorFixedDepthActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonFloorFixedDepthActionPerformed
+        if (radioButtonFloorFixedDepth.isSelected() && ((Integer) spinnerFloorLevel.getValue() < 0)) {
+            spinnerFloorLevel.setValue(0);
+        }
         updatePreview();
         setControlStates();
     }//GEN-LAST:event_radioButtonFloorFixedDepthActionPerformed
@@ -1064,6 +1454,9 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     }//GEN-LAST:event_spinnerFloorMinStateChanged
 
     private void radioButtonRoofFixedDepthActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonRoofFixedDepthActionPerformed
+        if (radioButtonRoofFixedDepth.isSelected() && ((Integer) spinnerRoofLevel.getValue() < 0)) {
+            spinnerRoofLevel.setValue(0);
+        }
         updatePreview();
         setControlStates();
     }//GEN-LAST:event_radioButtonRoofFixedDepthActionPerformed
@@ -1098,32 +1491,99 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     }//GEN-LAST:event_buttonEditFloorLayerActionPerformed
 
     private void buttonRemoveFloorLayerActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonRemoveFloorLayerActionPerformed
-        removeFloorLayer();
+        removeFloorLayers();
     }//GEN-LAST:event_buttonRemoveFloorLayerActionPerformed
 
     private void tableFloorLayersMouseClicked(java.awt.event.MouseEvent evt) {//GEN-FIRST:event_tableFloorLayersMouseClicked
         if ((! evt.isPopupTrigger()) && (evt.getClickCount() == 2)) {
             int column = tableFloorLayers.columnAtPoint(evt.getPoint());
-            if (column == TunnelFloorLayersTableModel.COLUMN_NAME) {
+            if (column == COLUMN_NAME) {
                 editFloorLayer();
+            } else if (column == COLUMN_VARIATION) {
+                editFloorLayerVariation();
             }
         }
     }//GEN-LAST:event_tableFloorLayersMouseClicked
 
+    private void tableRoofLayersMouseClicked(java.awt.event.MouseEvent evt) {//GEN-FIRST:event_tableRoofLayersMouseClicked
+        if ((! evt.isPopupTrigger()) && (evt.getClickCount() == 2)) {
+            int column = tableRoofLayers.columnAtPoint(evt.getPoint());
+            if (column == COLUMN_NAME) {
+                editRoofLayer();
+            } else if (column == COLUMN_VARIATION) {
+                editRoofLayerVariation();
+            }
+        }
+    }//GEN-LAST:event_tableRoofLayersMouseClicked
+
+    private void buttonNewRoofLayerActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonNewRoofLayerActionPerformed
+        newRoofLayer();
+    }//GEN-LAST:event_buttonNewRoofLayerActionPerformed
+
+    private void buttonAddRoofLayerActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonAddRoofLayerActionPerformed
+        addRoofLayer();
+    }//GEN-LAST:event_buttonAddRoofLayerActionPerformed
+
+    private void buttonEditRoofLayerActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonEditRoofLayerActionPerformed
+        editRoofLayer();
+    }//GEN-LAST:event_buttonEditRoofLayerActionPerformed
+
+    private void buttonRemoveRoofLayerActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonRemoveRoofLayerActionPerformed
+        removeRoofLayers();
+    }//GEN-LAST:event_buttonRemoveRoofLayerActionPerformed
+
+    private void radioButtonFloorCustomDimensionActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonFloorCustomDimensionActionPerformed
+        updatePreview();
+        setControlStates();
+    }//GEN-LAST:event_radioButtonFloorCustomDimensionActionPerformed
+
+    private void radioButtonRoofFixedHeightActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonRoofFixedHeightActionPerformed
+        updatePreview();
+        setControlStates();
+    }//GEN-LAST:event_radioButtonRoofFixedHeightActionPerformed
+
+    private void mixedMaterialChooserRoofPropertyChange(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_mixedMaterialChooserRoofPropertyChange
+        if (evt.getPropertyName().equals("material")) {
+            // Refresh the other choosers, in case a new material has been added
+            mixedMaterialChooserFloor.refresh();
+            mixedMaterialChooserWall.refresh();
+        }
+    }//GEN-LAST:event_mixedMaterialChooserRoofPropertyChange
+
+    private void mixedMaterialChooserFloorPropertyChange(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_mixedMaterialChooserFloorPropertyChange
+        if (evt.getPropertyName().equals("material")) {
+            // Refresh the other choosers, in case a new material has been added
+            mixedMaterialChooserRoof.refresh();
+            mixedMaterialChooserWall.refresh();
+        }
+    }//GEN-LAST:event_mixedMaterialChooserFloorPropertyChange
+
+    private void mixedMaterialChooserWallPropertyChange(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_mixedMaterialChooserWallPropertyChange
+        if (evt.getPropertyName().equals("material")) {
+            // Refresh the other choosers, in case a new material has been added
+            mixedMaterialChooserRoof.refresh();
+            mixedMaterialChooserFloor.refresh();
+        }
+    }//GEN-LAST:event_mixedMaterialChooserWallPropertyChange
+
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton buttonAddFloorLayer;
+    private javax.swing.JButton buttonAddRoofLayer;
     private javax.swing.JButton buttonCancel;
     private javax.swing.JButton buttonEditFloorLayer;
+    private javax.swing.JButton buttonEditRoofLayer;
     private javax.swing.ButtonGroup buttonGroup1;
     private javax.swing.ButtonGroup buttonGroup3;
     private javax.swing.JButton buttonNewFloorLayer;
+    private javax.swing.JButton buttonNewRoofLayer;
     private javax.swing.JButton buttonOK;
     private javax.swing.JButton buttonRemoveFloorLayer;
+    private javax.swing.JButton buttonRemoveRoofLayer;
     private javax.swing.JButton buttonReset;
     private javax.swing.JCheckBox checkBoxFlood;
     private javax.swing.JCheckBox checkBoxFloodWithLava;
     private javax.swing.JCheckBox checkBoxRemoveWater;
-    private org.pepsoft.worldpainter.ColourEditor colourEditor1;
+    private javax.swing.JComboBox<Integer> comboBoxBiome;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel10;
     private javax.swing.JLabel jLabel11;
@@ -1139,6 +1599,8 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     private javax.swing.JLabel jLabel20;
     private javax.swing.JLabel jLabel21;
     private javax.swing.JLabel jLabel22;
+    private javax.swing.JLabel jLabel23;
+    private javax.swing.JLabel jLabel24;
     private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
     private javax.swing.JLabel jLabel5;
@@ -1148,18 +1610,23 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     private javax.swing.JLabel jLabel9;
     private javax.swing.JPanel jPanel1;
     private javax.swing.JPanel jPanel2;
+    private javax.swing.JPanel jPanel3;
     private javax.swing.JScrollPane jScrollPane1;
+    private javax.swing.JScrollPane jScrollPane2;
     private javax.swing.JTabbedPane jTabbedPane1;
     private javax.swing.JLabel labelPreview;
-    private org.pepsoft.worldpainter.MixedMaterialSelector mixedMaterialSelectorFloor;
-    private org.pepsoft.worldpainter.MixedMaterialSelector mixedMaterialSelectorRoof;
-    private org.pepsoft.worldpainter.MixedMaterialSelector mixedMaterialSelectorWall;
+    private org.pepsoft.worldpainter.MixedMaterialChooser mixedMaterialChooserFloor;
+    private org.pepsoft.worldpainter.MixedMaterialChooser mixedMaterialChooserRoof;
+    private org.pepsoft.worldpainter.MixedMaterialChooser mixedMaterialChooserWall;
     private org.pepsoft.worldpainter.NoiseSettingsEditor noiseSettingsEditorFloor;
     private org.pepsoft.worldpainter.NoiseSettingsEditor noiseSettingsEditorRoof;
+    private org.pepsoft.worldpainter.layers.renderers.PaintPicker paintPicker1;
+    private javax.swing.JRadioButton radioButtonFloorCustomDimension;
     private javax.swing.JRadioButton radioButtonFloorFixedDepth;
     private javax.swing.JRadioButton radioButtonFloorFixedLevel;
     private javax.swing.JRadioButton radioButtonFloorInverse;
     private javax.swing.JRadioButton radioButtonRoofFixedDepth;
+    private javax.swing.JRadioButton radioButtonRoofFixedHeight;
     private javax.swing.JRadioButton radioButtonRoofFixedLevel;
     private javax.swing.JRadioButton radioButtonRoofInverse;
     private javax.swing.JSpinner spinnerFloodLevel;
@@ -1172,14 +1639,19 @@ public class TunnelLayerDialog extends AbstractEditLayerDialog<TunnelLayer> impl
     private javax.swing.JSpinner spinnerWallFloorDepth;
     private javax.swing.JSpinner spinnerWallRoofDepth;
     private javax.swing.JTable tableFloorLayers;
+    private javax.swing.JTable tableRoofLayers;
     private javax.swing.JTextField textFieldName;
     // End of variables declaration//GEN-END:variables
 
     private final Platform platform;
     private final TunnelLayer layer;
-    private final int waterLevel, baseHeight, maxHeight;
-    private TunnelFloorLayersTableModel floorLayersTableModel;
+    private final Dimension dimension;
+    private final int waterLevel, baseHeight, minHeight, maxHeight;
+    private final ColourScheme colourScheme;
+    private final CustomBiomeManager customBiomeManager;
+    private TunnelLayersTableModel floorLayersTableModel, roofLayersTableModel;
     private boolean programmaticChange;
 
+    private static final String PAINT_TUNNEL_LAYER_KEY = "org.pepsoft.worldpainter.TunnelLayer.paintLayer";
     private static final long serialVersionUID = 1L;
 }

@@ -3,6 +3,7 @@ package org.pepsoft.worldpainter.exporting;
 import org.pepsoft.minecraft.*;
 import org.pepsoft.util.jobqueue.HashList;
 import org.pepsoft.worldpainter.Platform;
+import org.pepsoft.worldpainter.merging.InvalidMapException;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 
 import java.awt.*;
@@ -18,11 +19,11 @@ import static org.pepsoft.minecraft.Constants.BLK_AIR;
  * Created by Pepijn on 15-12-2016.
  */
 public class CachingMinecraftWorld implements MinecraftWorld {
-    public CachingMinecraftWorld(File worldDir, int dimension, int maxHeight, Platform platform, boolean readOnly, int cacheSize) {
+    public CachingMinecraftWorld(File worldDir, int dimension, int minHeight, int maxHeight, Platform platform, boolean readOnly, int cacheSize) {
+        this.minHeight = minHeight;
         this.maxHeight = maxHeight;
         this.cacheSize = cacheSize;
         this.readOnly = readOnly;
-        minHeight = platform.minZ;
         cache = new HashMap<>(cacheSize);
         lruList = new HashList<>(cacheSize);
         dirtyChunks = new HashSet<>(cacheSize);
@@ -117,7 +118,7 @@ public class CachingMinecraftWorld implements MinecraftWorld {
         if (chunk != null) {
             return chunk.getSkyLightLevel(x & 0xf, height, y & 0xf);
         } else {
-            return 15;
+            return 0;
         }
     }
 
@@ -221,6 +222,11 @@ public class CachingMinecraftWorld implements MinecraftWorld {
 //            loadingTime -= System.currentTimeMillis();
             maintainCache();
             if (cachedChunk != null) {
+                if (cachedChunk.getMinHeight() > minHeight) {
+                    throw new InvalidMapException("At least one of the existing chunks to be merged has a higher minimum build height (" + cachedChunk.getMinHeight() + ") than the dimension being merged (" + minHeight + ").");
+                } else if (cachedChunk.getMaxHeight() < maxHeight) {
+                    throw new InvalidMapException("At least one of the existing chunks to be merged has a lower maximum build height (" + cachedChunk.getMaxHeight() + ") than the dimension being merged (" + maxHeight + ").");
+                }
                 cache.put(coords, cachedChunk);
             } else {
                 cache.put(coords, NON_EXISTANT_CHUNK);
@@ -270,18 +276,13 @@ public class CachingMinecraftWorld implements MinecraftWorld {
     }
 
     @Override
-    public void addEntity(int x, int y, int height, Entity entity) {
-        addEntity(x + 0.5, y + 0.5, height + 1.5, entity);
-    }
-
-    @Override
     public void addEntity(double x, double y, double height, Entity entity) {
         if (readOnly) {
             throw new IllegalStateException("Read only");
         }
         Chunk chunk = getChunkForEditing(((int) x) >> 4, ((int) y) >> 4);
         if ((chunk != null) && (! chunk.isReadOnly())) {
-            Entity clone = (Entity) entity.clone();
+            Entity clone = entity.clone();
             clone.setPos(new double[] {x, height, y});
             chunk.getEntities().add(clone);
         }

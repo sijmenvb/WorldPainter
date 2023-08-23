@@ -3,6 +3,7 @@ package org.pepsoft.worldpainter.heightMaps;
 import org.pepsoft.util.MathUtils;
 import org.pepsoft.worldpainter.HeightMap;
 
+import java.io.ObjectStreamException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -122,12 +123,12 @@ public abstract class DelegatingHeightMap extends AbstractHeightMap {
     }
 
     @Override
-    public float getConstantValue() {
+    public double getConstantValue() {
         return constantValue;
     }
 
     @Override
-    public final float getHeight(float x, float y) {
+    public final double getHeight(float x, float y) {
         if (constant) {
             return constantValue;
         } else {
@@ -136,7 +137,7 @@ public abstract class DelegatingHeightMap extends AbstractHeightMap {
     }
 
     @Override
-    public final float getHeight(int x, int y) {
+    public final double getHeight(int x, int y) {
         if (constant) {
             return constantValue;
         } else {
@@ -175,24 +176,29 @@ public abstract class DelegatingHeightMap extends AbstractHeightMap {
     }
 
     protected int doGetColour(int x, int y) {
-        int value = MathUtils.clamp(0, (int) (doGetHeight(x, y) + 0.5f), 255);
+        int value = (int) MathUtils.clamp(0L, Math.round(doGetHeight(x, y)), 255L);
         return (value << 16) | (value << 8) | value;
     }
 
-    protected float doGetHeight(float x, float y) {
-        return doGetHeight((int) (x + 0.5f), (int) (y + 0.5f));
+    protected double doGetHeight(float x, float y) {
+        return doGetHeight(Math.round(x), Math.round(y));
     }
 
-    protected float doGetHeight(int x, int y) {
+    protected double doGetHeight(int x, int y) {
         return doGetHeight((float) x, (float) y);
+    }
+
+    protected Object readResolve() throws ObjectStreamException {
+        determineConstant();
+        return this;
     }
 
     protected final HeightMap[] children;
     private final String[] roles;
     private final Map<String, Integer> indices = new HashMap<>();
-    protected float constantValue;
-    protected boolean constant;
-    protected int constantColour;
+    protected transient double constantValue;
+    protected transient boolean constant;
+    protected transient int constantColour;
 
     private static final long serialVersionUID = 1L;
 }

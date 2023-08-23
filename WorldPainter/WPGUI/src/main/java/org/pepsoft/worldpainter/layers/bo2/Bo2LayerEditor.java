@@ -6,7 +6,7 @@
 
 package org.pepsoft.worldpainter.layers.bo2;
 
-import org.pepsoft.minecraft.Constants;
+import org.pepsoft.minecraft.Material;
 import org.pepsoft.util.DesktopUtils;
 import org.pepsoft.worldpainter.App;
 import org.pepsoft.worldpainter.ColourScheme;
@@ -35,6 +35,9 @@ import java.text.NumberFormat;
 import java.util.List;
 import java.util.*;
 
+import static org.pepsoft.minecraft.Material.PERSISTENT;
+import static org.pepsoft.util.swing.MessageUtils.*;
+import static org.pepsoft.worldpainter.ExceptionHandler.doWithoutExceptionReporting;
 import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
 import static org.pepsoft.worldpainter.objects.WPObject.*;
 
@@ -42,6 +45,7 @@ import static org.pepsoft.worldpainter.objects.WPObject.*;
  *
  * @author Pepijn Schmitz
  */
+@SuppressWarnings({"unused", "FieldCanBeLocal"}) // Managed by NetBeans
 public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements ListSelectionListener, DocumentListener {
     /**
      * Creates new form Bo2LayerEditor
@@ -63,7 +67,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
     
     @Override
     public Bo2Layer createLayer() {
-        return new Bo2Layer(new Bo2ObjectTube("My Custom Objects", Collections.emptyList()), "Custom (e.g. bo2, bo3, nbt, schem and/or schematic) objects", Color.ORANGE.getRGB());
+        return new Bo2Layer(new Bo2ObjectTube("My Custom Objects", Collections.emptyList()), "Custom (e.g. bo2, bo3, nbt, schem and/or schematic) objects", Color.ORANGE);
     }
 
     @Override
@@ -84,7 +88,8 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
     public void reset() {
         List<WPObject> objects = new ArrayList<>();
         fieldName.setText(layer.getName());
-        selectedColour = layer.getColour();
+        paintPicker1.setPaint(layer.getPaint());
+        paintPicker1.setOpacity(layer.getOpacity());
         List<File> files = layer.getFiles();
         if (files != null) {
             if (files.isEmpty()) {
@@ -125,7 +130,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
                     }
                 }
                 if (missingFiles > 0) {
-                    JOptionPane.showMessageDialog(this, "This is an old custom object layer and " + missingFiles + " objects\ncould NOT be restored because they were missing or\nreading them resulted in an I/O error.\n\nYou will have to re-add these objects before\nsaving the settings, otherwise the existing object\ndata will be gone. You may also cancel the dialog\nwithout affecting the object data.", "Missing Files", JOptionPane.WARNING_MESSAGE);
+                    showWarning(this, "This is an old custom object layer and " + missingFiles + " objects\ncould NOT be restored because they were missing or\nreading them resulted in an I/O error.\n\nYou will have to re-add these objects before\nsaving the settings, otherwise the existing object\ndata will be gone. You may also cancel the dialog\nwithout affecting the object data.", "Missing Files");
                 }
             }
         } else {
@@ -138,8 +143,6 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
             listModel.addElement(object.clone());
         }
         spinnerBlocksPerAttempt.setValue(layer.getDensity());
-        
-        setLabelColour();
         
         refreshLeafDecaySettings();
         
@@ -215,27 +218,16 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
         }
         Bo2ObjectProvider objectProvider = new Bo2ObjectTube(name, objects);
         if (layer == null) {
-            layer = new Bo2Layer(objectProvider, "Custom (e.g. bo2, bo3 and/or schematic) objects", selectedColour);
+            layer = new Bo2Layer(objectProvider, "Custom (e.g. bo2, bo3 and/or schematic) objects", paintPicker1.getPaint());
         } else {
             layer.setObjectProvider(objectProvider);
-            layer.setColour(selectedColour);
+            layer.setPaint(paintPicker1.getPaint());
         }
+        layer.setOpacity(paintPicker1.getOpacity());
         layer.setDensity((Integer) spinnerBlocksPerAttempt.getValue());
         return layer;
     }
 
-    private void pickColour() {
-        Color pick = JColorChooser.showDialog(this, "Select Colour", new Color(selectedColour));
-        if (pick != null) {
-            selectedColour = pick.getRGB();
-            setLabelColour();
-        }
-    }
-    
-    private void setLabelColour() {
-        jLabel5.setBackground(new Color(selectedColour));
-    }
-    
     private void settingsChanged() {
         setControlStates();
         context.settingsChanged();
@@ -266,7 +258,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
         previewer.setDimension(App.getInstance().getDimension());
         fileChooser.addPropertyChangeListener(JFileChooser.SELECTED_FILE_CHANGED_PROPERTY, previewer);
         fileChooser.setAccessory(previewer);
-        if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+        if (doWithoutExceptionReporting(() -> fileChooser.showOpenDialog(this)) == JFileChooser.APPROVE_OPTION) {
             File[] selectedFiles = fileChooser.getSelectedFiles();
             if (selectedFiles.length > 0) {
                 Platform platform = context.getDimension().getWorld().getPlatform();
@@ -283,9 +275,10 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
                             fieldName.setText(name);
                         }
                         File[] files = selectedFile.listFiles((FilenameFilter) fileFilter);
-                        //noinspection ConstantConditions // Cannot happen as we already checked selectedFile is an extant directory
-                        if (files.length == 0) {
-                            JOptionPane.showMessageDialog(this, "Directory " + selectedFile.getName() + " does not contain any supported custom object files.", "No Custom Object Files", JOptionPane.ERROR_MESSAGE);
+                        if (files == null) {
+                            beepAndShowError(this, selectedFile.getName() + " is not a directory or it cannot be read.", "Not A Valid Directory");
+                        } else if (files.length == 0) {
+                            beepAndShowError(this, "Directory " + selectedFile.getName() + " does not contain any supported custom object files.", "No Custom Object Files");
                         } else {
                             for (File file: files) {
                                 addFile(checkForNameOnlyMaterials, nameOnlyMaterialsNames, file);
@@ -324,8 +317,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
                                 "You will not be able to export this world in this format if you use this layer.",
                                 platform.displayName, String.join(", ", nameOnlyMaterialsNames));
                     }
-                    DesktopUtils.beep();
-                    JOptionPane.showMessageDialog(this, message, "Map Format Not Compatible", JOptionPane.WARNING_MESSAGE);
+                    beepAndShowWarning(this, message, "Map Format Not Compatible");
                 }
             }
         }
@@ -337,7 +329,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
             if (checkForNameOnlyMaterials) {
                 Set<String> materialNamesEncountered = new HashSet<>();
                 object.visitBlocks((o, x, y, z, material) -> {
-                    if (!materialNamesEncountered.contains(material.name)) {
+                    if (! materialNamesEncountered.contains(material.name)) {
                         materialNamesEncountered.add(material.name);
                         if (material.blockType == -1) {
                             nameOnlyMaterialsNames.add(material.name);
@@ -424,7 +416,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
             }
             JOptionPane.showMessageDialog(this, message, "Not All Files Reloaded", JOptionPane.ERROR_MESSAGE);
         } else {
-            JOptionPane.showMessageDialog(this, indices.length + " objects successfully reloaded", "Success", JOptionPane.INFORMATION_MESSAGE);
+            showInfo(this, indices.length + " objects successfully reloaded", "Success");
         }
         refreshLeafDecaySettings();
     }
@@ -438,6 +430,7 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
         EditObjectAttributes dialog = new EditObjectAttributes(SwingUtilities.getWindowAncestor(this), selectedObjects, colourScheme);
         dialog.setVisible(true);
         if (! dialog.isCancelled()) {
+            settingsChanged();
             refreshLeafDecaySettings();
         }
     }
@@ -454,38 +447,35 @@ public class Bo2LayerEditor extends AbstractLayerEditor<Bo2Layer> implements Lis
         }
         boolean decayingLeavesFound = false;
         boolean nonDecayingLeavesFound = false;
-outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements(); ) {
+        outer:
+        for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements(); ) {
             WPObject object = e.nextElement();
             int leafDecayMode = object.getAttribute(ATTRIBUTE_LEAF_DECAY_MODE);
             switch (leafDecayMode) {
                 case LEAF_DECAY_NO_CHANGE:
-                    // Leaf decay attribute not set (or set to "no change");
-                    // examine actual blocks
+                    // Leaf decay attribute not set (or set to "no change"); examine actual blocks
                     object.prepareForExport(context.getDimension());
                     Point3i dim = object.getDimensions();
                     for (int x = 0; x < dim.x; x++) {
                         for (int y = 0; y < dim.y; y++) {
                             for (int z = 0; z < dim.z; z++) {
-                                if ((object.getMask(x, y, z))
-                                        && ((object.getMaterial(x, y, z).blockType == Constants.BLK_LEAVES)
-                                            || (object.getMaterial(x, y, z).blockType == Constants.BLK_LEAVES2))) {
-                                    if ((object.getMaterial(x, y, z).data & 0x4) == 0x4) {
-                                        // Non decaying leaf block
-                                        nonDecayingLeavesFound = true;
-                                        if (decayingLeavesFound) {
-                                            // We have enough information; no
-                                            // reason to continue the
-                                            // examination
-                                            break outer;
-                                        }
-                                    } else {
-                                        // Decaying leaf block
-                                        decayingLeavesFound = true;
-                                        if (nonDecayingLeavesFound) {
-                                            // We have enough information; no
-                                            // reason to continue the
-                                            // examination
-                                            break outer;
+                                if (object.getMask(x, y, z)) {
+                                    final Material material = object.getMaterial(x, y, z);
+                                    if (material.leafBlock) {
+                                        if (material.is(PERSISTENT)) {
+                                            // Non decaying leaf block
+                                            nonDecayingLeavesFound = true;
+                                            if (decayingLeavesFound) {
+                                                // We have enough information; no reason to continue the examination
+                                                break outer;
+                                            }
+                                        } else {
+                                            // Decaying leaf block
+                                            decayingLeavesFound = true;
+                                            if (nonDecayingLeavesFound) {
+                                                // We have enough information; no reason to continue the examination
+                                                break outer;
+                                            }
                                         }
                                     }
                                 }
@@ -494,26 +484,20 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
                     }
                     break;
                 case LEAF_DECAY_OFF:
-                    // Leaf decay attribute set to "off"; don't examine blocks
-                    // for performance (even though this could lead to
-                    // misleading information if the object doesn't contain any
-                    // leaf blocks)
+                    // Leaf decay attribute set to "off"; don't examine blocks for performance (even though this could
+                    // lead to misleading information if the object doesn't contain any leaf blocks)
                     nonDecayingLeavesFound = true;
                     if (decayingLeavesFound) {
-                        // We have enough information; no reason to continue the
-                        // examination
+                        // We have enough information; no reason to continue the examination
                         break outer;
                     }
                     break;
                 case LEAF_DECAY_ON:
-                    // Leaf decay attribute set to "off"; don't examine blocks
-                    // for performance (even though this could lead to
-                    // misleading information if the object doesn't contain any
-                    // leaf blocks)
+                    // Leaf decay attribute set to "off"; don't examine blocks for performance (even though this could
+                    // lead to misleading information if the object doesn't contain any leaf blocks)
                     decayingLeavesFound = true;
                     if (nonDecayingLeavesFound) {
-                        // We have enough information; no reason to continue the
-                        // examination
+                        // We have enough information; no reason to continue the examination
                         break outer;
                     }
                     break;
@@ -523,22 +507,18 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
         }
 
         if (decayingLeavesFound) {
+            labelLeafDecayTitle.setEnabled(true);
+            labelEffectiveLeafDecaySetting.setEnabled(true);
+            buttonSetNoDecay.setEnabled(true);
+            buttonReset.setEnabled(true);
             if (nonDecayingLeavesFound) {
                 // Both decaying and non decaying leaves found
-                labelLeafDecayTitle.setEnabled(true);
-                labelEffectiveLeafDecaySetting.setEnabled(true);
                 labelEffectiveLeafDecaySetting.setText("<html>Decaying <i>and</i> non decaying leaves.</html>");
                 buttonSetDecay.setEnabled(true);
-                buttonSetNoDecay.setEnabled(true);
-                buttonReset.setEnabled(true);
             } else {
                 // Only decaying leaves found
-                labelLeafDecayTitle.setEnabled(true);
-                labelEffectiveLeafDecaySetting.setEnabled(true);
                 labelEffectiveLeafDecaySetting.setText("<html>Leaves <b>do</b> decay.</html>");
                 buttonSetDecay.setEnabled(false);
-                buttonSetNoDecay.setEnabled(true);
-                buttonReset.setEnabled(true);
             }
         } else {
             if (nonDecayingLeavesFound) {
@@ -587,7 +567,7 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
 
     private void updateBlocksPerAttempt() {
         int blocksAt50 = (Integer) spinnerBlocksPerAttempt.getValue();
-        int blocksAt1 = blocksAt50 * 64, blocksAt100 = (int) (blocksAt50 / 3.515625f + 0.5f);
+        int blocksAt1 = blocksAt50 * 64, blocksAt100 = Math.round(blocksAt50 / 3.515625f);
         StringBuilder sb = new StringBuilder();
         sb.append("one per ").append(numberFormat.format(blocksAt1)).append(" blocks at 1%");
         if (blocksAt100 <= 1) {
@@ -604,6 +584,7 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
      * regenerated by the Form Editor.
      */
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
+    @SuppressWarnings({"DataFlowIssue", "Convert2Lambda", "Anonymous2MethodRef"}) // Managed by NetBeans
     private void initComponents() {
 
         buttonReloadAll = new javax.swing.JButton();
@@ -623,8 +604,7 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
         jLabel3 = new javax.swing.JLabel();
         fieldName = new javax.swing.JTextField();
         jLabel4 = new javax.swing.JLabel();
-        jLabel5 = new javax.swing.JLabel();
-        buttonPickColour = new javax.swing.JButton();
+        paintPicker1 = new org.pepsoft.worldpainter.layers.renderers.PaintPicker();
         jLabel2 = new javax.swing.JLabel();
         buttonAddFile = new javax.swing.JButton();
         buttonRemoveFile = new javax.swing.JButton();
@@ -637,6 +617,7 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
         buttonReloadAll.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/arrow_rotate_clockwise.png"))); // NOI18N
         buttonReloadAll.setToolTipText("Reload all or selected objects from disk");
         buttonReloadAll.setEnabled(false);
+        buttonReloadAll.setMargin(new java.awt.Insets(2, 2, 2, 2));
         buttonReloadAll.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonReloadAllActionPerformed(evt);
@@ -648,6 +629,7 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
         buttonEdit.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_edit.png"))); // NOI18N
         buttonEdit.setToolTipText("Edit selected object(s) options");
         buttonEdit.setEnabled(false);
+        buttonEdit.setMargin(new java.awt.Insets(2, 2, 2, 2));
         buttonEdit.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonEditActionPerformed(evt);
@@ -735,21 +717,9 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
 
         jLabel3.setText("Name:");
 
-        fieldName.setColumns(10);
+        fieldName.setColumns(15);
 
-        jLabel4.setText("Colour:");
-
-        jLabel5.setBackground(java.awt.Color.orange);
-        jLabel5.setText("                 ");
-        jLabel5.setBorder(javax.swing.BorderFactory.createLineBorder(new java.awt.Color(0, 0, 0)));
-        jLabel5.setOpaque(true);
-
-        buttonPickColour.setText("...");
-        buttonPickColour.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                buttonPickColourActionPerformed(evt);
-            }
-        });
+        jLabel4.setText("Paint:");
 
         javax.swing.GroupLayout jPanel2Layout = new javax.swing.GroupLayout(jPanel2);
         jPanel2.setLayout(jPanel2Layout);
@@ -757,17 +727,13 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
             jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(jPanel2Layout.createSequentialGroup()
                 .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addGroup(jPanel2Layout.createSequentialGroup()
-                        .addComponent(jLabel3)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(fieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGroup(jPanel2Layout.createSequentialGroup()
-                        .addComponent(jLabel4)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(jLabel5)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(buttonPickColour)))
-                .addGap(0, 0, Short.MAX_VALUE))
+                    .addComponent(jLabel3)
+                    .addComponent(jLabel4))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(paintPicker1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(fieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addContainerGap())
         );
         jPanel2Layout.setVerticalGroup(
             jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
@@ -775,17 +741,17 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
                 .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel3)
                     .addComponent(fieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(18, 18, Short.MAX_VALUE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel4)
-                    .addComponent(jLabel5)
-                    .addComponent(buttonPickColour)))
+                    .addComponent(paintPicker1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
         );
 
         jLabel2.setText("Object(s):");
 
         buttonAddFile.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_add.png"))); // NOI18N
         buttonAddFile.setToolTipText("Add one or more objects");
+        buttonAddFile.setMargin(new java.awt.Insets(2, 2, 2, 2));
         buttonAddFile.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonAddFileActionPerformed(evt);
@@ -795,6 +761,7 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
         buttonRemoveFile.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_delete.png"))); // NOI18N
         buttonRemoveFile.setToolTipText("Remove selected object(s)");
         buttonRemoveFile.setEnabled(false);
+        buttonRemoveFile.setMargin(new java.awt.Insets(2, 2, 2, 2));
         buttonRemoveFile.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 buttonRemoveFileActionPerformed(evt);
@@ -930,10 +897,6 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
         }
     }//GEN-LAST:event_jLabel6MouseClicked
 
-    private void buttonPickColourActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonPickColourActionPerformed
-        pickColour();
-    }//GEN-LAST:event_buttonPickColourActionPerformed
-
     private void buttonAddFileActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonAddFileActionPerformed
         addFilesOrDirectory();
     }//GEN-LAST:event_buttonAddFileActionPerformed
@@ -951,7 +914,6 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton buttonAddFile;
     private javax.swing.JButton buttonEdit;
-    private javax.swing.JButton buttonPickColour;
     private javax.swing.JButton buttonReloadAll;
     private javax.swing.JButton buttonRemoveFile;
     private javax.swing.JButton buttonReset;
@@ -963,7 +925,6 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
-    private javax.swing.JLabel jLabel5;
     private javax.swing.JLabel jLabel6;
     private javax.swing.JLabel jLabel7;
     private javax.swing.JLabel jLabel9;
@@ -975,14 +936,14 @@ outer:  for (Enumeration<WPObject> e = listModel.elements(); e.hasMoreElements()
     private javax.swing.JLabel labelEffectiveLeafDecaySetting;
     private javax.swing.JLabel labelLeafDecayTitle;
     private javax.swing.JList<WPObject> listObjects;
+    private org.pepsoft.worldpainter.layers.renderers.PaintPicker paintPicker1;
     private javax.swing.JSpinner spinnerBlocksPerAttempt;
     // End of variables declaration//GEN-END:variables
 
     private final DefaultListModel<WPObject> listModel;
     private final NumberFormat numberFormat = NumberFormat.getInstance();
     private ColourScheme colourScheme;
-    private int selectedColour = Color.ORANGE.getRGB();
-    
+
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Bo2LayerEditor.class);
     private static final long serialVersionUID = 1L;
 }

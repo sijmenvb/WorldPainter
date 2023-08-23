@@ -11,15 +11,17 @@ import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 
 import java.awt.*;
 import java.beans.PropertyChangeListener;
+import java.io.NotSerializableException;
+import java.io.ObjectOutputStream;
 import java.util.*;
 
 /**
  *
  * @author pepijn
  */
-public final class DimensionSnapshot extends Dimension {
+public final class DimensionSnapshot extends Dimension { // This cannot be an RODelegatingDimension because all the properties of the dimension need to be frozen
     public DimensionSnapshot(Dimension dimension, Snapshot snapshot) {
-        super(dimension.getWorld(), dimension.getMinecraftSeed(), dimension.getTileFactory(), dimension.getDim(), dimension.getMinHeight(), dimension.getMaxHeight());
+        super(dimension.getWorld(), dimension.getName(), dimension.getMinecraftSeed(), dimension.getTileFactory(), dimension.getAnchor());
         this.dimension = dimension;
         this.snapshot = snapshot;
         super.setBorder(dimension.getBorder());
@@ -27,8 +29,8 @@ public final class DimensionSnapshot extends Dimension {
         super.setBorderLevel(dimension.getBorderLevel());
         super.setMinecraftSeed(dimension.getMinecraftSeed());
         super.setSubsurfaceMaterial(dimension.getSubsurfaceMaterial());
-        super.setBedrockWall(dimension.isBedrockWall());
-        super.setDarkLevel(dimension.isDarkLevel());
+        super.setWallType(dimension.getWallType());
+        super.setRoofType(dimension.getRoofType());
         super.setPopulate(dimension.isPopulate());
         width = dimension.getWidth();
         height = dimension.getHeight();
@@ -69,7 +71,7 @@ public final class DimensionSnapshot extends Dimension {
     }
 
     @Override
-    public void unregister() {
+    public void unregisterUndoManager() {
         // Do nothing
     }
 
@@ -94,7 +96,7 @@ public final class DimensionSnapshot extends Dimension {
     }
 
     @Override
-    public void register(UndoManager undoManager) {
+    public void registerUndoManager(UndoManager undoManager) {
         // Do nothing
     }
 
@@ -195,11 +197,6 @@ public final class DimensionSnapshot extends Dimension {
     }
 
     @Override
-    public void setBedrockWall(boolean bedrockWall) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public void setBitLayerValueAt(Layer layer, int x, int y, boolean value) {
         throw new UnsupportedOperationException();
     }
@@ -216,11 +213,6 @@ public final class DimensionSnapshot extends Dimension {
 
     @Override
     public void setBorderSize(int borderSize) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setDarkLevel(boolean darkLevel) {
         throw new UnsupportedOperationException();
     }
 
@@ -260,6 +252,26 @@ public final class DimensionSnapshot extends Dimension {
     }
 
     @Override
+    public int addOverlay(Overlay overlay) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void removeOverlay(int index) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setWallType(WallType wallType) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setRoofType(WallType roofType) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void setPopulate(boolean populate) {
         throw new UnsupportedOperationException();
     }
@@ -282,6 +294,10 @@ public final class DimensionSnapshot extends Dimension {
     @Override
     public void setWaterLevelAt(int x, int y, int waterLevel) {
         throw new UnsupportedOperationException();
+    }
+
+    private void writeObject(ObjectOutputStream out) throws NotSerializableException {
+        throw new NotSerializableException("Serialization of DimensionSnapshot not supported");
     }
 
     private final Dimension dimension;

@@ -12,88 +12,80 @@ package org.pepsoft.worldpainter;
 
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.SubProgressReceiver;
+import org.pepsoft.worldpainter.Dimension.Anchor;
 import org.pepsoft.worldpainter.history.HistoryEntry;
 
 import java.awt.*;
+import java.util.List;
 
+import static java.util.stream.Collectors.toList;
 import static org.pepsoft.util.AwtUtils.doOnEventThread;
-import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.util.mdc.MDCUtils.decorateWithMdcContext;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowWarning;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.ExceptionHandler.handleException;
 
 /**
  *
  * @author pepijn
  */
+@SuppressWarnings({"unused", "FieldCanBeLocal"}) // Managed by NetBeans
 public class RotateWorldDialog extends WorldPainterDialog implements ProgressReceiver {
     /** Creates new form RotateWorldDialog */
-    public RotateWorldDialog(Window parent, World2 world, int dim) {
+    public RotateWorldDialog(Window parent, World2 world, Anchor anchor) {
         super(parent);
         this.world = world;
-        this.dim = dim;
-        Dimension opposite = null;
-        switch (dim) {
-            case DIM_NORMAL:
-                opposite = world.getDimension(DIM_NORMAL_CEILING);
-                break;
-            case DIM_NORMAL_CEILING:
-                opposite = world.getDimension(DIM_NORMAL);
-                break;
-            case DIM_END:
-                opposite = world.getDimension(DIM_END_CEILING);
-                break;
-            case DIM_END_CEILING:
-                opposite = world.getDimension(DIM_END);
-                break;
-            case DIM_NETHER:
-                opposite = world.getDimension(DIM_NETHER_CEILING);
-                break;
-            case DIM_NETHER_CEILING:
-                opposite = world.getDimension(DIM_NETHER);
-                break;
-        }
-        if (opposite != null) {
-            oppositeDim = opposite.getDim();
-        } else {
-            oppositeDim = -1;
-        }
-        
+        this.anchor = anchor;
+        affectedDimensions = world.getDimensions().stream()
+                .filter(dimension -> dimension.getAnchor().dim == anchor.dim)
+                .collect(toList());
+
         initComponents();
-        jCheckBox1.setEnabled(oppositeDim != -1);
+        setTitle("Rotate " + new Anchor(anchor.dim, DETAIL, false, 0).getDefaultName() + " Dimension");
 
         getRootPane().setDefaultButton(buttonRotate);
 
         scaleToUI();
+        pack();
         setLocationRelativeTo(parent);
     }
 
     // ProgressReceiver
     
     @Override
-    public synchronized void setProgress(final float progress) throws OperationCancelled {
+    public synchronized void setProgress(final float progress) {
         doOnEventThread(() -> jProgressBar1.setValue((int) (progress * 100)));
     }
 
     @Override
     public synchronized void exceptionThrown(final Throwable exception) {
+        // Make sure to capture the MDC context from the current thread
+        final Throwable exceptionWithContext = decorateWithMdcContext(exception);
         doOnEventThread(() -> {
-            ErrorDialog errorDialog = new ErrorDialog(RotateWorldDialog.this);
-            errorDialog.setException(exception);
-            errorDialog.setVisible(true);
+            handleException(exceptionWithContext, RotateWorldDialog.this);
             cancel();
         });
     }
 
     @Override
     public synchronized void done() {
-        doOnEventThread(this::ok);
+        doOnEventThread(() -> {
+            if (affectedDimensions.stream().flatMap(dimension -> dimension.getOverlays().stream()).anyMatch(overlay -> ! overlay.getFile().canRead())) {
+                beepAndShowWarning(this, "One or more overlay image files could not be read,\nand have therefore not been adjusted.\nYou will need to adjust these manually.", "Not All Overlays Adjusted");
+            } else if (affectedDimensions.stream().anyMatch(dimension -> ! dimension.getOverlays().isEmpty())) {
+                beepAndShowWarning(this, "The overlay(s) have been shifted to the correct location, but not rotated.\nYou must manually rotate the image files outside of WorldPainter.", "Overlays Not Rotated");
+            }
+            ok();
+        });
     }
 
     @Override
-    public synchronized void setMessage(final String message) throws OperationCancelled {
+    public synchronized void setMessage(final String message) {
         doOnEventThread(() -> labelProgressMessage.setText(message));
     }
 
     @Override
-    public synchronized void checkForCancellation() throws OperationCancelled {
+    public synchronized void checkForCancellation() {
         // Do nothing
     }
 
@@ -103,7 +95,7 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
     }
 
     @Override
-    public void subProgressStarted(SubProgressReceiver subProgressReceiver) throws OperationCancelled {
+    public void subProgressStarted(SubProgressReceiver subProgressReceiver) {
         // Do nothing
     }
 
@@ -126,14 +118,10 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
             @Override
             public void run() {
                 try {
-                    if ((oppositeDim == -1) || (! jCheckBox1.isSelected())) {
-                        world.transform(dim, transform, RotateWorldDialog.this);
-                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_ROTATED, world.getDimension(dim).getName(), degrees);
-                    } else {
-                        world.transform(dim, transform, new SubProgressReceiver(RotateWorldDialog.this, 0.0f, 0.5f));
-                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_ROTATED, world.getDimension(dim).getName(), degrees);
-                        world.transform(oppositeDim, transform, new SubProgressReceiver(RotateWorldDialog.this, 0.5f, 0.5f));
-                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_ROTATED, world.getDimension(oppositeDim).getName(), degrees);
+                    for (int i = 0; i < affectedDimensions.size(); i++) {
+                        final Dimension dimension = affectedDimensions.get(i);
+                        world.transform(dimension.getAnchor(), transform, new SubProgressReceiver(RotateWorldDialog.this, (float) i / affectedDimensions.size(), 1.0f / affectedDimensions.size()));
+                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_ROTATED, dimension.getName(), degrees);
                     }
                     done();
                 } catch (Throwable t) {
@@ -148,7 +136,7 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
      * WARNING: Do NOT modify this code. The content of this method is
      * always regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"Convert2Lambda", "Anonymous2MethodRef"}) // Managed by NetBeans
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
@@ -162,19 +150,27 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
         jRadioButton2 = new javax.swing.JRadioButton();
         jRadioButton3 = new javax.swing.JRadioButton();
         jLabel2 = new javax.swing.JLabel();
-        jCheckBox1 = new javax.swing.JCheckBox();
+        jLabel7 = new javax.swing.JLabel();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DO_NOTHING_ON_CLOSE);
         setTitle("Rotate World");
         setResizable(false);
 
-        jLabel1.setText("Choose a rotation angle and press the Rotate button to rotate the world:");
+        jLabel1.setText("Choose a rotation angle and press the Rotate button to rotate the dimension:");
 
         buttonCancel.setText("Cancel");
-        buttonCancel.addActionListener(this::buttonCancelActionPerformed);
+        buttonCancel.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonCancelActionPerformed(evt);
+            }
+        });
 
         buttonRotate.setText("Rotate");
-        buttonRotate.addActionListener(this::buttonRotateActionPerformed);
+        buttonRotate.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonRotateActionPerformed(evt);
+            }
+        });
 
         labelProgressMessage.setText(" ");
 
@@ -190,8 +186,7 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
 
         jLabel2.setText("<html><em>This operation cannot be undone!</em>   </html>");
 
-        jCheckBox1.setSelected(true);
-        jCheckBox1.setText("also rotate corresponding ceiling or surface");
+        jLabel7.setText("<html><i>All associated dimension such as Ceiling Dimensions and<br> Custom Cave/Tunnel Floor Dimensions will be rotated together.</i></html>");
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -200,20 +195,20 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(jProgressBar1, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, 353, Short.MAX_VALUE)
+                    .addComponent(jProgressBar1, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                     .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
                         .addComponent(buttonRotate)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(buttonCancel))
                     .addGroup(layout.createSequentialGroup()
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addComponent(jCheckBox1)
                             .addComponent(jLabel1)
                             .addComponent(labelProgressMessage)
                             .addComponent(jRadioButton1)
                             .addComponent(jRadioButton2)
                             .addComponent(jRadioButton3)
-                            .addComponent(jLabel2, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addComponent(jLabel2, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                            .addComponent(jLabel7, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(0, 0, Short.MAX_VALUE)))
                 .addContainerGap())
         );
@@ -224,14 +219,14 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
                 .addComponent(jLabel1)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jLabel2, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(jLabel7, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addGap(18, 18, 18)
                 .addComponent(jRadioButton1)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jRadioButton2)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jRadioButton3)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(jCheckBox1)
                 .addGap(18, 18, 18)
                 .addComponent(labelProgressMessage)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -258,9 +253,9 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
     private javax.swing.JButton buttonCancel;
     private javax.swing.ButtonGroup buttonGroup1;
     private javax.swing.JButton buttonRotate;
-    private javax.swing.JCheckBox jCheckBox1;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel2;
+    private javax.swing.JLabel jLabel7;
     private javax.swing.JProgressBar jProgressBar1;
     private javax.swing.JRadioButton jRadioButton1;
     private javax.swing.JRadioButton jRadioButton2;
@@ -269,7 +264,8 @@ public class RotateWorldDialog extends WorldPainterDialog implements ProgressRec
     // End of variables declaration//GEN-END:variables
 
     private final World2 world;
-    private final int dim, oppositeDim;
+    private final Anchor anchor;
+    private final List<Dimension> affectedDimensions;
 
     private static final long serialVersionUID = 1L;
 }

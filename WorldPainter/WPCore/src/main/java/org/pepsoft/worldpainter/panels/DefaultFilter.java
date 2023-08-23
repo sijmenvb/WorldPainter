@@ -4,7 +4,6 @@
  */
 package org.pepsoft.worldpainter.panels;
 
-import org.pepsoft.minecraft.Constants;
 import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.Terrain;
 import org.pepsoft.worldpainter.layers.Annotations;
@@ -31,9 +30,9 @@ public final class DefaultFilter implements Filter {
         }
         this.aboveLevel = aboveLevel;
         this.belowLevel = belowLevel;
-        if (aboveLevel >= 0) {
+        if (aboveLevel != Integer.MIN_VALUE) {
             checkLevel = true;
-            if (belowLevel >= 0) {
+            if (belowLevel != Integer.MIN_VALUE) {
                 // Above and below are checked
                 if (belowLevel >= aboveLevel) {
                     levelType = LevelType.BETWEEN;
@@ -44,7 +43,7 @@ public final class DefaultFilter implements Filter {
                 // Only above checked
                 levelType = LevelType.ABOVE;
             }
-        } else if (belowLevel >= 0) {
+        } else if (belowLevel != Integer.MIN_VALUE) {
             // Only below checked
             checkLevel = true;
             levelType = LevelType.BELOW;
@@ -285,6 +284,18 @@ public final class DefaultFilter implements Filter {
 
     public boolean isInSelection() {
         return inSelection;
+    }
+
+    public Layer getOnlyOnLayer() {
+        return onlyOnLayer;
+    }
+
+    public Layer getExceptOnLayer() {
+        return exceptOnLayer;
+    }
+
+    public static Builder buildForDimension(Dimension dimension) {
+        return new Builder(dimension);
     }
 
     // Filter
@@ -564,7 +575,7 @@ public final class DefaultFilter implements Filter {
                 sb.append("annotations");
                 break;
             case ANNOTATION:
-                sb.append(Constants.COLOUR_NAMES[value].toLowerCase()).append(" annotations");
+                sb.append(Annotations.getColourName(value).toLowerCase()).append(" annotations");
                 break;
         }
     }
@@ -636,5 +647,73 @@ public final class DefaultFilter implements Filter {
         public final Layer layer;
         public final int value;
         public final Condition condition;
+    }
+
+    public static class Builder {
+        public Builder(Dimension dimension) {
+            this.dimension = dimension;
+        }
+
+        public Builder inSelection() {
+            inSelection = true;
+            return this;
+        }
+
+        public Builder outsideSelection() {
+            outsideSelection = true;
+            return this;
+        }
+
+        public Builder aboveLevel(int level) {
+            aboveLevel = level;
+            return this;
+        }
+
+        public Builder belowLevel(int level) {
+            belowLevel = level;
+            return this;
+        }
+
+        public Builder betweenLevels(int aboveLevel, int belowLevel) {
+            this.aboveLevel = aboveLevel;
+            this.belowLevel = belowLevel;
+            return this;
+        }
+
+        public Builder feather() {
+            feather = true;
+            return this;
+        }
+
+        public Builder onlyOn(Object item) {
+            onlyOn = item;
+            return this;
+        }
+
+        public Builder exceptOn(Object item) {
+            exceptOn = item;
+            return this;
+        }
+
+        public Builder slopeIsAbove(int degrees) {
+            aboveDegrees = degrees;
+            slopeIsAbove = true;
+            return this;
+        }
+
+        public Builder slopeIsBelow(int degrees) {
+            aboveDegrees = degrees;
+            slopeIsAbove = false;
+            return this;
+        }
+
+        public DefaultFilter build() {
+            return new DefaultFilter(dimension, inSelection, outsideSelection, aboveLevel, belowLevel, feather, onlyOn, exceptOn, aboveDegrees, slopeIsAbove);
+        }
+
+        private final Dimension dimension;
+        private boolean inSelection, outsideSelection, feather, slopeIsAbove;
+        private int aboveLevel, belowLevel, aboveDegrees;
+        private Object onlyOn, exceptOn;
     }
 }

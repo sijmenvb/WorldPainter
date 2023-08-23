@@ -5,9 +5,18 @@
 
 package org.pepsoft.worldpainter;
 
+import com.google.common.collect.ImmutableSet;
 import org.pepsoft.util.Version;
+import org.pepsoft.worldpainter.layers.FloodWithLava;
+import org.pepsoft.worldpainter.layers.Layer;
+import org.pepsoft.worldpainter.layers.NotPresent;
+import org.pepsoft.worldpainter.layers.NotPresentBlock;
+import org.pepsoft.worldpainter.selection.SelectionBlock;
+import org.pepsoft.worldpainter.selection.SelectionChunk;
 import org.pepsoft.worldpainter.vo.AttributeKeyVO;
 import org.pepsoft.worldpainter.vo.ExceptionVO;
+
+import java.util.Set;
 
 /**
  *
@@ -37,12 +46,12 @@ public final class Constants {
     public static final float MEDIUM_BLOBS   =   32.771f;
     public static final float SMALL_BLOBS    =   16.411f;
     public static final float TINY_BLOBS     =    4.099f;
-    
+
+    /**
+     * The colour to use for unknown materials: magenta.
+     */
     public static final int UNKNOWN_MATERIAL_COLOUR = 0xFF00FF;
 
-    public static final int DIM_END_CEILING    = -3;
-    public static final int DIM_NETHER_CEILING = -2;
-    public static final int DIM_NORMAL_CEILING = -1;
     public static final int DIM_NORMAL         =  0;
     public static final int DIM_NETHER         =  1;
     public static final int DIM_END            =  2;
@@ -52,7 +61,6 @@ public final class Constants {
     public static final AttributeKeyVO<String> ATTRIBUTE_KEY_GAME_TYPE_NAME = new AttributeKeyVO<>("gameTypeName");
     public static final AttributeKeyVO<Boolean> ATTRIBUTE_KEY_ALLOW_CHEATS = new AttributeKeyVO<>("allowCheats");
     public static final AttributeKeyVO<String> ATTRIBUTE_KEY_GENERATOR = new AttributeKeyVO<>("generator");
-    public static final AttributeKeyVO<String> ATTRIBUTE_KEY_GENERATOR_OPTIONS = new AttributeKeyVO<>("generatorOptions");
     public static final AttributeKeyVO<Integer> ATTRIBUTE_KEY_TILES = new AttributeKeyVO<>("tiles");
     public static final AttributeKeyVO<Integer> ATTRIBUTE_KEY_NETHER_TILES = new AttributeKeyVO<>("nether.tiles");
     public static final AttributeKeyVO<Integer> ATTRIBUTE_KEY_END_TILES = new AttributeKeyVO<>("end.tiles");
@@ -71,6 +79,7 @@ public final class Constants {
     public static final AttributeKeyVO<Long> ATTRIBUTE_KEY_FREE_MEMORY = new AttributeKeyVO<>("memory.free");
     public static final AttributeKeyVO<Long> ATTRIBUTE_KEY_TOTAL_MEMORY = new AttributeKeyVO<>("memory.total");
     public static final AttributeKeyVO<Long> ATTRIBUTE_KEY_MAX_MEMORY = new AttributeKeyVO<>("memory.max");
+    public static final AttributeKeyVO<String> ATTRIBUTE_KEY_PLATFORM_ID = new AttributeKeyVO<>("platform.id");
 
     public static final String ATTRIBUTE_KEY_MDC_ENTRY = "mdc";
     public static final String ATTRIBUTE_KEY_SYSTEM_PROPERTY = "systemProperty";
@@ -85,12 +94,12 @@ public final class Constants {
     public static final String EVENT_KEY_ACTION_MIGRATE_HEIGHT    = "action.migrateHeight";
     public static final String EVENT_KEY_ACTION_MIGRATE_ROTATION  = "action.migrateRotation";
     public static final String EVENT_KEY_DONATION_DONATE          = "donation.donate";
-    public static final String EVENT_KEY_DONATION_DONATE_BITCOIN  = "donation.donateBitcoin";
     public static final String EVENT_KEY_DONATION_ALREADY_DONATED = "donation.alreadyDonated";
     public static final String EVENT_KEY_DONATION_ASK_LATER       = "donation.askLater";
     public static final String EVENT_KEY_DONATION_NO_THANKS       = "donation.noThanks";
     public static final String EVENT_KEY_DONATION_CLOSED          = "donation.closed";
     public static final String EVENT_KEY_EXCEPTION                = "exception";
+    public static final String EVENT_KEY_MERCH_STORE_OPENED       = "store.merch.opened";
 
     public static final int BIOME_ALGORITHM_1_1                 =  4;
     public static final int BIOME_ALGORITHM_1_2_AND_1_3_DEFAULT =  5;
@@ -98,10 +107,23 @@ public final class Constants {
     public static final int BIOME_ALGORITHM_1_7_DEFAULT         =  9;
     public static final int BIOME_ALGORITHM_1_7_LARGE           = 10;
 
+    public static final Version V_1_1    = new Version(1,  1);
+    public static final Version V_1_2    = new Version(1,  2);
     public static final Version V_1_12_2 = new Version(1, 12, 2);
+    public static final Version V_1_15   = new Version(1, 15);
+    public static final Version V_1_16   = new Version(1, 16);
+    public static final Version V_1_17   = new Version(1, 17);
+    public static final Version V_1_18   = new Version(1, 18);
 
     public static final int MIN_HEIGHT = -8388608;
     public static final int MAX_HEIGHT = 8388608;
 
     public static final long GB = 1024L * 1024L * 1024L;
+
+    /**
+     * Technical system layers that are not manipulated directly by the user and should therefore not be visible or
+     * selectable to them.
+     */
+    public static final Set<Layer> SYSTEM_LAYERS = ImmutableSet.of(SelectionChunk.INSTANCE, SelectionBlock.INSTANCE,
+            FloodWithLava.INSTANCE, NotPresent.INSTANCE, NotPresentBlock.INSTANCE);
 }

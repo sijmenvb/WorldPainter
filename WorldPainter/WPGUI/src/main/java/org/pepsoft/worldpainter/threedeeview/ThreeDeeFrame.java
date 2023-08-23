@@ -5,7 +5,6 @@
 package org.pepsoft.worldpainter.threedeeview;
 
 import org.pepsoft.minecraft.Direction;
-import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.IconUtils;
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.ProgressReceiver.OperationCancelled;
@@ -14,22 +13,26 @@ import org.pepsoft.util.swing.ProgressTask;
 import org.pepsoft.worldpainter.App;
 import org.pepsoft.worldpainter.ColourScheme;
 import org.pepsoft.worldpainter.Dimension;
+import org.pepsoft.worldpainter.Tile;
 import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
+import org.pepsoft.worldpainter.layers.Layer;
+import org.pepsoft.worldpainter.threedeeview.Tile3DRenderer.LayerVisibilityMode;
 import org.pepsoft.worldpainter.util.BetterAction;
+import org.pepsoft.worldpainter.util.ImageUtils;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
-import javax.swing.filechooser.FileFilter;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
 
 import static org.pepsoft.util.GUIUtils.scaleToUI;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowError;
+import static org.pepsoft.worldpainter.App.INT_NUMBER_FORMAT;
 import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
+import static org.pepsoft.worldpainter.threedeeview.Tile3DRenderer.LayerVisibilityMode.*;
 import static org.pepsoft.worldpainter.util.LayoutUtils.setDefaultSizeAndLocation;
 
 /**
@@ -92,7 +95,6 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         
         getContentPane().add(scrollPane, BorderLayout.CENTER);
         
-        final JToggleButton alwaysOnTopButton = new JToggleButton(ICON_ALWAYS_ON_TOP);
         alwaysOnTopButton.setToolTipText("Set the 3D view window to be always on top");
         alwaysOnTopButton.addActionListener(e -> {
             if (alwaysOnTopButton.isSelected()) {
@@ -117,6 +119,17 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         toolBar.addSeparator();
         toolBar.add(MOVE_TO_SPAWN_ACTION);
         toolBar.add(MOVE_TO_ORIGIN_ACTION);
+        toolBar.addSeparator();
+        toolBar.add(new JLabel("Visible layers:"));
+        final JRadioButton radioButtonLayersNone = new JRadioButton(NO_LAYERS_ACTION);
+        layerVisibilityButtonGroup.add(radioButtonLayersNone);
+        toolBar.add(radioButtonLayersNone);
+        final JRadioButton radioButtonLayersSync = new JRadioButton(SYNC_LAYERS_ACTION);
+        layerVisibilityButtonGroup.add(radioButtonLayersSync);
+        toolBar.add(radioButtonLayersSync);
+        final JRadioButton radioButtonLayersAll = new JRadioButton(SURFACE_LAYERS_ACTION);
+        layerVisibilityButtonGroup.add(radioButtonLayersAll);
+        toolBar.add(radioButtonLayersAll);
         getContentPane().add(toolBar, BorderLayout.NORTH);
 
         glassPane = new GlassPane();
@@ -154,9 +167,25 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         this.dimension = dimension;
         if (dimension != null) {
             threeDeeView = new ThreeDeeView(dimension, colourScheme, customBiomeManager, rotation, zoom);
+            threeDeeView.setLayerVisibility(layerVisibility);
+            threeDeeView.setHiddenLayers(hiddenLayers);
             scrollPane.setViewportView(threeDeeView);
-            MOVE_TO_SPAWN_ACTION.setEnabled(dimension.getDim() == DIM_NORMAL);
-            glassPane.setRotation(DIRECTIONS[rotation], dimension.getDim() < 0);
+            MOVE_TO_SPAWN_ACTION.setEnabled(dimension.getAnchor().dim == DIM_NORMAL);
+            glassPane.setRotation(DIRECTIONS[rotation], dimension.getAnchor().invert);
+        }
+    }
+
+    public void setHiddenLayers(Set<Layer> hiddenLayers) {
+        this.hiddenLayers = hiddenLayers;
+        if (threeDeeView != null) {
+            threeDeeView.setHiddenLayers(hiddenLayers);
+        }
+    }
+
+    public void resetAlwaysOnTop() {
+        if (isAlwaysOnTop()) {
+            setAlwaysOnTop(false);
+            alwaysOnTopButton.setSelected(false);
         }
     }
 
@@ -165,12 +194,24 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         threeDeeView.moveTo(coords.x, coords.y);
     }
 
-    public void refresh() {
+    public void refresh(boolean clear) {
         if (threeDeeView != null) {
-            threeDeeView.refresh();
+            threeDeeView.refresh(clear);
         }
     }
-    
+
+    private boolean imageFitsInJavaArray(Rectangle imageBounds) {
+        final long area = (long) imageBounds.width * imageBounds.height;
+        return (area >= 0L) && (area <= Integer.MAX_VALUE);
+    }
+
+    private void setLayerVisibility(LayerVisibilityMode layerVisibility) {
+        this.layerVisibility = layerVisibility;
+        if (threeDeeView != null) {
+            threeDeeView.setLayerVisibility(layerVisibility);
+        }
+    }
+
     // WindowListener
 
     @Override
@@ -196,12 +237,16 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
             if (rotation < 0) {
                 rotation = 3;
             }
-            Point centreMostTile = threeDeeView.getCentreMostTile();
-            threeDeeView = new ThreeDeeView(dimension, colourScheme, customBiomeManager, rotation, zoom);
-            scrollPane.setViewportView(threeDeeView);
-//            scrollPane.getViewport().setViewPosition(new Point((threeDeeView.getWidth() - scrollPane.getWidth()) / 2, (threeDeeView.getHeight() - scrollPane.getHeight()) / 2));
-            threeDeeView.moveToTile(centreMostTile.x, centreMostTile.y);
-            glassPane.setRotation(DIRECTIONS[rotation], dimension.getDim() < 0);
+            final Tile centreMostTile = threeDeeView.getCentreMostTile();
+            if (centreMostTile != null) {
+                threeDeeView = new ThreeDeeView(dimension, colourScheme, customBiomeManager, rotation, zoom);
+                threeDeeView.setLayerVisibility(layerVisibility);
+                threeDeeView.setHiddenLayers(hiddenLayers);
+                scrollPane.setViewportView(threeDeeView);
+//                scrollPane.getViewport().setViewPosition(new Point((threeDeeView.getWidth() - scrollPane.getWidth()) / 2, (threeDeeView.getHeight() - scrollPane.getHeight()) / 2));
+                threeDeeView.moveToTile(centreMostTile);
+                glassPane.setRotation(DIRECTIONS[rotation], dimension.getAnchor().invert);
+            }
         }
         
         private static final long serialVersionUID = 1L;
@@ -218,12 +263,16 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
             if (rotation > 3) {
                 rotation = 0;
             }
-            Point centreMostTile = threeDeeView.getCentreMostTile();
-            threeDeeView = new ThreeDeeView(dimension, colourScheme, customBiomeManager, rotation, zoom);
-            scrollPane.setViewportView(threeDeeView);
-//            scrollPane.getViewport().setViewPosition(new Point((threeDeeView.getWidth() - scrollPane.getWidth()) / 2, (threeDeeView.getHeight() - scrollPane.getHeight()) / 2));
-            threeDeeView.moveToTile(centreMostTile.x, centreMostTile.y);
-            glassPane.setRotation(DIRECTIONS[rotation], dimension.getDim() < 0);
+            final Tile centreMostTile = threeDeeView.getCentreMostTile();
+            if (centreMostTile != null) {
+                threeDeeView = new ThreeDeeView(dimension, colourScheme, customBiomeManager, rotation, zoom);
+                threeDeeView.setLayerVisibility(layerVisibility);
+                threeDeeView.setHiddenLayers(hiddenLayers);
+                scrollPane.setViewportView(threeDeeView);
+//                scrollPane.getViewport().setViewPosition(new Point((threeDeeView.getWidth() - scrollPane.getWidth()) / 2, (threeDeeView.getHeight() - scrollPane.getHeight()) / 2));
+                threeDeeView.moveToTile(centreMostTile);
+                glassPane.setRotation(DIRECTIONS[rotation], dimension.getAnchor().invert);
+            }
         }
         
         private static final long serialVersionUID = 1L;
@@ -236,42 +285,13 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         
         @Override
         public void performAction(ActionEvent e) {
-            final Set<String> extensions = new HashSet<>(Arrays.asList(ImageIO.getReaderFileSuffixes()));
-            StringBuilder sb = new StringBuilder("Supported image formats (");
-            boolean first = true;
-            for (String extension: extensions) {
-                if (first) {
-                    first = false;
-                } else {
-                    sb.append(", ");
-                }
-                sb.append("*.");
-                sb.append(extension);
+            final Rectangle imageBounds = threeDeeView.getImageBounds();
+            if (! imageFitsInJavaArray(imageBounds)) {
+                beepAndShowError(ThreeDeeFrame.this, "The 3D image is too large to export to an image.\nThe area (width x height) may not be more than " + INT_NUMBER_FORMAT.format(Integer.MAX_VALUE), "3D Image Too Large");
+                return;
             }
-            sb.append(')');
-            final String description = sb.toString();
-            String defaultname = dimension.getWorld().getName().replaceAll("\\s", "").toLowerCase() + ((dimension.getDim() == DIM_NORMAL) ? "" : ("_" + dimension.getName().toLowerCase())) + "_3d.png";
-            File selectedFile = FileUtils.selectFileForSave(ThreeDeeFrame.this, "Export as image file", new File(defaultname), new FileFilter() {
-                @Override
-                public boolean accept(File f) {
-                    if (f.isDirectory()) {
-                        return true;
-                    }
-                    String filename = f.getName();
-                    int p = filename.lastIndexOf('.');
-                    if (p != -1) {
-                        String extension = filename.substring(p + 1).toLowerCase();
-                        return extensions.contains(extension);
-                    } else {
-                        return false;
-                    }
-                }
-
-                @Override
-                public String getDescription() {
-                    return description;
-                }
-            });
+            final String defaultname = dimension.getWorld().getName().replaceAll("\\s", "").toLowerCase() + ((dimension.getAnchor().dim == DIM_NORMAL) ? "" : ("_" + dimension.getName().toLowerCase())) + "_3d.png";
+            File selectedFile = ImageUtils.selectImageForSave(ThreeDeeFrame.this, "image file", new File(defaultname));
             if (selectedFile != null) {
                 final String type;
                 int p = selectedFile.getName().lastIndexOf('.');
@@ -296,7 +316,7 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
                         @Override
                         public Boolean execute(ProgressReceiver progressReceiver) throws OperationCancelled {
                             try {
-                                return ImageIO.write(threeDeeView.getImage(progressReceiver), type, file);
+                                return ImageIO.write(threeDeeView.getImage(imageBounds, progressReceiver), type, file);
                             } catch (IOException e) {
                                 throw new RuntimeException("I/O error while exporting image", e);
                             }
@@ -318,7 +338,7 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         
         @Override
         public void performAction(ActionEvent e) {
-            if (dimension.getDim() == DIM_NORMAL) {
+            if (dimension.getAnchor().dim == DIM_NORMAL) {
                 Point spawn = dimension.getWorld().getSpawnPoint();
                 threeDeeView.moveTo(spawn.x, spawn.y);
             }
@@ -448,14 +468,52 @@ public class ThreeDeeFrame extends JFrame implements WindowListener {
         private static final long serialVersionUID = 1L;
     };
 
+    private final Action NO_LAYERS_ACTION = new BetterAction("layerVisibilityNone", "None") {
+        {
+            setShortDescription("Show no layers");
+        }
+
+        @Override
+        protected void performAction(ActionEvent e) {
+            setLayerVisibility(NONE);
+        }
+    };
+
+    private final Action SYNC_LAYERS_ACTION = new BetterAction("layerVisibilitySync", "Sync") {
+        {
+            setShortDescription("Synchronise layer visibility with editor");
+        }
+
+        @Override
+        protected void performAction(ActionEvent e) {
+            setLayerVisibility(SYNC);
+        }
+    };
+
+    private final Action SURFACE_LAYERS_ACTION = new BetterAction("layerVisibilitySurface", "Surface") {
+        {
+            setShortDescription("Show all above-ground layers");
+            setSelected(true);
+        }
+
+        @Override
+        protected void performAction(ActionEvent e) {
+            setLayerVisibility(SURFACE);
+        }
+    };
+
     private final JScrollPane scrollPane;
     private final GlassPane glassPane;
     private final CustomBiomeManager customBiomeManager;
+    private final ButtonGroup layerVisibilityButtonGroup = new ButtonGroup();
+    final JToggleButton alwaysOnTopButton = new JToggleButton(ICON_ALWAYS_ON_TOP);
     private Dimension dimension;
     private ThreeDeeView threeDeeView;
     private ColourScheme colourScheme;
     private int rotation = 3, zoom = 1;
     private Point coords;
+    private LayerVisibilityMode layerVisibility = SURFACE;
+    private Set<Layer> hiddenLayers;
     
     private static final Direction[] DIRECTIONS = {Direction.EAST, Direction.SOUTH, Direction.WEST, Direction.NORTH};
     

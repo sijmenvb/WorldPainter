@@ -12,10 +12,7 @@ import ch.qos.logback.core.util.StatusPrinter;
 import com.jidesoft.plaf.LookAndFeelFactory;
 import com.jidesoft.utils.Lm;
 import org.intellij.lang.annotations.Language;
-import org.pepsoft.util.DesktopUtils;
-import org.pepsoft.util.FileUtils;
-import org.pepsoft.util.GUIUtils;
-import org.pepsoft.util.SystemUtils;
+import org.pepsoft.util.*;
 import org.pepsoft.util.plugins.PluginManager;
 import org.pepsoft.worldpainter.biomeschemes.BiomeSchemeManager;
 import org.pepsoft.worldpainter.layers.renderers.VoidRenderer;
@@ -50,7 +47,9 @@ import java.util.*;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
+import static javax.swing.JOptionPane.WARNING_MESSAGE;
 import static org.pepsoft.util.GUIUtils.getUIScale;
+import static org.pepsoft.util.swing.MessageUtils.*;
 import static org.pepsoft.worldpainter.Constants.ATTRIBUTE_KEY_PLUGINS;
 import static org.pepsoft.worldpainter.Constants.ATTRIBUTE_KEY_SAFE_MODE;
 import static org.pepsoft.worldpainter.plugins.WPPluginManager.DESCRIPTOR_PATH;
@@ -64,11 +63,9 @@ public class Main {
      * @param args the command line arguments
      */
     public static void main(String[] args) throws IOException {
-        // Force language to English for now. TODO: remove this once the first
-        // translations are implemented
+        // Force language to English for now. TODO: remove this once the first translations are implemented
         Locale.setDefault(Locale.US);
 
-        System.setProperty("sun.awt.exception.handler", ExceptionHandler.class.getName());
         Thread.setDefaultUncaughtExceptionHandler(new ExceptionHandler());
 
         // Set some hardcoded system properties we always want set:
@@ -76,13 +73,31 @@ public class Main {
             // Use the Mac style top of screen menu bar
             System.setProperty("apple.laf.useScreenMenuBar", "true");
         }
-        // Work around a bug in the JIDE Docking Framework which otherwise
-        // causes duplicate mouse events on focus switches resulting in
-        // uncommanded edits
+        // Work around a bug in the JIDE Docking Framework which otherwise causes duplicate mouse events on focus
+        // switches resulting in uncommanded edits
         System.setProperty("docking.focusWorkaround1", "true");
-        // Disable Java2D's automatic UI scaling, as it does not do a good job
-        // with the editor view; we want to do it ourselves
+        // Disable Java2D's automatic UI scaling, as it does not do a good job with the editor view; we want to do it
+        // ourselves
         System.setProperty("sun.java2d.uiScale.enabled", "false");
+        // Propagate a few system properties to libraries
+        final String devMode = System.getProperty("org.pepsoft.worldpainter.devMode");
+        if (devMode != null) {
+            System.setProperty("org.pepsoft.devMode", devMode);
+        }
+        boolean safeMode = "true".equalsIgnoreCase(System.getProperty("org.pepsoft.worldpainter.safeMode"));
+        for (String arg: args) {
+            if (arg.trim().equalsIgnoreCase("--safe")) {
+                safeMode = true;
+            }
+        }
+        if (safeMode) {
+            logger.info("WorldPainter running in safe mode");
+            System.setProperty("org.pepsoft.worldpainter.safeMode", "true");
+            System.setProperty("org.pepsoft.util.GUIUtils.disableScaling", "true");
+        }
+        if (Version.isSnapshot()) {
+            System.setProperty("org.pepsoft.snapshotVersion", "true");
+        }
 
         // Use a file lock to make sure only one instance is running with autosave enabled
         File configDir = Configuration.getConfigDir();
@@ -93,8 +108,8 @@ public class Main {
         try {
             Files.createFile(lockFilePath);
         } catch (FileAlreadyExistsException e) {
-            // We can't yet conclude another instance is running, because it may
-            // have crashed and left the lock file behind
+            // We can't yet conclude another instance is running, because it may have crashed and left the lock file
+            // behind
         }
         FileChannel lockFileChannel = FileChannel.open(lockFilePath, StandardOpenOption.WRITE);
         FileLock lock = lockFileChannel.tryLock();
@@ -150,84 +165,81 @@ public class Main {
 
         // Parse the command line
         File myFile = null;
-        boolean safeMode = "true".equalsIgnoreCase(System.getProperty("org.pepsoft.worldpainter.safeMode"));
         for (String arg: args) {
-            if (arg.trim().toLowerCase().equals("--safe")) {
-                safeMode = true;
-            } else if (new File(arg).isFile() && (myFile == null)) {
+            if (new File(arg).isFile() && (myFile == null)) {
                 myFile = new File(arg);
             } else {
                 throw new IllegalArgumentException("Unrecognised or invalid command line option, or file does not exist: " + arg);
             }
         }
         final File file = myFile;
-        if (safeMode) {
-            logger.info("WorldPainter running in safe mode");
+
+        // If the config file does not exist, also reset the persistent settings that are not stored in that, since the
+        // user may be trying to reset the configuration
+        final boolean snapshot = Version.isSnapshot();
+        if (! Configuration.getConfigFile().isFile()) {
+            try {
+                Preferences prefs = Preferences.userNodeForPackage(Main.class);
+                prefs.remove((snapshot ? "snapshot." : "") + "accelerationType");
+                prefs.flush();
+                prefs = Preferences.userNodeForPackage(GUIUtils.class);
+                prefs.remove((snapshot ? "snapshot." : "") + "manualUIScale");
+                prefs.flush();
+            } catch (BackingStoreException e) {
+                logger.error("Error resetting user preferences", e);
+            }
         }
 
-        // Set the acceleration mode. For some reason we don't fully understand,
-        // loading the Configuration from disk initialises Java2D, so we have to
-        // do this *before* then.
-        // But only do this if a config file exists. If it does not, someone may
-        // be trying to reset the configuration, so make sure that the
-        // acceleration type setting is reset too in that case.
+        // Set the acceleration mode. For some reason we don't fully understand, loading the Configuration from disk
+        // initialises Java2D, so we have to do this *before* then.
         AccelerationType accelerationType;
-        if (Configuration.getConfigFile().isFile()) {
-            String accelTypeName = Preferences.userNodeForPackage(Main.class).get("accelerationType", null);
-            if (accelTypeName != null) {
-                accelerationType = AccelerationType.valueOf(accelTypeName);
-            } else {
-                accelerationType = AccelerationType.DEFAULT;
-                // TODO: Experiment with which ones work well and use them by default!
-            }
-            if (! safeMode) {
-                switch (accelerationType) {
-                    case UNACCELERATED:
-                        // Try to disable all accelerated pipelines we know of:
-                        System.setProperty("sun.java2d.d3d", "false");
-                        System.setProperty("sun.java2d.opengl", "false");
-                        System.setProperty("sun.java2d.xrender", "false");
-                        System.setProperty("apple.awt.graphics.UseQuartz", "false");
-                        logger.info("Hardware acceleration method: unaccelerated");
-                        break;
-                    case DIRECT3D:
-                        // Direct3D should already be the default on Windows, but
-                        // enable a few things which are off by default:
-                        System.setProperty("sun.java2d.translaccel", "true");
-                        System.setProperty("sun.java2d.ddscale", "true");
-                        logger.info("Hardware acceleration method: Direct3D");
-                        break;
-                    case OPENGL:
-                        System.setProperty("sun.java2d.opengl", "True");
-                        logger.info("Hardware acceleration method: OpenGL");
-                        break;
-                    case XRENDER:
-                        System.setProperty("sun.java2d.xrender", "True");
-                        logger.info("Hardware acceleration method: XRender");
-                        break;
-                    case QUARTZ:
-                        System.setProperty("apple.awt.graphics.UseQuartz", "true");
-                        logger.info("Hardware acceleration method: Quartz");
-                        break;
-                    default:
-                        logger.info("Hardware acceleration method: default");
-                        break;
-                }
-            }
+        String accelTypeName = Preferences.userNodeForPackage(Main.class).get((snapshot ? "snapshot." : "") + "accelerationType", null);
+        if (accelTypeName != null) {
+            accelerationType = AccelerationType.valueOf(accelTypeName);
         } else {
             accelerationType = AccelerationType.DEFAULT;
-            if (! safeMode) {
-                logger.info("Hardware acceleration method: default");
-            }
+            // TODO: Experiment with which ones work well and use them by default!
         }
-        if (safeMode) {
+        if (! safeMode) {
+            switch (accelerationType) {
+                case UNACCELERATED:
+                    // Try to disable all accelerated pipelines we know of:
+                    System.setProperty("sun.java2d.d3d", "false");
+                    System.setProperty("sun.java2d.opengl", "false");
+                    System.setProperty("sun.java2d.xrender", "false");
+                    System.setProperty("apple.awt.graphics.UseQuartz", "false");
+                    logger.info("Hardware acceleration method: unaccelerated");
+                    break;
+                case DIRECT3D:
+                    // Direct3D should already be the default on Windows, but enable a few things which are off by
+                    // default:
+                    System.setProperty("sun.java2d.translaccel", "true");
+                    System.setProperty("sun.java2d.ddscale", "true");
+                    logger.info("Hardware acceleration method: Direct3D");
+                    break;
+                case OPENGL:
+                    System.setProperty("sun.java2d.opengl", "True");
+                    logger.info("Hardware acceleration method: OpenGL");
+                    break;
+                case XRENDER:
+                    System.setProperty("sun.java2d.xrender", "True");
+                    logger.info("Hardware acceleration method: XRender");
+                    break;
+                case QUARTZ:
+                    System.setProperty("apple.awt.graphics.UseQuartz", "true");
+                    logger.info("Hardware acceleration method: Quartz");
+                    break;
+                default:
+                    logger.info("Hardware acceleration method: default");
+                    break;
+            }
+        } else {
             logger.info("[SAFE MODE] Hardware acceleration method: default");
         }
 
-        // Load the default platform descriptors so that they don't get blocked
-        // by older versions of them which might be contained in the
-        // configuration. Do this by loading and initialising (but not
-        // instantiating) the DefaultPlugin class
+        // Load the default platform descriptors so that they don't get blocked by older versions of them which might be
+        // contained in the configuration. Do this by loading and initialising (but not instantiating) the DefaultPlugin
+        // class
         try {
             Class.forName("org.pepsoft.worldpainter.DefaultPlugin");
         } catch (ClassNotFoundException e) {
@@ -243,8 +255,7 @@ public class Main {
         }
         if (config == null) {
             if (! logger.isDebugEnabled()) {
-                // If debug logging is on, the Configuration constructor will
-                // already log this
+                // If debug logging is on, the Configuration constructor will already log this
                 logger.info("Creating new configuration");
             }
             config = new Configuration();
@@ -258,8 +269,8 @@ public class Main {
         if (config.getPreviousVersion() >= 0) {
             // Perform legacy migration actions
             if (config.getPreviousVersion() < 18) {
-                // The dynmap data may have been copied from Minecraft 1.13, in
-                // which case it doesn't work, so delete it if it exists
+                // The dynmap data may have been copied from Minecraft 1.13, in which case it doesn't work, so delete it
+                // if it exists
                 File dynmapDir = new File(Configuration.getConfigDir(), "dynmap");
                 if (dynmapDir.isDirectory()) {
                     FileUtils.deleteDir(dynmapDir);
@@ -267,8 +278,11 @@ public class Main {
             }
         }
 
-        // Store the acceleration type in the config object so the Preferences
-        // dialog can edit it
+        if (config.isAutosaveEnabled() && autosaveInhibited) {
+            StartupMessages.addWarning("Another instance of WorldPainter is already running.\nAutosave will therefore be disabled in this instance of WorldPainter!");
+        }
+
+        // Store the acceleration type in the config object so the Preferences dialog can edit it
         config.setAccelerationType(accelerationType);
 
         // Start background scan for Minecraft jars
@@ -283,10 +297,10 @@ public class Main {
             logger.error("Certificate exception while loading trusted root certificate", e);
         }
 
-        // Load the plugins
+        // Load the plugins, checking for updates
         if (! safeMode) {
             if (trustedCert != null) {
-                PluginManager.loadPlugins(new File(configDir, "plugins"), trustedCert.getPublicKey(), DESCRIPTOR_PATH);
+                PluginManager.loadPlugins(new File(configDir, "plugins"), trustedCert.getPublicKey(), DESCRIPTOR_PATH, Version.VERSION_OBJ, true);
             } else {
                 logger.error("Trusted root certificate not available; not loading plugins");
             }
@@ -294,9 +308,8 @@ public class Main {
             logger.info("[SAFE MODE] Not loading plugins");
         }
         WPPluginManager.initialise(config.getUuid());
-        // Load all the platform descriptors to ensure that when worlds
-        // containing older versions of them are loaded later they are replaced
-        // with the current versions, rather than the other way around
+        // Load all the platform descriptors to ensure that when worlds containing older versions of them are loaded
+        // later they are replaced with the current versions, rather than the other way around
         for (Platform platform : PlatformManager.getInstance().getAllPlatforms()) {
             logger.info("Available platform: {}", platform.displayName);
         }
@@ -353,10 +366,13 @@ public class Main {
                     config.logEvent(sessionEvent);
                     config.save();
 
-                    // Store the acceleration type separately, because we need
-                    // it before we can load the config:
+                    // Store the acceleration type and manual GUI scale separately, because we need them before we can
+                    // load the config:
                     Preferences prefs = Preferences.userNodeForPackage(Main.class);
-                    prefs.put("accelerationType", config.getAccelerationType().name());
+                    prefs.put((snapshot ? "snapshot." : "") + "accelerationType", config.getAccelerationType().name());
+                    prefs.flush();
+                    prefs = Preferences.userNodeForPackage(GUIUtils.class);
+                    prefs.putFloat((snapshot ? "snapshot." : "") + "manualUIScale", config.getUiScale());
                     prefs.flush();
                 } catch (IOException e) {
                     logger.error("I/O error saving configuration", e);
@@ -418,33 +434,31 @@ public class Main {
                 // Install configured look and feel
                 try {
                     String laf;
-                    if (getUIScale() != 1.0f) {
-                        laf = UIManager.getSystemLookAndFeelClassName();
-                    } else {
-                        switch (lookAndFeel) {
-                            case SYSTEM:
-                                laf = UIManager.getSystemLookAndFeelClassName();
-                                break;
-                            case METAL:
-                                laf = "javax.swing.plaf.metal.MetalLookAndFeel";
-                                break;
-                            case NIMBUS:
-                                laf = "javax.swing.plaf.nimbus.NimbusLookAndFeel";
-                                break;
-                            case DARK_METAL:
-                                laf = "org.netbeans.swing.laf.dark.DarkMetalLookAndFeel";
-                                break;
-                            case DARK_NIMBUS:
-                                laf = "org.netbeans.swing.laf.dark.DarkNimbusLookAndFeel";
-                                break;
-                            default:
-                                throw new InternalError();
-                        }
+                    switch (lookAndFeel) {
+                        case SYSTEM:
+                            laf = UIManager.getSystemLookAndFeelClassName();
+                            break;
+                        case METAL:
+                            laf = "javax.swing.plaf.metal.MetalLookAndFeel";
+                            break;
+                        case NIMBUS:
+                            laf = "javax.swing.plaf.nimbus.NimbusLookAndFeel";
+                            break;
+                        case DARK_METAL:
+                            laf = "org.netbeans.swing.laf.dark.DarkMetalLookAndFeel";
+                            IconUtils.setTheme("dark_metal");
+                            break;
+                        case DARK_NIMBUS:
+                            laf = "org.netbeans.swing.laf.dark.DarkNimbusLookAndFeel";
+                            IconUtils.setTheme("dark_nimbus");
+                            break;
+                        default:
+                            throw new InternalError();
                     }
                     logger.debug("Installing look and feel: " + laf);
                     UIManager.setLookAndFeel(laf);
                     LookAndFeelFactory.installJideExtension();
-                    if ((getUIScale() == 1.0f) && ((lookAndFeel == Configuration.LookAndFeel.DARK_METAL)
+                    if (((lookAndFeel == Configuration.LookAndFeel.DARK_METAL)
                             || (lookAndFeel == Configuration.LookAndFeel.DARK_NIMBUS))) {
                         // Patch some things to make dark themes look better
                         VoidRenderer.setColour(UIManager.getColor("Panel.background").getRGB());
@@ -457,9 +471,6 @@ public class Main {
                     logger.warn("Could not install selected look and feel", e);
                 }
 
-                if (myConfig.getUiScale() != 0.0f) {
-                    GUIUtils.setUIScale(myConfig.getUiScale());
-                }
                 if (getUIScale() != 1.0f) {
                     // Scale the look and feel to the UI
                     GUIUtils.scaleLookAndFeel(getUIScale());
@@ -476,42 +487,50 @@ public class Main {
                 app.setExtendedState(Frame.MAXIMIZED_BOTH);
             }
 
-            // Do this later to give the app the chance to properly set
-            // itself up
+            // Do this later to give the app the chance to properly set itself up
             SwingUtilities.invokeLater(() -> {
-                if (Version.isSnapshot() && ! myConfig.isSnapshotWarningDisplayed()) {
-                    String result = JOptionPane.showInputDialog(app, SNAPSHOT_MESSAGE, "Snapshot Release", JOptionPane.WARNING_MESSAGE);
+                if (Version.isSnapshot() && ! myConfig.isMessageDisplayed(SNAPSHOT_MESSAGE_KEY)) {
+                    String result = JOptionPane.showInputDialog(app, SNAPSHOT_MESSAGE, "Snapshot Release", WARNING_MESSAGE);
                     if (result == null) {
                         // Cancel was pressed
                         System.exit(0);
                     }
                     while (! result.toLowerCase().replace(" ", "").equals("iunderstand")) {
                         DesktopUtils.beep();
-                        result = JOptionPane.showInputDialog(app, SNAPSHOT_MESSAGE, "Snapshot Release", JOptionPane.WARNING_MESSAGE);
+                        result = JOptionPane.showInputDialog(app, SNAPSHOT_MESSAGE, "Snapshot Release", WARNING_MESSAGE);
                         if (result == null) {
                             // Cancel was pressed
                             System.exit(0);
                         }
                     }
-                    myConfig.setSnapshotWarningDisplayed(true);
+                    myConfig.setMessageDisplayed(SNAPSHOT_MESSAGE_KEY);
                 }
                 if (world != null) {
-                    // On a Mac we may be doing this unnecessarily because we
-                    // may be opening a .world file, but it has proven difficult
-                    // to detect that. TODO
+                    // On a Mac we may be doing this unnecessarily because we may be opening a .world file, but it has
+                    // proven difficult to detect that. TODO
                     app.setWorld(world, true);
                 } else if ((! autosaveInhibited) && myConfig.isAutosaveEnabled() && autosaveFile.isFile()) {
                     logger.info("Recovering autosaved world");
                     app.open(autosaveFile);
-                    DesktopUtils.beep();
-                    JOptionPane.showMessageDialog(app, "WorldPainter was not shut down correctly.\nYour world has been recovered from the most recent autosave.\nMake sure to Save it if you want to keep it!", "World Recovered", JOptionPane.WARNING_MESSAGE);
+                    StartupMessages.addWarning("WorldPainter was not shut down correctly.\nYour world has been recovered from the most recent autosave.\nMake sure to Save it if you want to keep it!");
                 } else {
                     app.open(file);
                 }
-                if (myConfig.isAutosaveEnabled() && autosaveInhibited) {
-                    JOptionPane.showMessageDialog(app, "Another instance of WorldPainter is already running.\nAutosave will therefore be disabled in this instance of WorldPainter!", "Autosave Disabled", JOptionPane.WARNING_MESSAGE);
+                for (String error: StartupMessages.getErrors()) {
+                    beepAndShowError(app, error, "Startup Error");
                 }
-                DonationDialog.maybeShowDonationDialog(app);
+                for (String warning: StartupMessages.getWarnings()) {
+                    beepAndShowWarning(app, warning, "Startup Warning");
+                }
+                for (String message: StartupMessages.getMessages()) {
+                    showInfo(app, message, "Startup Message");
+                }
+                if (StartupMessages.getErrors().isEmpty() && StartupMessages.getWarnings().isEmpty() && StartupMessages.getMessages().isEmpty()) {
+                    // Don't bother the user with this if we've already bothered them with errors and/or warnings
+                    if (! DonationDialog.maybeShowDonationDialog(app)) {
+                        MerchDialog.maybeShowMerchDialog(app);
+                    }
+                }
             });
         });
     }
@@ -530,7 +549,7 @@ public class Main {
 
         // Report the error
         logger.error("Exception while initialising configuration", e);
-        JOptionPane.showMessageDialog(null, "Could not read configuration file! Resetting configuration.\n\nException type: " + e.getClass().getSimpleName() + "\nMessage: " + e.getMessage(), "Configuration Error", JOptionPane.ERROR_MESSAGE);
+        StartupMessages.addError("Could not read configuration file! Configuration was reset.\n\nException type: " + e.getClass().getSimpleName() + "\nMessage: " + e.getMessage());
     }
 
     @Language("HTML")
@@ -541,6 +560,7 @@ public class Main {
             "<p>Any or all work you do with this test release may be lost, and if you don't create backups,<br>you may lose your current worlds." +
             "<p>Please report bugs on GitHub: https://github.com/Captain-Chaos/WorldPainter" +
             "<p>Type \"I understand\" below to proceed with testing the next release of WorldPainter:</p></html>";
+    private static final String SNAPSHOT_MESSAGE_KEY = "org.pepsoft.worldpainter.snapshotWarning";
 
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Main.class);
 

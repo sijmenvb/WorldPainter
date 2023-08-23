@@ -10,23 +10,30 @@
  */
 package org.pepsoft.worldpainter;
 
-import org.pepsoft.minecraft.Material;
+import org.pepsoft.minecraft.SuperflatGenerator;
+import org.pepsoft.minecraft.SuperflatPreset;
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.ProgressReceiver.OperationCancelled;
 import org.pepsoft.util.swing.ProgressDialog;
 import org.pepsoft.util.swing.ProgressTask;
-import org.pepsoft.worldpainter.heightMaps.HeightMapUtils;
-import org.pepsoft.worldpainter.history.HistoryEntry;
-import org.pepsoft.worldpainter.layers.Resources;
-import org.pepsoft.worldpainter.layers.exporters.ResourcesExporter.ResourcesExporterSettings;
+import org.pepsoft.worldpainter.plugins.PlatformManager;
+import org.pepsoft.worldpainter.util.WorldUtils;
 
 import javax.swing.*;
 import java.awt.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
 import static java.util.Arrays.stream;
-import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_MCREGION;
+import static java.util.stream.Collectors.toSet;
+import static org.pepsoft.minecraft.Constants.*;
 import static org.pepsoft.util.swing.ProgressDialog.NOT_CANCELABLE;
-import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_17;
+import static org.pepsoft.worldpainter.Constants.V_1_17;
+import static org.pepsoft.worldpainter.DefaultPlugin.*;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.Dimension.Role.MASTER;
+import static org.pepsoft.worldpainter.history.HistoryEntry.*;
 
 /**
  *
@@ -35,155 +42,209 @@ import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_17;
 @SuppressWarnings({"Convert2Lambda", "Anonymous2MethodRef", "unused", "FieldCanBeLocal"})
 public class ChangeHeightDialog extends WorldPainterDialog {
     /** Creates new form ChangeHeightDialog */
+    @SuppressWarnings("OptionalGetWithoutIsPresent") // Expected
     public ChangeHeightDialog(Window parent, World2 world) {
         super(parent);
         this.world = world;
-        
+        final Set<Dimension> dimensions = world.getDimensions().stream()
+                .filter(dimension -> (dimension.getAnchor().role == DETAIL || dimension.getAnchor().role == MASTER) && (! dimension.getAnchor().invert))
+                .collect(toSet());
+        lowestHeight = dimensions.stream().mapToInt(Dimension::getLowestIntHeight).min().getAsInt();
+        highestHeight = dimensions.stream().mapToInt(Dimension::getHighestIntHeight).max().getAsInt();
+
         initComponents();
-        comboBoxNewHeight.setModel(new DefaultComboBoxModel<>(stream(world.getPlatform().maxHeights).boxed().toArray(Integer[]::new)));
-        
-        int maxHeight = world.getMaxHeight();
-        labelCurrentHeight.setText(Integer.toString(maxHeight));
-        comboBoxNewHeight.setSelectedItem(maxHeight);
-        
+        labelOldExtents.setText(lowestHeight + " - " + highestHeight);
+        supportedPlatforms.addAll(PlatformManager.getInstance().getAllPlatforms());
+        final List<Platform> allPlatforms = new ArrayList<>(supportedPlatforms);
+        final Platform platform = world.getPlatform();
+        if (! allPlatforms.contains(platform)) {
+            allPlatforms.add(0, platform);
+        }
+        comboBoxPlatform.setModel(new DefaultComboBoxModel<>(allPlatforms.toArray(new Platform[allPlatforms.size()])));
+        comboBoxPlatform.setSelectedItem(platform);
+        setPlatform(platform);
+
+        final int minHeight = world.getMinHeight(), maxHeight = world.getMaxHeight();
+        labelCurrentMinHeight.setText(Integer.toString(minHeight));
+        comboBoxNewMinHeight.setSelectedItem(minHeight);
+        labelCurrentMaxHeight.setText(Integer.toString(maxHeight));
+        comboBoxNewMaxHeight.setSelectedItem(maxHeight);
+
         getRootPane().setDefaultButton(buttonOK);
 
-        scaleToUI();
+        initialising = false;
+        updateLabels();
         setControlStates();
+
+        scaleToUI();
+        pack();
         setLocationRelativeTo(parent);
     }
-    
-    private void calculateDefaults() {
-        int oldMaxHeight = world.getMaxHeight();
-        int newMaxHeight = (Integer) comboBoxNewHeight.getSelectedItem();
-        int defaultTranslateAmount = (newMaxHeight - oldMaxHeight) / 2;
-        int maxTranslateAmount = newMaxHeight - 1;
-        int minTranslateAmount = -maxTranslateAmount;
-        spinnerTranslateAmount.setValue(defaultTranslateAmount);
-        ((SpinnerNumberModel) spinnerTranslateAmount.getModel()).setMinimum(minTranslateAmount);
-        ((SpinnerNumberModel) spinnerTranslateAmount.getModel()).setMaximum(maxTranslateAmount);
-        int defaultScale = newMaxHeight * 100 / oldMaxHeight;
-        spinnerScaleAmount.setValue(defaultScale);
+
+    private void setPlatform(Platform platform) {
+        comboBoxNewMinHeight.setModel(new DefaultComboBoxModel<>(stream(platform.minHeights).boxed().toArray(Integer[]::new)));
+        comboBoxNewMinHeight.setEnabled(platform.minHeights.length > 1);
+        final int desiredMinHeight = (platform.minZ < world.getMinHeight()) ? platform.minZ : world.getMinHeight();
+        int matchingMinHeight = Integer.MIN_VALUE;
+        for (int minHeight : platform.minHeights) {
+            if (minHeight <= desiredMinHeight) {
+                matchingMinHeight = minHeight;
+                break;
+            }
+        }
+        if (matchingMinHeight == Integer.MIN_VALUE) {
+            matchingMinHeight = platform.minMinHeight;
+        }
+        comboBoxNewMinHeight.setSelectedItem(matchingMinHeight);
+        comboBoxNewMaxHeight.setModel(new DefaultComboBoxModel<>(stream(platform.maxHeights).boxed().toArray(Integer[]::new)));
+        comboBoxNewMaxHeight.setEnabled(platform.maxHeights.length > 1);
+        final int desiredMaxHeight = (platform.standardMaxHeight > world.getMaxHeight()) ? platform.standardMaxHeight : world.getMaxHeight();
+        int matchingMaxHeight = Integer.MIN_VALUE;
+        for (int maxHeight : platform.maxHeights) {
+            if (maxHeight >= desiredMaxHeight) {
+                matchingMaxHeight = maxHeight;
+                break;
+            }
+        }
+        if (matchingMaxHeight == Integer.MIN_VALUE) {
+            matchingMaxHeight = platform.maxMaxHeight;
+        }
+        comboBoxNewMaxHeight.setSelectedItem(matchingMaxHeight);
+        updateLabels();
+        pack();
+        setControlStates();
     }
-    
+
+    private void updateLabels() {
+        final HeightTransform transform = getTransform();
+        final int newLowestHeight = transform.transformHeight(lowestHeight), newHighestHeight = transform.transformHeight(highestHeight);
+        final int newMinHeight = (int) comboBoxNewMinHeight.getSelectedItem(), newMaxHeight = (int) comboBoxNewMaxHeight.getSelectedItem();
+        boolean activateWarning = false;
+        final StringBuilder label = new StringBuilder("<html>");
+        if (newLowestHeight < newMinHeight) {
+            label.append("<b><color=red>" + newLowestHeight + "</color></b>");
+            activateWarning = true;
+        } else {
+            label.append(newLowestHeight);
+        }
+        label.append(" - ");
+        if (newHighestHeight > newMaxHeight) {
+            label.append("<b><color=red>" + newHighestHeight + "</color></b>");
+            activateWarning = true;
+        } else {
+            label.append(newHighestHeight);
+        }
+        label.append("</html>");
+        labelNewExtents.setText(label.toString());
+        labelCutOffWarning.setVisible(activateWarning);
+        labelPlatformWarning.setVisible(! supportedPlatforms.contains(comboBoxPlatform.getSelectedItem()));
+    }
+
     private void setControlStates() {
-        int oldMaxHeight = world.getMaxHeight();
-        int newMaxHeight = (Integer) comboBoxNewHeight.getSelectedItem();
-        boolean translate = checkBoxTranslate.isSelected();
-        boolean scale = checkBoxScale.isSelected();
-        buttonOK.setEnabled((oldMaxHeight != newMaxHeight) || (translate && ((Integer) spinnerTranslateAmount.getValue() != 0)) || (scale && ((Integer) spinnerScaleAmount.getValue() != 100)));
+        final Platform oldPlatform = world.getPlatform(), newPlatform = (Platform) comboBoxPlatform.getSelectedItem();
+        final int oldMinHeight = world.getMinHeight(), newMinHeight = (Integer) comboBoxNewMinHeight.getSelectedItem();
+        final int oldMaxHeight = world.getMaxHeight(), newMaxHeight = (Integer) comboBoxNewMaxHeight.getSelectedItem();
+        final boolean translate = checkBoxTranslate.isSelected(), scale = checkBoxScale.isSelected();
+        buttonOK.setEnabled((oldPlatform != newPlatform) || (oldMinHeight != newMinHeight) || (oldMaxHeight != newMaxHeight) || (translate && ((Integer) spinnerTranslateAmount.getValue() != 0)) || (scale && ((Integer) spinnerScaleAmount.getValue() != 100)));
         spinnerTranslateAmount.setEnabled(translate);
         spinnerScaleAmount.setEnabled(scale);
-        if ((world.getPlatform() == DefaultPlugin.JAVA_MCREGION) && (newMaxHeight != DEFAULT_MAX_HEIGHT_MCREGION)) {
+        if ((newPlatform == DefaultPlugin.JAVA_MCREGION) && (newMaxHeight != DEFAULT_MAX_HEIGHT_MCREGION)) {
             labelWarning.setText("Only with mods!");
             labelWarning.setVisible(true);
-        } else if ((world.getPlatform() == JAVA_ANVIL_1_17) && (newMaxHeight > 320)) {
+        } else if (((newMinHeight < oldMinHeight) || (newMaxHeight > oldMaxHeight)) && (newPlatform.getAttribute(ATTRIBUTE_MC_VERSION).isAtLeast(V_1_17)) && ((newMaxHeight - newMinHeight) > 384)) {
             labelWarning.setText("May impact performance");
             labelWarning.setVisible(true);
         } else {
             labelWarning.setVisible(false);
         }
+        checkBoxAdjustLayers.setEnabled((newMinHeight != oldMinHeight) || (newMaxHeight != oldMaxHeight) || translate || scale);
     }
     
     private void doResize() {
-        int oldMaxHeight = world.getMaxHeight();
-        int newMaxHeight = (Integer) comboBoxNewHeight.getSelectedItem();
-        if ((newMaxHeight != oldMaxHeight) && (world.getImportedFrom() != null) && (JOptionPane.showConfirmDialog(this, "<html>This world was imported from an existing map!<br>Are you <i>sure</i> you want to change the height?<br>You will not be able to merge it back to the existing map any more!</html>", "Import from Existing Map", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION)) {
+        // TODO warn about platform incompatibility?
+        final Platform oldPlatform = world.getPlatform(), newPlatform = (Platform) comboBoxPlatform.getSelectedItem();
+        final int oldMaxHeight = world.getMaxHeight(), oldMinHeight = world.getMinHeight();
+        final int newMaxHeight = (Integer) comboBoxNewMaxHeight.getSelectedItem(), newMinHeight = (Integer) comboBoxNewMinHeight.getSelectedItem();
+        if (((newPlatform != oldPlatform) || (newMinHeight != oldMinHeight) || (newMaxHeight != oldMaxHeight)) && (world.getImportedFrom() != null) && (JOptionPane.showConfirmDialog(this, "<html>This world was imported from an existing map!<br>Are you <i>sure</i> you want to retarget it?<br>You will not be able to merge it back to the existing map any more!</html>", "Import from Existing Map", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION)) {
             return;
         }
+        changePlatform(newPlatform, checkBoxAdjustLayers.isSelected());
+        ProgressDialog.executeTask(this, new ProgressTask<Void>() {
+            @Override
+            public String getName() {
+                return "Changing world height";
+            }
+
+            @Override
+            public Void execute(ProgressReceiver progressReceiver) throws OperationCancelled {
+                WorldUtils.resizeWorld(world, getTransform(), newMinHeight, newMaxHeight, checkBoxAdjustLayers.isSelected(), progressReceiver);
+                return null;
+            }
+        }, NOT_CANCELABLE);
+        if (newMinHeight != oldMinHeight) {
+            world.addHistoryEntry(WORLD_MIN_HEIGHT_CHANGED, newMinHeight);
+        }
+        if (newMaxHeight != oldMaxHeight) {
+            world.addHistoryEntry(WORLD_MAX_HEIGHT_CHANGED, newMaxHeight);
+        }
+        if (checkBoxTranslate.isSelected()) {
+            for (Dimension dimension: world.getDimensions()) {
+                world.addHistoryEntry(WORLD_DIMENSION_SHIFTED_VERTICALLY, dimension.getName(), (Integer) spinnerTranslateAmount.getValue());
+            }
+        }
+    }
+
+    private void changePlatform(Platform newPlatform, boolean transformLayers) {
+        final Platform oldPlatform = world.getPlatform();
+        if (newPlatform != oldPlatform) {
+            world.setPlatform(newPlatform);
+            if (transformLayers) {
+                for (Dimension dim: world.getDimensions()) {
+                    if (dim.getGenerator() instanceof SuperflatGenerator) {
+                        // Patch some block names TODO are there more (that are commonly used in Superflat presets)?
+                        final SuperflatPreset settings = ((SuperflatGenerator) dim.getGenerator()).getSettings();
+                        // No idea how this could be null, but it has been observed in the wild:
+                        if (settings != null) {
+                            if (((oldPlatform == JAVA_MCREGION) || (oldPlatform == JAVA_ANVIL)) && (newPlatform != JAVA_MCREGION) && (newPlatform != JAVA_ANVIL)) {
+                                for (SuperflatPreset.Layer layer: settings.getLayers()) {
+                                    switch (layer.getMaterialName()) {
+                                        case "minecraft:grass":
+                                            layer.setMaterialName(MC_GRASS_BLOCK);
+                                            break;
+                                        case "minecraft:snow_layer":
+                                            layer.setMaterialName(MC_SNOW);
+                                            break;
+                                    }
+                                }
+                            } else if ((oldPlatform != JAVA_MCREGION) && (oldPlatform != JAVA_ANVIL) && ((newPlatform == JAVA_MCREGION) || (newPlatform == JAVA_ANVIL))) {
+                                for (SuperflatPreset.Layer layer: settings.getLayers()) {
+                                    switch (layer.getMaterialName()) {
+                                        case MC_GRASS_BLOCK:
+                                            layer.setMaterialName("minecraft:grass");
+                                            break;
+                                        case MC_SNOW:
+                                            layer.setMaterialName("minecraft:snow_layer");
+                                            break;
+                                    }
+                                }
+
+                            }
+                        }
+                    }
+                }
+            }
+            world.addHistoryEntry(WORLD_RETARGETED, oldPlatform.displayName, newPlatform.displayName);
+        }
+    }
+
+    private HeightTransform getTransform() {
         boolean scale = checkBoxScale.isSelected();
         int scaleAmount = (Integer) spinnerScaleAmount.getValue();
         boolean translate = checkBoxTranslate.isSelected();
         int translateAmount = (Integer) spinnerTranslateAmount.getValue();
-        HeightTransform transform = HeightTransform.get(scale ? scaleAmount : 100, translate ? translateAmount : 0);
-        resizeWorld(world, transform, newMaxHeight, this);
-        if (newMaxHeight != oldMaxHeight) {
-            world.addHistoryEntry(HistoryEntry.WORLD_MAX_HEIGHT_CHANGED, newMaxHeight);
-        }
-        if (translate) {
-            for (Dimension dimension: world.getDimensions()) {
-                world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_SHIFTED_VERTICALLY, dimension.getName(), translateAmount);
-            }
-        }
-    }
-    
-    static void resizeWorld(final World2 world, final HeightTransform transform, final int newMaxHeight, final Window parent) {
-        int tileCount = 0;
-        for (Dimension dim: world.getDimensions()) {
-            dim.setEventsInhibited(true);
-            tileCount += dim.getTiles().size();
-        }
-        final int finalTileCount = tileCount;
-        
-        try {
-            ProgressDialog.executeTask(parent, new ProgressTask<World2>() {
-                @Override
-                public String getName() {
-                    return "Changing world height";
-                }
-
-                @Override
-                public World2 execute(ProgressReceiver progressReceiver) throws OperationCancelled {
-                    int tileNo = 0;
-                    int oldMaxHeight = world.getMaxHeight();
-                    for (Dimension dim: world.getDimensions()) {
-                        dim.clearUndo();
-                        dim.getTiles().forEach(org.pepsoft.worldpainter.Tile::inhibitEvents);
-                        try {
-                            for (Tile tile: dim.getTiles()) {
-                                tile.setMaxHeight(newMaxHeight, transform);
-                                tileNo++;
-                                progressReceiver.setProgress((float) tileNo / finalTileCount);
-                            }
-                            dim.setMaxHeight(newMaxHeight);
-                            TileFactory tileFactory = dim.getTileFactory();
-                            if (tileFactory instanceof HeightMapTileFactory) {
-                                HeightMapTileFactory heightMapTileFactory = (HeightMapTileFactory) tileFactory;
-                                heightMapTileFactory.setMaxHeight(newMaxHeight, transform);
-                                float baseHeight = heightMapTileFactory.getBaseHeight();
-                                float transposeAmount = transform.transformHeight(baseHeight) - baseHeight;
-                                heightMapTileFactory.setHeightMap(HeightMapUtils.transposeHeightMap(heightMapTileFactory.getHeightMap(), transposeAmount));
-                            }
-                            ResourcesExporterSettings resourcesSettings = (ResourcesExporterSettings) dim.getLayerSettings(Resources.INSTANCE);
-                            if (resourcesSettings != null) {
-                                for (Material material: resourcesSettings.getMaterials()) {
-                                    int maxLevel = resourcesSettings.getMaxLevel(material);
-                                    if (maxLevel == (oldMaxHeight - 1)) {
-                                        maxLevel = newMaxHeight - 1;
-                                    } else if (maxLevel > 1) {
-                                        maxLevel = clamp(transform.transformHeight(maxLevel), newMaxHeight - 1);
-                                    }
-                                    resourcesSettings.setMaxLevel(material, maxLevel);
-                                    resourcesSettings.setMaxLevel(material, clamp(transform.transformHeight(resourcesSettings.getMaxLevel(material)), newMaxHeight - 1));
-                                }
-                            }
-                            dim.clearUndo();
-                            dim.armSavePoint();
-                        } finally {
-                            dim.getTiles().forEach(org.pepsoft.worldpainter.Tile::releaseEvents);
-                        }
-                    }
-                    world.setMaxHeight(newMaxHeight);
-                    return world;
-                }
-            }, NOT_CANCELABLE);
-        } finally {
-            for (Dimension dim: world.getDimensions()) {
-                dim.setEventsInhibited(false);
-            }
-        }
+        return HeightTransform.get(scale ? scaleAmount : 100, translate ? translateAmount : 0);
     }
 
-    private static int clamp(int level, int maxLevel) {
-        if (level < 0) {
-            return 0;
-        } else if (level > maxLevel) {
-            return maxLevel;
-        } else {
-            return level;
-        }
-    }
-    
     /** This method is called from within the constructor to
      * initialize the form.
      * WARNING: Do NOT modify this code. The content of this method is
@@ -194,8 +255,8 @@ public class ChangeHeightDialog extends WorldPainterDialog {
 
         jLabel1 = new javax.swing.JLabel();
         jLabel2 = new javax.swing.JLabel();
-        labelCurrentHeight = new javax.swing.JLabel();
-        comboBoxNewHeight = new javax.swing.JComboBox<>();
+        labelCurrentMaxHeight = new javax.swing.JLabel();
+        comboBoxNewMaxHeight = new javax.swing.JComboBox<>();
         buttonCancel = new javax.swing.JButton();
         buttonOK = new javax.swing.JButton();
         jLabel5 = new javax.swing.JLabel();
@@ -208,19 +269,33 @@ public class ChangeHeightDialog extends WorldPainterDialog {
         jLabel6 = new javax.swing.JLabel();
         jLabel8 = new javax.swing.JLabel();
         labelWarning = new javax.swing.JLabel();
+        jLabel3 = new javax.swing.JLabel();
+        comboBoxPlatform = new javax.swing.JComboBox<>();
+        labelCurrentMinHeight = new javax.swing.JLabel();
+        jLabel9 = new javax.swing.JLabel();
+        comboBoxNewMinHeight = new javax.swing.JComboBox<>();
+        jLabel10 = new javax.swing.JLabel();
+        checkBoxAdjustLayers = new javax.swing.JCheckBox();
+        labelCutOffWarning = new javax.swing.JLabel();
+        jLabel11 = new javax.swing.JLabel();
+        jLabel4 = new javax.swing.JLabel();
+        labelOldExtents = new javax.swing.JLabel();
+        jLabel12 = new javax.swing.JLabel();
+        labelNewExtents = new javax.swing.JLabel();
+        labelPlatformWarning = new javax.swing.JLabel();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
-        setTitle("Change Height");
+        setTitle("Change Map Format");
 
-        jLabel1.setText("Current height:");
+        jLabel1.setText("Current build limits:");
 
-        jLabel2.setText("New height:");
+        jLabel2.setText("New build limits:");
 
-        labelCurrentHeight.setText("jLabel3");
+        labelCurrentMaxHeight.setText("jLabel3");
 
-        comboBoxNewHeight.addActionListener(new java.awt.event.ActionListener() {
+        comboBoxNewMaxHeight.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
-                comboBoxNewHeightActionPerformed(evt);
+                comboBoxNewMaxHeightActionPerformed(evt);
             }
         });
 
@@ -268,6 +343,11 @@ public class ChangeHeightDialog extends WorldPainterDialog {
                 checkBoxScaleStateChanged(evt);
             }
         });
+        checkBoxScale.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxScaleActionPerformed(evt);
+            }
+        });
 
         checkBoxTranslate.setText("Shift");
         checkBoxTranslate.setToolTipText("<html>Shift the levels up or down by the specified number of blocks;<br>\nnegative means down; levels which are (still) too low or high will be cut off.</html>");
@@ -276,14 +356,60 @@ public class ChangeHeightDialog extends WorldPainterDialog {
                 checkBoxTranslateStateChanged(evt);
             }
         });
+        checkBoxTranslate.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                checkBoxTranslateActionPerformed(evt);
+            }
+        });
 
         jLabel6.setText("<html><b>Note:</b> this operation cannot be undone!</html>");
 
-        jLabel8.setText("(If both are enabled scale will be applied first, then shift.)");
+        jLabel8.setText("(If both are enabled scale");
 
         labelWarning.setFont(labelWarning.getFont().deriveFont(labelWarning.getFont().getStyle() | java.awt.Font.BOLD));
         labelWarning.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/error.png"))); // NOI18N
-        labelWarning.setText("Only with mods!");
+        labelWarning.setText("May impact performance");
+
+        jLabel3.setText("Map format:");
+
+        comboBoxPlatform.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                comboBoxPlatformActionPerformed(evt);
+            }
+        });
+
+        labelCurrentMinHeight.setText("jLabel4");
+
+        jLabel9.setText("Lower");
+
+        comboBoxNewMinHeight.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                comboBoxNewMinHeightActionPerformed(evt);
+            }
+        });
+
+        jLabel10.setText("Upper");
+
+        checkBoxAdjustLayers.setSelected(true);
+        checkBoxAdjustLayers.setText("Also apply to theme and layer settings");
+
+        labelCutOffWarning.setFont(labelCutOffWarning.getFont().deriveFont(labelCutOffWarning.getFont().getStyle() | java.awt.Font.BOLD));
+        labelCutOffWarning.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/error.png"))); // NOI18N
+        labelCutOffWarning.setText("Top and/or bottom cut off!");
+
+        jLabel11.setText("will be applied first, then shift.)");
+
+        jLabel4.setText("Current height range in use:");
+
+        labelOldExtents.setText("-999 - -999");
+
+        jLabel12.setText("New height range in use:");
+
+        labelNewExtents.setText("<html><b>-999 - 999</b></html>");
+
+        labelPlatformWarning.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/error.png"))); // NOI18N
+        labelPlatformWarning.setText("<html><b>Unknown format; export not possible</b></html>");
+        labelPlatformWarning.setToolTipText("<html>This map format is unknown and cannot be Exported. Most likely it<br>\nis supported by a plugin that is not installed or cannot be loaded.</html>");
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -293,39 +419,63 @@ public class ChangeHeightDialog extends WorldPainterDialog {
                 .addContainerGap()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                        .addGap(0, 0, Short.MAX_VALUE)
+                        .addComponent(labelCutOffWarning)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                         .addComponent(buttonOK)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(buttonCancel))
                     .addGroup(layout.createSequentialGroup()
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(checkBoxAdjustLayers)
                             .addGroup(layout.createSequentialGroup()
                                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                                     .addComponent(jLabel1)
                                     .addComponent(jLabel2))
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                    .addComponent(labelCurrentHeight)
+                                    .addComponent(jLabel9)
+                                    .addComponent(labelCurrentMinHeight)
+                                    .addComponent(comboBoxNewMinHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                                .addGap(18, 18, 18)
+                                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                                     .addGroup(layout.createSequentialGroup()
-                                        .addComponent(comboBoxNewHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                        .addGap(18, 18, 18)
-                                        .addComponent(labelWarning))))
+                                        .addComponent(comboBoxNewMaxHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                        .addComponent(labelWarning))
+                                    .addComponent(labelCurrentMaxHeight)
+                                    .addComponent(jLabel10)))
+                            .addComponent(jLabel5)
+                            .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                            .addGroup(layout.createSequentialGroup()
+                                .addComponent(jLabel3)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(comboBoxPlatform, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                             .addGroup(layout.createSequentialGroup()
                                 .addComponent(checkBoxTranslate)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                                     .addGroup(layout.createSequentialGroup()
-                                        .addComponent(spinnerTranslateAmount, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                        .addGap(0, 0, 0)
-                                        .addComponent(label))
-                                    .addGroup(layout.createSequentialGroup()
                                         .addComponent(spinnerScaleAmount, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                                         .addGap(0, 0, 0)
-                                        .addComponent(jLabel7))))
-                            .addComponent(jLabel5)
+                                        .addComponent(jLabel7))
+                                    .addGroup(layout.createSequentialGroup()
+                                        .addComponent(spinnerTranslateAmount, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                        .addGap(0, 0, 0)
+                                        .addComponent(label)))
+                                .addGap(18, 18, 18)
+                                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(jLabel11)
+                                    .addComponent(jLabel8)))
                             .addComponent(checkBoxScale)
-                            .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(jLabel8))
+                            .addGroup(layout.createSequentialGroup()
+                                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(jLabel4)
+                                    .addComponent(jLabel12))
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                                    .addComponent(labelNewExtents, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                    .addComponent(labelOldExtents)))
+                            .addComponent(labelPlatformWarning, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(0, 0, Short.MAX_VALUE)))
                 .addContainerGap())
         );
@@ -336,51 +486,83 @@ public class ChangeHeightDialog extends WorldPainterDialog {
                 .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addGap(18, 18, 18)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel3)
+                    .addComponent(comboBoxPlatform, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(labelPlatformWarning, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel9)
+                    .addComponent(jLabel10))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel1)
-                    .addComponent(labelCurrentHeight))
+                    .addComponent(labelCurrentMaxHeight)
+                    .addComponent(labelCurrentMinHeight))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel2)
-                    .addComponent(comboBoxNewHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(labelWarning))
+                    .addComponent(comboBoxNewMaxHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(labelWarning)
+                    .addComponent(comboBoxNewMinHeight, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addGap(18, 18, 18)
                 .addComponent(jLabel5)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(checkBoxScale)
                     .addComponent(spinnerScaleAmount, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel7))
+                    .addComponent(jLabel7)
+                    .addComponent(jLabel8))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(checkBoxTranslate)
                     .addComponent(spinnerTranslateAmount, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(label))
+                    .addComponent(label)
+                    .addComponent(jLabel11))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(jLabel8)
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel4)
+                    .addComponent(labelOldExtents))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel12)
+                    .addComponent(labelNewExtents, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addGap(18, 18, 18)
+                .addComponent(checkBoxAdjustLayers)
                 .addGap(18, 18, Short.MAX_VALUE)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(buttonCancel)
-                    .addComponent(buttonOK))
+                    .addComponent(buttonOK)
+                    .addComponent(labelCutOffWarning))
                 .addContainerGap())
         );
 
         pack();
     }// </editor-fold>//GEN-END:initComponents
 
-    private void comboBoxNewHeightActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxNewHeightActionPerformed
-        calculateDefaults();
+    private void comboBoxNewMaxHeightActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxNewMaxHeightActionPerformed
+        if (initialising) {
+            return;
+        }
+        updateLabels();
         setControlStates();
-    }//GEN-LAST:event_comboBoxNewHeightActionPerformed
+    }//GEN-LAST:event_comboBoxNewMaxHeightActionPerformed
 
     private void buttonCancelActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonCancelActionPerformed
         cancel();
     }//GEN-LAST:event_buttonCancelActionPerformed
 
     private void checkBoxScaleStateChanged(javax.swing.event.ChangeEvent evt) {//GEN-FIRST:event_checkBoxScaleStateChanged
+        if (initialising) {
+            return;
+        }
         setControlStates();
     }//GEN-LAST:event_checkBoxScaleStateChanged
 
     private void checkBoxTranslateStateChanged(javax.swing.event.ChangeEvent evt) {//GEN-FIRST:event_checkBoxTranslateStateChanged
+        if (initialising) {
+            return;
+        }
         setControlStates();
     }//GEN-LAST:event_checkBoxTranslateStateChanged
 
@@ -390,33 +572,87 @@ public class ChangeHeightDialog extends WorldPainterDialog {
     }//GEN-LAST:event_buttonOKActionPerformed
 
     private void spinnerScaleAmountStateChanged(javax.swing.event.ChangeEvent evt) {//GEN-FIRST:event_spinnerScaleAmountStateChanged
+        if (initialising) {
+            return;
+        }
+        updateLabels();
         setControlStates();
     }//GEN-LAST:event_spinnerScaleAmountStateChanged
 
     private void spinnerTranslateAmountStateChanged(javax.swing.event.ChangeEvent evt) {//GEN-FIRST:event_spinnerTranslateAmountStateChanged
+        if (initialising) {
+            return;
+        }
+        updateLabels();
         setControlStates();
     }//GEN-LAST:event_spinnerTranslateAmountStateChanged
+
+    private void comboBoxPlatformActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxPlatformActionPerformed
+        if (initialising) {
+            return;
+        }
+        setPlatform((Platform) comboBoxPlatform.getSelectedItem());
+    }//GEN-LAST:event_comboBoxPlatformActionPerformed
+
+    private void comboBoxNewMinHeightActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxNewMinHeightActionPerformed
+        if (initialising) {
+            return;
+        }
+        updateLabels();
+        setControlStates();
+    }//GEN-LAST:event_comboBoxNewMinHeightActionPerformed
+
+    private void checkBoxScaleActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxScaleActionPerformed
+        if (initialising) {
+            return;
+        }
+        updateLabels();
+    }//GEN-LAST:event_checkBoxScaleActionPerformed
+
+    private void checkBoxTranslateActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_checkBoxTranslateActionPerformed
+        if (initialising) {
+            return;
+        }
+        updateLabels();
+    }//GEN-LAST:event_checkBoxTranslateActionPerformed
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton buttonCancel;
     private javax.swing.JButton buttonOK;
+    private javax.swing.JCheckBox checkBoxAdjustLayers;
     private javax.swing.JCheckBox checkBoxScale;
     private javax.swing.JCheckBox checkBoxTranslate;
-    private javax.swing.JComboBox<Integer> comboBoxNewHeight;
+    private javax.swing.JComboBox<Integer> comboBoxNewMaxHeight;
+    private javax.swing.JComboBox<Integer> comboBoxNewMinHeight;
+    private javax.swing.JComboBox<Platform> comboBoxPlatform;
     private javax.swing.JLabel jLabel1;
+    private javax.swing.JLabel jLabel10;
+    private javax.swing.JLabel jLabel11;
+    private javax.swing.JLabel jLabel12;
     private javax.swing.JLabel jLabel2;
+    private javax.swing.JLabel jLabel3;
+    private javax.swing.JLabel jLabel4;
     private javax.swing.JLabel jLabel5;
     private javax.swing.JLabel jLabel6;
     private javax.swing.JLabel jLabel7;
     private javax.swing.JLabel jLabel8;
+    private javax.swing.JLabel jLabel9;
     private javax.swing.JLabel label;
-    private javax.swing.JLabel labelCurrentHeight;
+    private javax.swing.JLabel labelCurrentMaxHeight;
+    private javax.swing.JLabel labelCurrentMinHeight;
+    private javax.swing.JLabel labelCutOffWarning;
+    private javax.swing.JLabel labelNewExtents;
+    private javax.swing.JLabel labelOldExtents;
+    private javax.swing.JLabel labelPlatformWarning;
     private javax.swing.JLabel labelWarning;
     private javax.swing.JSpinner spinnerScaleAmount;
     private javax.swing.JSpinner spinnerTranslateAmount;
     // End of variables declaration//GEN-END:variables
 
     private final World2 world;
+    private final int lowestHeight, highestHeight;
+    private final List<Platform> supportedPlatforms = new ArrayList<>();
+    private boolean initialising = true;
 
     private static final long serialVersionUID = 1L;
 }

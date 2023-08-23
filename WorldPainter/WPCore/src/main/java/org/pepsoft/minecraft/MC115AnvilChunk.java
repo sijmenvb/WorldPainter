@@ -7,8 +7,8 @@ package org.pepsoft.minecraft;
 
 import com.google.common.collect.ImmutableMap;
 import org.jnbt.*;
-import org.pepsoft.minecraft.MC115AnvilChunk.Section.IncompleteSectionException;
-import org.pepsoft.worldpainter.exception.WPRuntimeException;
+import org.pepsoft.util.PackedArrayCube;
+import org.pepsoft.util.mdc.MDCCapturingRuntimeException;
 import org.pepsoft.worldpainter.exporting.MinecraftWorld;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,30 +20,32 @@ import java.util.*;
 import static java.util.stream.Collectors.toList;
 import static org.pepsoft.minecraft.Constants.*;
 import static org.pepsoft.minecraft.Material.AIR;
-import static org.pepsoft.minecraft.Material.WATERLOGGED;
+import static org.pepsoft.minecraft.Material.LEVEL;
+import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_PLAINS;
 
 /**
- * An "Anvil" chunk for Minecraft 1.15 and higher.
+ * An "Anvil" chunk for Minecraft 1.15 - 1.17.1.
  * 
  * @author pepijn
  */
-public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, MinecraftWorld {
+public final class MC115AnvilChunk extends MCNamedBlocksChunk implements SectionedChunk, MinecraftWorld {
     public MC115AnvilChunk(int xPos, int zPos, int maxHeight) {
         super(new CompoundTag(TAG_LEVEL, new HashMap<>()));
         this.xPos = xPos;
         this.zPos = zPos;
         this.maxHeight = maxHeight;
 
+        inputDataVersion = null;
         sections = new Section[maxHeight >> 4];
         heightMaps = new HashMap<>();
         entities = new ArrayList<>();
         tileEntities = new ArrayList<>();
         readOnly = false;
-        lightPopulated = true;
+        lightOn = true;
 
         setTerrainPopulated(true);
 
-        debugChunk = (xPos == (debugWorldX >> 4)) && (zPos == (debugWorldZ >> 4));
+//        debugChunk = (xPos == (debugWorldX >> 4)) && (zPos == (debugWorldZ >> 4));
     }
 
     public MC115AnvilChunk(CompoundTag tag, int maxHeight) {
@@ -57,6 +59,7 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
             this.maxHeight = maxHeight;
             this.readOnly = readOnly;
 
+            inputDataVersion = ((IntTag) tag.getTag(TAG_DATA_VERSION)).getValue();
             sections = new Section[maxHeight >> 4];
             List<CompoundTag> sectionTags = getList(TAG_SECTIONS);
             // MC 1.14 has chunks without any sections; we're not sure yet if
@@ -67,32 +70,34 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
                         Section section = new Section(sectionTag);
                         if ((section.level >= 0) && (section.level < sections.length)) {
                             sections[section.level] = section;
+                            if ((section.skyLight != null) && (section.level > highestSectionWithSkylight)) {
+                                highestSectionWithSkylight = section.level;
+                            }
                         } else if (! section.isEmpty()) {
                             logger.warn("Ignoring non-empty out of bounds chunk section @ " + getxPos() + "," + section.level + "," + getzPos());
                         }
                     } catch (IncompleteSectionException e) {
                         // Ignore sections that don't have blocks
                         if (logger.isDebugEnabled()) {
-                            logger.debug("Block states and/or palette missing from section @ y=" + ((ByteTag) sectionTag.getTag(TAG_Y)).getValue());
+                            logger.debug("Ignoring chunk section with missing data @ " + getxPos() + "," + ((ByteTag) sectionTag.getTag(TAG_Y)).getValue() + "," + getzPos());
                         }
                     }
                 }
             }
             Tag biomesTag = getTag(TAG_BIOMES);
             if (biomesTag instanceof IntArrayTag) {
-                biomes = getIntArray(TAG_BIOMES);
+                biomes3d = getIntArray(TAG_BIOMES);
             } else if (biomesTag instanceof ByteArrayTag) {
                 byte[] biomesArray = ((ByteArrayTag) biomesTag).getValue();
-                biomes = new int[biomesArray.length];
+                biomes3d = new int[biomesArray.length];
                 for (int i = 0; i < biomesArray.length; i++) {
-                    biomes[i] = biomesArray[i] & 0xff;
+                    biomes3d[i] = biomesArray[i] & 0xff;
                 }
             }
-            if (biomes != null) {
-                fixNegativeValues(biomes);
-                if (biomes.length >= 1024) {
-                    biomes3d = biomes;
-                    biomes = null;
+            if (biomes3d != null) {
+                fixNegativeValues(biomes3d);
+                if (biomes3d.length == 256) {
+                    biomes3d = migrate2DBiomesTo3D(biomes3d);
                 }
             }
             heightMaps = new HashMap<>();
@@ -116,18 +121,18 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
             } else {
                 tileEntities = new ArrayList<>();
             }
-            // TODO: last update is ignored, is that correct?
+            lastUpdate = getLong(TAG_LAST_UPDATE);
             xPos = getInt(TAG_X_POS_);
             zPos = getInt(TAG_Z_POS_);
             status = getString(TAG_STATUS).intern();
-            lightPopulated = getBoolean(TAG_LIGHT_POPULATED);
+            lightOn = getBoolean(TAG_IS_LIGHT_ON_);
             inhabitedTime = getLong(TAG_INHABITED_TIME);
             if (containsTag(TAG_LIQUID_TICKS)) {
                 liquidTicks.addAll(getList(TAG_LIQUID_TICKS));
             }
 
-            debugChunk = (xPos == (debugWorldX >> 4)) && (zPos == (debugWorldZ >> 4));
-        } catch (Section.ExceptionParsingSectionException e) {
+//            debugChunk = (xPos == (debugWorldX >> 4)) && (zPos == (debugWorldZ >> 4));
+        } catch (ExceptionParsingSectionException e) {
             // Already reported; just rethrow
             throw e;
         } catch (RuntimeException e) {
@@ -136,8 +141,40 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         }
     }
 
+    private int[] migrate2DBiomesTo3D(int[] biomes2d) {
+        final int[] biomes3d = new int[1024];
+        for (int x = 0; x < 4; x++) {
+            for (int z = 0; z < 4; z++) {
+                final int biome = determineMostPrevalentBiome(biomes2d, x, z);
+                for (int y = 0; y < 64; y++) {
+                    biomes3d[(y << 4) | (z << 2) | x] = biome;
+                }
+            }
+        }
+        return biomes3d;
+    }
+
+    private int determineMostPrevalentBiome(int[] biomes, int x, int z) {
+        final int[] biomeBuckets = BIOME_BUCKETS_HOLDER.get();
+        Arrays.fill(biomeBuckets, 0);
+        for (int dx = 0; dx < 4; dx++) {
+            for (int dz = 0; dz < 4; dz++) {
+                final int biome = biomes[(x << 2) + dx + ((z << 2) + dz) * 16];
+                biomeBuckets[biome]++;
+            }
+        }
+        int mostPrevalentBiome = 0, mostPrevalentBiomeCount = 0;
+        for (int i = 0; i < biomeBuckets.length; i++) {
+            if (biomeBuckets[i] > mostPrevalentBiomeCount) {
+                mostPrevalentBiome = i;
+                mostPrevalentBiomeCount = biomeBuckets[i];
+            }
+        }
+        return mostPrevalentBiome;
+    }
+
     public boolean isSectionPresent(int y) {
-        return sections[y] != null;
+        return (y >= 0) && (y < sections.length) && (sections[y] != null);
     }
 
     public Section[] getSections() {
@@ -156,49 +193,68 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         return heightMaps;
     }
 
+    public Integer getInputDataVersion() {
+        return inputDataVersion;
+    }
+
     private void addLiquidTick(int x, int y, int z) {
         // Liquid ticks are in world coordinates for some reason
         x = (xPos << 4) | x;
         z = (zPos << 4) | z;
-        for (CompoundTag liquidTick: liquidTicks) {
+        String id;
+        Material material = getMaterial(x & 0xf, y, z & 0xf);
+        if (material.containsWater()) {
+            id = MC_WATER;
+        } else if (material.isNamed(MC_WATER)) {
+            // Water with level 0 (stationary water) already matched in the previous branch
+            id = MC_FLOWING_WATER;
+        } else if (material.isNamed(MC_LAVA)) {
+            id = (material.getProperty(LEVEL) == 0) ? MC_LAVA : MC_FLOWING_LAVA;
+        } else {
+            id = material.name;
+        }
+        for (Iterator<CompoundTag> i = liquidTicks.iterator(); i.hasNext(); ) {
+            CompoundTag liquidTick = i.next();
             if ((x == ((IntTag) liquidTick.getTag(TAG_X_)).getValue())
                     && (y == ((IntTag) liquidTick.getTag(TAG_Y_)).getValue())
                     && (z == ((IntTag) liquidTick.getTag(TAG_Z_)).getValue())) {
-                // There is already a liquid tick scheduled for this block
-                return;
+                final String existingId = ((StringTag) liquidTick.getTag(TAG_I_)).getValue();
+                if (id.equals(existingId)) {
+                    // There is already a liquid tick scheduled for this block
+                    return;
+                } else {
+                    // There is already a liquid tick scheduled for this block, but it's for the wrong ID
+                    logger.warn("Replacing liquid tick for type {} with type {} @ {},{},{}", existingId, id, x, y, z);
+                    i.remove();
+                    break;
+                }
             }
-        }
-        String id;
-        Material material = getMaterial(x & 0xf, y, z & 0xf);
-        if (material.isNamed(MC_WATER) || material.is(WATERLOGGED)) {
-            id = MC_WATER;
-        } else {
-            id = material.name;
         }
         liquidTicks.add(new CompoundTag("", ImmutableMap.<String, Tag>builder()
                 .put(TAG_X_, new IntTag(TAG_X_, x))
                 .put(TAG_Y_, new IntTag(TAG_Y_, y))
                 .put(TAG_Z_, new IntTag(TAG_Z_, z))
                 .put(TAG_I_, new StringTag(TAG_I_, id))
-                .put(TAG_P_, new IntTag(TAG_P_, 0))
+                .put(TAG_P_, new IntTag(TAG_P_, 0)) // TODO: what does this do?
                 .put(TAG_T_, new IntTag(TAG_T_, RANDOM.nextInt(30) + 1)).build()));
     }
 
-    public static void setDebugColumn(int worldX, int worldZ) {
-        debugWorldX = worldX;
-        debugXInChunk = debugWorldX & 0xf;
-        debugWorldZ = worldZ;
-        debugZInChunk = debugWorldZ & 0xf;
-    }
+//    public static void setDebugColumn(int worldX, int worldZ) {
+//        debugWorldX = worldX;
+//        debugXInChunk = debugWorldX & 0xf;
+//        debugWorldZ = worldZ;
+//        debugZInChunk = debugWorldZ & 0xf;
+//    }
 
     // Chunk
 
     @Override
     public CompoundTag toNBT() {
+        normalise();
         if (sections != null) {
             List<CompoundTag> sectionTags = new ArrayList<>(maxHeight >> 4);
             for (Section section: sections) {
-                if ((section != null) && (!section.isEmpty())) {
+                if ((section != null) && (! section.isEmpty())) {
                     sectionTags.add(section.toNBT());
                 }
             }
@@ -206,8 +262,6 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         }
         if (biomes3d != null) {
             setIntArray(TAG_BIOMES, biomes3d);
-        } else if (biomes != null) {
-            setIntArray(TAG_BIOMES, biomes);
         }
         // TODO heightMaps
         List<CompoundTag> entityTags = new ArrayList<>(entities.size());
@@ -216,17 +270,17 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         List<CompoundTag> tileEntityTags = new ArrayList<>(entities.size());
         tileEntities.stream().map(TileEntity::toNBT).forEach(tileEntityTags::add);
         setList(TAG_TILE_ENTITIES, CompoundTag.class, tileEntityTags);
-        setLong(TAG_LAST_UPDATE, System.currentTimeMillis()); // TODO: is this correct?
+        setLong(TAG_LAST_UPDATE, lastUpdate);
         setInt(TAG_X_POS_, xPos);
         setInt(TAG_Z_POS_, zPos);
         setString(TAG_STATUS, status);
-        setBoolean(TAG_LIGHT_POPULATED, lightPopulated);
+        setBoolean(TAG_IS_LIGHT_ON_, lightOn);
         setLong(TAG_INHABITED_TIME, inhabitedTime);
         setList(TAG_LIQUID_TICKS, CompoundTag.class, liquidTicks);
 
         CompoundTag tag = new CompoundTag("", Collections.emptyMap());
         tag.setTag(TAG_LEVEL, super.toNBT());
-        tag.setTag(TAG_DATA_VERSION, new IntTag(TAG_DATA_VERSION, DATA_VERSION_MC_1_15));
+        tag.setTag(TAG_DATA_VERSION, new IntTag(TAG_DATA_VERSION, (inputDataVersion != null) ? inputDataVersion : DATA_VERSION_MC_1_15_2));
         return tag;
     }
 
@@ -291,9 +345,9 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
 
     @Override
     public int getSkyLightLevel(int x, int y, int z) {
-        int level = y >> 4;
-        if (sections[level] == null) {
-            return 15;
+        final int level = y >> 4;
+        if ((z < 0) || (z >= maxHeight) || (sections[level] == null) || (sections[level].skyLight == null)) {
+            return (level > highestSectionWithSkylight) ? 15 : 0;
         } else {
             return getDataByte(sections[level].skyLight, x, y, z);
         }
@@ -307,19 +361,30 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         int level = y >> 4;
         Section section = sections[level];
         if (section == null) {
-            if (skyLightLevel == 15) {
+            if (skyLightLevel == ((level > highestSectionWithSkylight) ? 15 : 0)) {
                 return;
             }
             section = new Section((byte) level);
             sections[level] = section;
+        }
+        if (section.skyLight == null) {
+            if (skyLightLevel == ((level > highestSectionWithSkylight) ? 15 : 0)) {
+                return;
+            }
+            section.skyLight = new byte[128 * 16];
+            if (level > highestSectionWithSkylight) {
+                // This means we would have previously reported the light as all 0xf, so initialise it to that
+                Arrays.fill(section.skyLight, (byte) 0xff);
+                highestSectionWithSkylight = level;
+            }
         }
         setDataByte(section.skyLight, x, y, z, skyLightLevel);
     }
 
     @Override
     public int getBlockLightLevel(int x, int y, int z) {
-        int level = y >> 4;
-        if (sections[level] == null) {
+        final int level = y >> 4;
+        if ((z < 0) || (z >= maxHeight) || (sections[level] == null) || (sections[level].blockLight == null)) {
             return 0;
         } else {
             return getDataByte(sections[level].blockLight, x, y, z);
@@ -340,13 +405,19 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
             section = new Section((byte) level);
             sections[level] = section;
         }
+        if (section.blockLight == null) {
+            if (blockLightLevel == 0) {
+                return;
+            }
+            section.blockLight = new byte[128 * 16];
+        }
         setDataByte(section.blockLight, x, y, z, blockLightLevel);
     }
 
     @Override
     public int getHeight(int x, int z) {
         // TODO: how necessary is this? Will Minecraft create these if they're missing?
-        return 62;
+        return DEFAULT_WATER_LEVEL;
     }
 
     @Override
@@ -358,8 +429,8 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     }
 
     @Override
-    public boolean isBiomesAvailable() {
-        return (biomes != null) && (biomes.length > 0);
+    public boolean is3DBiomesSupported() {
+        return true;
     }
 
     public boolean is3DBiomesAvailable() {
@@ -367,26 +438,9 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     }
 
     @Override
-    public int getBiome(int x, int z) {
-        return biomes[x + z * 16];
-    }
-    
-    @Override
-    public void setBiome(int x, int z, int biome) {
-        if (readOnly) {
-            return;
-        }
-        if (biomes3d != null) {
-            throw new IllegalStateException("This chunk already has 3D biomes");
-        } else if (biomes == null) {
-            biomes = new int[256];
-        }
-        biomes[x + z * 16] = biome;
-    }
-
-    @Override
     public int get3DBiome(int x, int y, int z) {
-        return biomes3d[x + z * 4 + y * 16];
+        final int index = x + z * 4 + y * 16;
+        return ((index >= 0) && (index < biomes3d.length)) ? biomes3d[index] : BIOME_PLAINS;
     }
 
     @Override
@@ -394,9 +448,7 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         if (readOnly) {
             return;
         }
-        if (biomes != null) {
-            throw new IllegalStateException("This chunk already has 2D biomes");
-        } else if (biomes3d == null) {
+        if (biomes3d == null) {
             biomes3d = new int[16 * (maxHeight / 4)];
         }
         biomes3d[x + z * 4 + y * 16] = biome;
@@ -422,11 +474,10 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         if (readOnly) {
             return;
         }
-        // TODO: this is a guess, is this useful?
         if (terrainPopulated) {
             status = STATUS_FULL;
         } else {
-            throw new UnsupportedOperationException("Terrain population not supported for Minecraft 1.15+");
+            throw new UnsupportedOperationException("Terrain population not supported for Minecraft 1.15 - 1.17");
         }
     }
 
@@ -442,24 +493,27 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
 
     @Override
     public Material getMaterial(int x, int y, int z) {
-        Section section = sections[y >> 4];
+        if ((z < 0) || (z >= maxHeight)) {
+            return AIR;
+        }
+        final Section section = sections[y >> 4];
         if (section == null) {
             return AIR;
         } else {
-            Material material = section.materials[blockOffset(x, y, z)];
+            final Material material = section.materials.getValue(x, z, y & 0xf);
             return (material != null) ? material : AIR;
         }
     }
 
     @Override
     public void setMaterial(int x, int y, int z, Material material) {
-        if (debugChunk && logger.isDebugEnabled() && (x == debugXInChunk) && (z == debugZInChunk)) {
-            logger.debug("Setting material @ {},{},{} to {}", x, y, z, material, new Throwable("Stacktrace"));
-        }
+//        if (debugChunk && logger.isDebugEnabled() && (x == debugXInChunk) && (z == debugZInChunk)) {
+//            logger.debug("Setting material @ {},{},{} to {}", x, y, z, material, new Throwable("Stacktrace"));
+//        }
         if (readOnly) {
             return;
         }
-        int level = y >> 4;
+        final int level = y >> 4;
         Section section = sections[level];
         if (section == null) {
             if (material == AIR) {
@@ -468,7 +522,7 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
             section = new Section((byte) level);
             sections[level] = section;
         }
-        section.materials[blockOffset(x, y, z)] = (material == AIR) ? null : material;
+        section.materials.setValue(x, z, y & 0xf, (material == AIR) ? null : material);
     }
 
     @Override
@@ -478,12 +532,12 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
 
     @Override
     public boolean isLightPopulated() {
-        return lightPopulated;
+        return lightOn;
     }
 
     @Override
-    public void setLightPopulated(boolean lightPopulated) {
-        this.lightPopulated = lightPopulated;
+    public void setLightPopulated(boolean lightOn) {
+        this.lightOn = lightOn;
     }
 
     @Override
@@ -500,11 +554,10 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     public int getHighestNonAirBlock(int x, int z) {
         for (int yy = sections.length - 1; yy >= 0; yy--) {
             if (sections[yy] != null) {
-                final Material[] materials = sections[yy].materials;
-                final int base = blockOffset(x, 0, z);
-                for (int i = blockOffset(x, 15, z); i >= base; i -= 256) {
-                    if ((materials[i] != null) && (materials[i] != AIR)) {
-                        return (yy << 4) | ((i - base) >> 8);
+                final PackedArrayCube<Material> materials = sections[yy].materials;
+                for (int y = 15; y >= 0; y--) {
+                    if ((materials.getValue(x, z, y) != null) && (materials.getValue(x, z, y) != AIR)) {
+                        return (yy << 4) | y;
                     }
                 }
             }
@@ -516,10 +569,14 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     public int getHighestNonAirBlock() {
         for (int yy = sections.length - 1; yy >= 0; yy--) {
             if (sections[yy] != null) {
-                final Material[] materials = sections[yy].materials;
-                for (int i = materials.length - 1; i >= 0; i--) {
-                    if ((materials[i] != null) && (materials[i] != AIR)) {
-                        return (yy << 4) | (i >> 8);
+                final PackedArrayCube<Material> materials = sections[yy].materials;
+                for (int y = 15; y >= 0; y--) {
+                    for (int x = 0; x < 16; x++) {
+                        for (int z = 0; z < 16; z++) {
+                            if ((materials.getValue(x, z, y) != null) && (materials.getValue(x, z, y) != AIR)) {
+                                return (yy << 4) | y;
+                            }
+                        }
                     }
                 }
             }
@@ -589,15 +646,8 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     }
 
     @Override
-    public void addEntity(int x, int y, int height, Entity entity) {
-        entity = (Entity) entity.clone();
-        entity.setPos(new double[] {x, height, y});
-        getEntities().add(entity);
-    }
-
-    @Override
     public void addEntity(double x, double y, double height, Entity entity) {
-        entity = (Entity) entity.clone();
+        entity = entity.clone();
         entity.setPos(new double[] {x, height, y});
         getEntities().add(entity);
     }
@@ -708,7 +758,7 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     }
 
     private void writeObject(ObjectOutputStream out) throws IOException {
-        throw new IOException("MC114AnvilChunk is not serializable");
+        throw new IOException("MC115AnvilChunk is not serializable");
     }
 
     static int blockOffset(int x, int y, int z) {
@@ -718,104 +768,43 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
     public final boolean readOnly;
 
     final Section[] sections;
-    final int xPos, zPos;
-    int[] biomes, biomes3d;
-    boolean lightPopulated; // TODO: is this still used by MC 1.15?
+    final int xPos, zPos, maxHeight;
     final List<Entity> entities;
     final List<TileEntity> tileEntities;
-    final int maxHeight;
-    long inhabitedTime;
-    String status;
     final Map<String, long[]> heightMaps;
     final List<CompoundTag> liquidTicks = new ArrayList<>();
-    final boolean debugChunk;
+//    final boolean debugChunk;
+    final Integer inputDataVersion;
+    int highestSectionWithSkylight = Integer.MIN_VALUE;
+    int[] biomes3d;
+    boolean lightOn;
+    long inhabitedTime, lastUpdate;
+    String status;
 
-    private static long debugWorldX, debugWorldZ, debugXInChunk, debugZInChunk;
+//    private static long debugWorldX, debugWorldZ, debugXInChunk, debugZInChunk;
 
     private static final Random RANDOM = new Random();
+    private static final ThreadLocal<int[]> BIOME_BUCKETS_HOLDER = ThreadLocal.withInitial(() -> new int[256]);
     private static final Logger logger = LoggerFactory.getLogger(MC115AnvilChunk.class);
 
-    public static class Section extends AbstractNBTItem implements SectionedChunk.Section {
+    public class Section extends AbstractNBTItem implements SectionedChunk.Section {
         Section(CompoundTag tag) {
             super(tag);
             try {
                 level = getByte(TAG_Y);
-                materials = new Material[4096];
-                long[] blockStates = getLongArray(TAG_BLOCK_STATES);
-                List<CompoundTag> paletteList = getList(TAG_PALETTE);
+                final long[] blockStates = getLongArray(TAG_BLOCK_STATES);
+                final List<CompoundTag> paletteList = getList(TAG_PALETTE);
                 if ((blockStates != null) && (paletteList != null)) {
                     final Material[] palette = new Material[paletteList.size()];
                     for (int i = 0; i < palette.length; i++) {
                         palette[i] = getMaterial(paletteList, i);
                     }
-                    final int wordSize = Math.max(4, (int) Math.ceil(Math.log(palette.length) / Math.log(2)));
-                    final int blockStateArrayLengthInBytes = blockStates.length * 8;
-                    final int expectedPackedBlockStateArrayLengthInBytes = wordSize * 512;
-                    if (logger.isTraceEnabled()) {
-                        logger.trace("Palette size: {}; block states array length in bytes: {}; inferred block state word size: {}; length in bytes of 4096 words: {}", palette.length, blockStateArrayLengthInBytes, wordSize, expectedPackedBlockStateArrayLengthInBytes);
-                    }
-                    if (wordSize == 4) {
-                        // Optimised special case
-                        for (int w = 0; w < 4096; w += 16) {
-                            final long data = blockStates[w >> 4];
-                            materials[w] = palette[(int) (data & 0xf)];
-                            materials[w + 1] = palette[(int) ((data & 0xf0) >> 4)];
-                            materials[w + 2] = palette[(int) ((data & 0xf00) >> 8)];
-                            materials[w + 3] = palette[(int) ((data & 0xf000) >> 12)];
-                            materials[w + 4] = palette[(int) ((data & 0xf0000) >> 16)];
-                            materials[w + 5] = palette[(int) ((data & 0xf00000) >> 20)];
-                            materials[w + 6] = palette[(int) ((data & 0xf000000) >> 24)];
-                            materials[w + 7] = palette[(int) ((data & 0xf0000000L) >> 28)];
-                            materials[w + 8] = palette[(int) ((data & 0xf00000000L) >> 32)];
-                            materials[w + 9] = palette[(int) ((data & 0xf000000000L) >> 36)];
-                            materials[w + 10] = palette[(int) ((data & 0xf0000000000L) >> 40)];
-                            materials[w + 11] = palette[(int) ((data & 0xf00000000000L) >> 44)];
-                            materials[w + 12] = palette[(int) ((data & 0xf000000000000L) >> 48)];
-                            materials[w + 13] = palette[(int) ((data & 0xf0000000000000L) >> 52)];
-                            materials[w + 14] = palette[(int) ((data & 0xf00000000000000L) >> 56)];
-                            materials[w + 15] = palette[(int) ((data & 0xf000000000000000L) >>> 60)];
-                        }
-                    } else if (blockStateArrayLengthInBytes != expectedPackedBlockStateArrayLengthInBytes) {
-                        // A weird format where the block states are packed per
-                        // long (leaving bits unused). Unpack each long individually
-                        final long mask = (long) (Math.pow(2, wordSize)) - 1;
-                        final int bitsInUse = (64 / wordSize) * wordSize;
-                        int materialIndex = 0;
-                        outer:
-                        for (long packedStates: blockStates) {
-                            for (int offset = 0; offset < bitsInUse; offset += wordSize) {
-                                materials[materialIndex++] = palette[(int) ((packedStates & (mask << offset)) >>> offset)];
-                                if (materialIndex >= 4096) {
-                                    // The last long was not fully used
-                                    break outer;
-                                }
-                            }
-                        }
-                    } else {
-                        final BitSet bitSet = BitSet.valueOf(blockStates);
-                        for (int w = 0; w < 4096; w++) {
-                            final int wordOffset = w * wordSize;
-                            int index = 0;
-                            for (int b = 0; b < wordSize; b++) {
-                                index |= bitSet.get(wordOffset + b) ? 1 << b : 0;
-                            }
-                            materials[w] = palette[index];
-                        }
-                    }
+                    materials = new PackedArrayCube<>(16, blockStates, palette, 4, inputDataVersion <= DATA_VERSION_MC_1_15_2, Material.class);
                 } else {
                     throw new IncompleteSectionException();
                 }
-                byte[] skyLightBytes = getByteArray(TAG_SKY_LIGHT);
-                if (skyLightBytes == null) {
-                    skyLightBytes = new byte[128 * 16];
-                    Arrays.fill(skyLightBytes, (byte) 0xff);
-                }
-                skyLight = skyLightBytes;
-                byte[] blockLightBytes = getByteArray(TAG_BLOCK_LIGHT);
-                if (blockLightBytes == null) {
-                    blockLightBytes = new byte[128 * 16];
-                }
-                blockLight = blockLightBytes;
+                skyLight = getByteArray(TAG_SKY_LIGHT);
+                blockLight = getByteArray(TAG_BLOCK_LIGHT);
             } catch (IncompleteSectionException e) {
                 // Just propagate it
                 throw e;
@@ -828,36 +817,20 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         Section(byte level) {
             super(new CompoundTag("", new HashMap<>()));
             this.level = level;
-            materials = new Material[4096];
-            skyLight = new byte[128 * 16];
-            Arrays.fill(skyLight, (byte) 0xff);
-            blockLight = new byte[128 * 16];
+            materials = new PackedArrayCube<>(16, 4, true, Material.class);
         }
 
         @Override
         public CompoundTag toNBT() {
             setByte(TAG_Y, level);
 
-            // Create the palette. We have to do this first, because otherwise
-            // we don't know how many bits the indices will be and therefore how
-            // big to make the blockStates array
-            Map<Material, Integer> reversePalette = new HashMap<>();
-            List<Material> palette = new LinkedList<>();
-            for (Material material: materials) {
-                if (material == null) {
-                    material = AIR;
-                }
-                if (! reversePalette.containsKey(material)) {
-                    reversePalette.put(material, palette.size());
-                    palette.add(material);
-                }
-            }
-            List<CompoundTag> paletteList = new ArrayList<>(palette.size());
-            for (Material material: palette) {
-                CompoundTag paletteEntry = new CompoundTag("", Collections.emptyMap());
+            final PackedArrayCube<Material>.PackedData packedMaterials = materials.pack(AIR);
+            final List<CompoundTag> paletteList = new ArrayList<>(packedMaterials.palette.length);
+            for (Material material: packedMaterials.palette) {
+                final CompoundTag paletteEntry = new CompoundTag("", Collections.emptyMap());
                 paletteEntry.setTag(TAG_NAME, new StringTag(TAG_NAME, material.name));
                 if (material.getProperties() != null) {
-                    CompoundTag propertiesTag = new CompoundTag(TAG_PROPERTIES, Collections.emptyMap());
+                    final CompoundTag propertiesTag = new CompoundTag(TAG_PROPERTIES, Collections.emptyMap());
                     for (Map.Entry<String, String> property: material.getProperties().entrySet()) {
                         propertiesTag.setTag(property.getKey(), new StringTag(property.getKey(), property.getValue()));
                     }
@@ -867,57 +840,14 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
             }
             setList(TAG_PALETTE, CompoundTag.class, paletteList);
 
-            // Create the blockStates array and fill it, using the appropriate
-            // length palette indices so that it just fits
-            int paletteIndexSize = Math.max((int) Math.ceil(Math.log(palette.size()) / Math.log(2)), 4);
-            if (paletteIndexSize == 4) {
-                // Optimised special case
-                long[] blockStates = new long[256];
-                for (int i = 0; i < 4096; i += 16) {
-                    blockStates[i >> 4] =
-                           reversePalette.get(materials[i]      != null ? materials[i]      : AIR)
-                        | (reversePalette.get(materials[i +  1] != null ? materials[i +  1] : AIR) << 4)
-                        | (reversePalette.get(materials[i +  2] != null ? materials[i +  2] : AIR) << 8)
-                        | (reversePalette.get(materials[i +  3] != null ? materials[i +  3] : AIR) << 12)
-                        | (reversePalette.get(materials[i +  4] != null ? materials[i +  4] : AIR) << 16)
-                        | (reversePalette.get(materials[i +  5] != null ? materials[i +  5] : AIR) << 20)
-                        | (reversePalette.get(materials[i +  6] != null ? materials[i +  6] : AIR) << 24)
-                        | ((long) (reversePalette.get(materials[i +  7] != null ? materials[i +  7] : AIR)) << 28)
-                        | ((long) (reversePalette.get(materials[i +  8] != null ? materials[i +  8] : AIR)) << 32)
-                        | ((long) (reversePalette.get(materials[i +  9] != null ? materials[i +  9] : AIR)) << 36)
-                        | ((long) (reversePalette.get(materials[i + 10] != null ? materials[i + 10] : AIR)) << 40)
-                        | ((long) (reversePalette.get(materials[i + 11] != null ? materials[i + 11] : AIR)) << 44)
-                        | ((long) (reversePalette.get(materials[i + 12] != null ? materials[i + 12] : AIR)) << 48)
-                        | ((long) (reversePalette.get(materials[i + 13] != null ? materials[i + 13] : AIR)) << 52)
-                        | ((long) (reversePalette.get(materials[i + 14] != null ? materials[i + 14] : AIR)) << 56)
-                        | ((long) (reversePalette.get(materials[i + 15] != null ? materials[i + 15] : AIR)) << 60);
-                }
-                setLongArray(TAG_BLOCK_STATES, blockStates);
-            } else {
-                BitSet blockStates = new BitSet(4096 * paletteIndexSize);
-                for (int i = 0; i < 4096; i++) {
-                    int offset = i * paletteIndexSize;
-                    int index = reversePalette.get(materials[i] != null ? materials[i] : AIR);
-                    for (int j = 0; j < paletteIndexSize; j++) {
-                        if ((index & (1 << j)) != 0) {
-                            blockStates.set(offset + j);
-                        }
-                    }
-                }
-                long[] blockStatesArray = blockStates.toLongArray();
-                // Pad with zeros if necessary
-                int requiredLength = 64 * paletteIndexSize;
-                if (blockStatesArray.length != requiredLength) {
-                    long[] expandedArray = new long[requiredLength];
-                    System.arraycopy(blockStatesArray, 0, expandedArray, 0, blockStatesArray.length);
-                    setLongArray(TAG_BLOCK_STATES, expandedArray);
-                } else {
-                    setLongArray(TAG_BLOCK_STATES, blockStatesArray);
-                }
-            }
+            setLongArray(TAG_BLOCK_STATES, packedMaterials.data);
 
-            setByteArray(TAG_SKY_LIGHT, skyLight);
-            setByteArray(TAG_BLOCK_LIGHT, blockLight);
+            if (skyLight != null) {
+                setByteArray(TAG_SKY_LIGHT, skyLight);
+            }
+            if (blockLight != null) {
+                setByteArray(TAG_BLOCK_LIGHT, blockLight);
+            }
             return super.toNBT();
         }
 
@@ -927,27 +857,30 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
          * 
          * @return {@code true} if the section is empty
          */
-        boolean isEmpty() {
-            for (Material material: materials) {
-                if (material != null) {
-                    return false;
+        @Override
+        public boolean isEmpty() {
+            if (! materials.isEmpty()) {
+                return false;
+            }
+            if (skyLight != null) {
+                for (byte b: skyLight) {
+                    if (b != (byte) 0) {
+                        return false;
+                    }
                 }
             }
-            for (byte b: skyLight) {
-                if (b != (byte) -1) {
-                    return false;
-                }
-            }
-            for (byte b: blockLight) {
-                if (b != (byte) 0) {
-                    return false;
+            if (blockLight != null) {
+                for (byte b: blockLight) {
+                    if (b != (byte) 0) {
+                        return false;
+                    }
                 }
             }
             return true;
         }
 
         private void writeObject(ObjectOutputStream out) throws IOException {
-            throw new IOException("MC113AnvilChunk.Section is not serializable");
+            throw new IOException("MC115AnvilChunk.Section is not serializable");
         }
 
         private Material getMaterial(List<CompoundTag> palette, int index) {
@@ -970,18 +903,20 @@ public final class MC115AnvilChunk extends NBTChunk implements SectionedChunk, M
         }
 
         public final byte level;
-        final byte[] skyLight;
-        final byte[] blockLight;
-        final Material[] materials;
+        byte[] skyLight;
+        byte[] blockLight;
+        final PackedArrayCube<Material> materials;
+    }
 
-        static class IncompleteSectionException extends WPRuntimeException {
-            // Empty
+    static class IncompleteSectionException extends MDCCapturingRuntimeException {
+        IncompleteSectionException() {
+            super("Incomplete section");
         }
+    }
 
-        static class ExceptionParsingSectionException extends WPRuntimeException {
-            ExceptionParsingSectionException(Throwable cause) {
-                super(cause);
-            }
+    static class ExceptionParsingSectionException extends MDCCapturingRuntimeException {
+        ExceptionParsingSectionException(Throwable cause) {
+            super("Could not parse section", cause);
         }
     }
 }

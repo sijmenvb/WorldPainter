@@ -7,6 +7,8 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.*;
 
+import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
+
 /**
  * Created by Pepijn Schmitz on 21-09-15.
  */
@@ -57,7 +59,7 @@ public class DumpWorld {
     }
 
     private static void dumpDimension(Dimension dimension) {
-        System.out.println("Dimension: " + dimension.getName() + " (index: " + dimension.getDim() + ")");
+        System.out.println("Dimension: " + dimension.getName() + " (index: " + dimension.getAnchor().dim + ")");
         System.out.println("    Size: " + dimension.getWidth() + "x" + dimension.getHeight() + " tiles");
         System.out.println("    Westernmost tile: " + dimension.getLowestX() + "; easternmost tile: " + dimension.getHighestX());
         System.out.println("    Northernmost tile: " + dimension.getLowestY() + "; southernmost tile: " + dimension.getHighestY());
@@ -65,39 +67,50 @@ public class DumpWorld {
         System.out.println("    Generator: " + dimension.getGenerator());
         System.out.println("    WorldPainter seed: " + dimension.getSeed() + "; Minecraft seed: " + dimension.getMinecraftSeed());
         if (dimension.getBorder() != null) {
-            switch (dimension.getBorder()) {
-                case LAVA:
-                case WATER:
-                    System.out.println("    Border: " + dimension.getBorder() + " (size: " + dimension.getBorderSize() + "; level; " + dimension.getBorderLevel() + ")");
-                    break;
-                case VOID:
-                    System.out.println("    Border: VOID (size: " + dimension.getBorderSize() + ")");
-                    break;
+            if (dimension.getBorder().isEndless()) {
+                switch (dimension.getBorder()) {
+                    case ENDLESS_LAVA:
+                    case ENDLESS_WATER:
+                        System.out.println("    Border: " + dimension.getBorder() + " (level; " + dimension.getBorderLevel() + ")");
+                        break;
+                    default:
+                        System.out.println("    Border: " + dimension.getBorder());
+                        break;
+                }
+            } else {
+                switch (dimension.getBorder()) {
+                    case LAVA:
+                    case WATER:
+                        System.out.println("    Border: " + dimension.getBorder() + " (size: " + dimension.getBorderSize() + "; level; " + dimension.getBorderLevel() + ")");
+                        break;
+                    default:
+                        System.out.println("    Border: " + dimension.getBorder() + " (size: " + dimension.getBorderSize() + ")");
+                        break;
+                }
             }
         } else {
             System.out.println("    Border: none");
         }
-        if ((dimension.getDim() == Constants.DIM_NORMAL_CEILING) || (dimension.getDim() == Constants.DIM_NETHER_CEILING) || (dimension.getDim() == Constants.DIM_END_CEILING)) {
+        if (dimension.getAnchor().invert) {
             System.out.println("    Ceiling height: " + dimension.getCeilingHeight());
         }
         System.out.println("    Max height: " + dimension.getMaxHeight());
         System.out.println("    Contour separation: " + dimension.getContourSeparation());
         System.out.println("    Grid size: " + dimension.getGridSize());
         System.out.println("    Last view position: " + dimension.getLastViewPosition().x + "," + dimension.getLastViewPosition().y);
-        if (dimension.getOverlay() != null) {
-            System.out.println("    Overlay image: " + dimension.getOverlay());
-            System.out.println("        Offset: " + dimension.getOverlayOffsetX() + "," + dimension.getOverlayOffsetY());
-            System.out.println("        Scale:" + dimension.getOverlayScale());
-            System.out.println("        Transparency: " + dimension.getOverlayTransparency());
-        } else {
-            System.out.println("    Overlay image: none");
+        for (Overlay overlay: dimension.getOverlays()) {
+            System.out.println("    Overlay image: " + overlay.getFile());
+            System.out.println("        Enabled: " + overlay.isEnabled());
+            System.out.println("        Offset: " + overlay.getOffsetX() + "," + overlay.getOffsetY());
+            System.out.println("        Scale:" + overlay.getScale());
+            System.out.println("        Transparency: " + overlay.getTransparency());
         }
         System.out.println("    Subfurface material: " + dimension.getSubsurfaceMaterial());
         System.out.println("    Top layer depth: " + dimension.getTopLayerMinDepth() + " - " + (dimension.getTopLayerMinDepth() + dimension.getTopLayerVariation()));
 
         Map<Layer, Integer> usedLayers = new HashMap<>();
         EnumSet<Terrain> terrainsUsed = EnumSet.noneOf(Terrain.class);
-        float lowestSurface = Float.MAX_VALUE, highestSurface = Float.MIN_VALUE;
+        float lowestSurface = Float.MAX_VALUE, highestSurface = -Float.MAX_VALUE;
         int lowestWaterlevel = Integer.MAX_VALUE, highestWaterlevel = Integer.MIN_VALUE;
         for (Tile tile: dimension.getTiles()) {
             for (Layer layer: tile.getLayers()) {
@@ -159,7 +172,7 @@ public class DumpWorld {
         terrainsUsed.forEach(terrain -> System.out.println("        " + terrain.getName() + " (index: " + terrain.ordinal() + ")"));
 
         List<String> problems = new ArrayList<>();
-        if (dimension.getMaxHeight() != dimension.getWorld().getMaxHeight()) {
+        if ((dimension.getAnchor().dim != DIM_NORMAL) && (dimension.getMaxHeight() != dimension.getWorld().getMaxHeight())) {
             problems.add("Dimension max height (" + dimension.getMaxHeight() + ") does not equal the world max height (" + dimension.getWorld().getMaxHeight() + ")");
         }
         for (Terrain terrain: terrainsUsed) {

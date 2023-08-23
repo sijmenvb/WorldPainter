@@ -7,24 +7,34 @@ package org.pepsoft.minecraft;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import org.pepsoft.util.CSVDataSource;
+import org.pepsoft.util.Pair;
 import org.pepsoft.worldpainter.Platform;
+import org.pepsoft.worldpainter.layers.Annotations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.collect.ImmutableSortedMap.toImmutableSortedMap;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.asList;
-import static java.util.Collections.singleton;
-import static java.util.Collections.singletonMap;
+import static java.util.Arrays.stream;
+import static java.util.Collections.*;
+import static java.util.Objects.requireNonNull;
+import static java.util.function.Function.identity;
+import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
 import static org.pepsoft.minecraft.Block.BLOCK_TYPE_NAMES;
 import static org.pepsoft.minecraft.Constants.*;
 import static org.pepsoft.minecraft.HorizontalOrientationScheme.CARDINAL_DIRECTIONS;
 import static org.pepsoft.minecraft.HorizontalOrientationScheme.STAIR_CORNER;
+import static org.pepsoft.minecraft.Material.PropertyType.*;
+import static org.pepsoft.minecraft.MaterialImporter.importCustomMaterials;
 import static org.pepsoft.util.ObjectMapperHolder.OBJECT_MAPPER;
+import static org.pepsoft.worldpainter.Constants.UNKNOWN_MATERIAL_COLOUR;
 import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
 
 /**
@@ -52,7 +62,7 @@ public final class Material implements Serializable {
      * @param data The data value of the legacy block for which to create a
      *             material.
      */
-    @SuppressWarnings("unchecked") // Guaranteed by contents of file
+    @SuppressWarnings({"unchecked", "StringEquality"}) // Guaranteed by contents of file; interned string
     private Material(int blockType, int data) {
         this.blockType = blockType;
         this.data = data;
@@ -86,47 +96,62 @@ public final class Material implements Serializable {
             simpleName = ("block_" + blockType).intern();
             identity = new Identity(namespace + ":" + simpleName, singletonMap("data_value", Integer.toString(data)));
         }
-        name = identity.name.intern();
+        name = identity.name;
         stringRep = createStringRep();
         legacyStringRep = createLegacyStringRep();
         horizontalOrientationSchemes = determineHorizontalOrientations(identity);
         verticalOrientationScheme = determineVerticalOrientation(identity);
+        modded = (namespace != MINECRAFT);
+        // TODO make this dynamic:
+        leafBlock = simpleName.endsWith("_leaves");
+        // TODO make this dynamic:
+        sustainsLeaves = simpleName.endsWith("_log") || simpleName.endsWith("_wood")
+                || simpleName == MC_CRIMSON_HYPHAE || simpleName == MC_CRIMSON_STEM
+                || simpleName == MC_WARPED_HYPHAE || simpleName == MC_WARPED_STEM;
+        connectingBlock = simpleName.endsWith("_fence") || simpleName.endsWith("glass_pane") || simpleName == MC_IRON_BARS;
 
         Map<String, Object> spec = findSpec(identity);
         if (spec != null) {
             opacity = (int) spec.get("opacity");
+            receivesLight = (boolean) spec.get("receivesLight");
             terrain = (boolean) spec.get("terrain");
             insubstantial = (boolean) spec.get("insubstantial");
             veryInsubstantial = (boolean) spec.get("veryInsubstantial");
             resource = (boolean) spec.get("resource");
             tileEntity = (boolean) spec.get("tileEntity");
+            tileEntityId = tileEntity ? (String) spec.get("tileEntityId") : null;
             treeRelated = (boolean) spec.get("treeRelated");
             vegetation = (boolean) spec.get("vegetation");
             blockLight = (int) spec.get("blockLight");
-            lightSource = (blockLight > 0);
             natural = (boolean) spec.get("natural");
             watery = (boolean) spec.get("watery");
+            colour = spec.containsKey("colour") ? ((int) spec.get("colour")) : UNKNOWN_MATERIAL_COLOUR;
             category = determineCategory();
+            propertyDescriptors = (SortedMap<String, PropertyDescriptor>) spec.get("properties");
         } else {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Legacy material " + blockType + ":" + data + " not found in materials database");
+            if (logger.isTraceEnabled()) {
+                logger.trace("Legacy material " + blockType + ":" + data + " not found in materials database");
             }
-            // Use reasonable defaults for unknown blocks
-            opacity = 0;
+            // Use reasonable defaults and guesses for unknown blocks
+            opacity = guessOpacity(name);
+            receivesLight = guessReceivesLight(name);
             terrain = false;
             insubstantial = false;
             veryInsubstantial = false;
-            resource = false;
+            resource = guessResource(name);
             tileEntity = false;
-            treeRelated = false;
+            tileEntityId = null;
+            treeRelated = leafBlock || sustainsLeaves || guessTreeRelated(name);
             vegetation = false;
             blockLight = 0;
-            lightSource = false;
             natural = false;
             watery = false;
+            colour = UNKNOWN_MATERIAL_COLOUR;
             category = CATEGORY_UNKNOWN;
+            propertyDescriptors = null;
         }
 
+        lightSource = (blockLight > 0);
         transparent = (opacity == 0);
         translucent = (opacity < 15);
         opaque = (opacity == 15);
@@ -135,8 +160,7 @@ public final class Material implements Serializable {
         canSupportSnow = determineCanSupportSnow();
 
         if (namespace != null) {
-            ALL_NAMESPACES.add(namespace);
-            SIMPLE_NAMES_BY_NAMESPACE.computeIfAbsent(namespace, name -> new HashSet<>(singleton(name))).add(simpleName);
+            SIMPLE_NAMES_BY_NAMESPACE.computeIfAbsent(namespace, s -> new HashSet<>()).add(simpleName);
         }
         if (! DEFAULT_MATERIALS_BY_NAME.containsKey(identity.name)) {
             DEFAULT_MATERIALS_BY_NAME.put(identity.name, this);
@@ -149,19 +173,18 @@ public final class Material implements Serializable {
      *
      * @param identity The identity of the material to create.
      */
-    @SuppressWarnings("unchecked") // Guaranteed by contents of file
+    @SuppressWarnings({"unchecked", "StringEquality"}) // Guaranteed by contents of file; interned string
     private Material(Identity identity) {
-        // See if this modern material matches a legacy one to set a block type
-        // and data value for backwards compatibility
+        // See if this modern material matches a legacy one to set a block type and data value for backwards
+        // compatibility
         int legacyIndex = -1;
         if (LEGACY_BLOCK_SPECS_BY_NAME.containsKey(identity.name)) {
             blockSpecs:
             for (Map<String, Object> blockSpec: LEGACY_BLOCK_SPECS_BY_NAME.get(identity.name)) {
                 if (blockSpec.containsKey("properties")) {
                     if (identity.properties != null) {
-                        // The legacy block spec and supplied identify have
-                        // properties; check if they all match; if so we can use the
-                        // corresponding block ID and data value
+                        // The legacy block spec and supplied identify have properties; check if they all match; if so
+                        // we can use the corresponding block ID and data value
                         for (Map.Entry<String, String> entry: ((Map<String, String>) blockSpec.get("properties")).entrySet()) {
                             if (!entry.getValue().equals(identity.properties.get(entry.getKey()))) {
                                 continue blockSpecs;
@@ -172,8 +195,8 @@ public final class Material implements Serializable {
                         break;
                     }
                 } else {
-                    // The legacy block spec has no properties, so the name
-                    // match should suffice. // TODO: what if it doesn't? What if the specified identity has properties?
+                    // The legacy block spec has no properties, so the name match should suffice. // TODO: what if it
+                    //  doesn't? What if the specified identity has properties?
                     legacyIndex = (((Number) blockSpec.get("blockId")).intValue() << 4) | ((Number) blockSpec.get("dataValue")).intValue();
                     break;
                 }
@@ -186,7 +209,7 @@ public final class Material implements Serializable {
             if (logger.isDebugEnabled()) {
                 logger.debug("Matched " + identity + " to " + BLOCK_TYPE_NAMES[blockType] + "(" + blockType + "):" + data);
             }
-        } else if (identity.name.startsWith("legacy:block_") && (identity.properties != null) && identity.properties.containsKey("data_value")) {
+        } else if (identity.name.startsWith("legacy:block_") && (identity.properties != null) && isValidDataValue(identity.properties.get("data_value"))) {
             // Legacy non-vanilla block; decode block ID and data value from
             // name and properties
             blockType = Integer.parseInt(identity.name.substring(13));
@@ -197,13 +220,13 @@ public final class Material implements Serializable {
         } else {
             blockType = -1;
             data = -1;
-            if (logger.isDebugEnabled()) {
-                logger.debug("Did not match " + identity + " to legacy block");
+            if (logger.isTraceEnabled()) {
+                logger.trace("Did not match " + identity + " to legacy block");
             }
         }
 
         this.identity = identity;
-        name = identity.name.intern();
+        name = identity.name;
         int p = name.indexOf(':');
         if (p != -1) {
             namespace = name.substring(0, p).intern();
@@ -216,42 +239,61 @@ public final class Material implements Serializable {
         legacyStringRep = createLegacyStringRep();
         horizontalOrientationSchemes = determineHorizontalOrientations(identity);
         verticalOrientationScheme = determineVerticalOrientation(identity);
+        modded = (namespace != MINECRAFT);
+        // TODO make this dynamic:
+        leafBlock = simpleName.endsWith("_leaves");
+        // TODO make this dynamic:
+        sustainsLeaves = simpleName.endsWith("_log") || simpleName.endsWith("_wood")
+                || simpleName == MC_CRIMSON_HYPHAE || simpleName == MC_CRIMSON_STEM
+                || simpleName == MC_WARPED_HYPHAE || simpleName == MC_WARPED_STEM;
+        connectingBlock = simpleName.endsWith("_fence") || simpleName.endsWith("glass_pane") || simpleName == MC_IRON_BARS;
 
         Map<String, Object> spec = findSpec(identity);
         if (spec != null) {
             opacity = (int) spec.get("opacity");
+            receivesLight = (boolean) spec.get("receivesLight");
             terrain = (boolean) spec.get("terrain");
             insubstantial = (boolean) spec.get("insubstantial");
             veryInsubstantial = (boolean) spec.get("veryInsubstantial");
             resource = (boolean) spec.get("resource");
             tileEntity = (boolean) spec.get("tileEntity");
+            tileEntityId = tileEntity ? (String) spec.get("tileEntityId") : null;
             treeRelated = (boolean) spec.get("treeRelated");
             vegetation = (boolean) spec.get("vegetation");
             blockLight = (int) spec.get("blockLight");
-            lightSource = (blockLight > 0);
             natural = (boolean) spec.get("natural");
             watery = (boolean) spec.get("watery");
+            colour = spec.containsKey("colour") ? ((int) spec.get("colour")) : UNKNOWN_MATERIAL_COLOUR;
             category = determineCategory();
+            propertyDescriptors = (SortedMap<String, PropertyDescriptor>) spec.get("properties");
         } else {
             if (logger.isDebugEnabled()) {
-                logger.debug("Modern material " + identity + " not found in materials database");
+                if ((namespace != null) && namespace.equals(MINECRAFT)) {
+                    logger.warn("Modern material {} not found in materials database", identity);
+                } else {
+                    logger.debug("Modern material {} not found in materials database", identity);
+                }
             }
-            // Use reasonable defaults for unknown blocks
-            opacity = 0;
+            // Use reasonable defaults and guesses for unknown blocks
+            opacity = guessOpacity(name);
+            receivesLight = guessReceivesLight(name);
             terrain = false;
             insubstantial = false;
             veryInsubstantial = false;
-            resource = false;
+            resource = guessResource(name);
             tileEntity = false;
-            treeRelated = false;
+            tileEntityId = null;
+            treeRelated = leafBlock || sustainsLeaves || guessTreeRelated(name);
             vegetation = false;
             blockLight = 0;
-            lightSource = false;
             natural = false;
             watery = false;
+            colour = UNKNOWN_MATERIAL_COLOUR;
             category = CATEGORY_UNKNOWN;
+            propertyDescriptors = null;
         }
 
+        lightSource = (blockLight > 0);
         transparent = (opacity == 0);
         translucent = (opacity < 15);
         opaque = (opacity == 15);
@@ -259,8 +301,7 @@ public final class Material implements Serializable {
         hasPropertySnowy = hasProperty(MC_SNOWY);
         canSupportSnow = determineCanSupportSnow();
 
-        ALL_NAMESPACES.add(namespace);
-        SIMPLE_NAMES_BY_NAMESPACE.computeIfAbsent(namespace, name -> new HashSet<>(singleton(name))).add(simpleName);
+        SIMPLE_NAMES_BY_NAMESPACE.computeIfAbsent(namespace, s -> new HashSet<>()).add(simpleName);
         if (! DEFAULT_MATERIALS_BY_NAME.containsKey(name)) {
             DEFAULT_MATERIALS_BY_NAME.put(name, this);
         }
@@ -276,25 +317,25 @@ public final class Material implements Serializable {
                 // There are multiple specs; find a matching one
                 specs:
                 for (Map<String, Object> spec: specs) {
-                    // The spec must specify properties (otherwise there could
-                    // not be multiple for the same name), make sure they match
-                    // the identity
-                    Set<String> properties = (Set<String>) spec.get("properties");
-                    for (String property: properties) {
+                    // The spec must specify a discriminator (otherwise there could not be multiple for the same name),
+                    // make sure the properties in it match the identity
+                    Set<String> discriminator = (Set<String>) spec.get("discriminator");
+                    if (discriminator == null) {
+                        throw new RuntimeException("Multiple specs found for " + identity.name + "; missing discriminator for at least one (possible cause: overlapping custom material definition files)");
+                    }
+                    for (String property: discriminator) {
                         int p = property.indexOf('=');
                         if (p != -1) {
-                            // The spec specifies a specific value; check that
-                            // the identity has the property and it is set to
-                            // that value
+                            // The spec specifies a specific value; check that the identity has the property and it is
+                            // set to that value
                             String key = property.substring(0, p);
                             String value = property.substring(p + 1);
-                            if (!identity.containsPropertyWithValue(key, value)) {
+                            if (! identity.containsPropertyWithValue(key, value)) {
                                 continue specs;
                             }
                         } else {
-                            // The spec just specifies a property name; check
-                            // that the identity has that property
-                            if (!identity.properties.containsKey(property)) {
+                            // The spec just specifies a property name; check that the identity has that property
+                            if (! identity.properties.containsKey(property)) {
                                 continue specs;
                             }
                         }
@@ -324,13 +365,14 @@ public final class Material implements Serializable {
     }
 
     /**
-     * Indicates whether a specific property is present on this material.
+     * Indicates whether a specific property is present on this type of material, regardless of whether it is set on the
+     * current instance.
      *
      * @param property The property to check for presence.
-     * @return {@code true} if the specified property is present.
+     * @return {@code true} if the specified property is present on this type of material.
      */
     public boolean hasProperty(Property<?> property) {
-        return (identity.properties != null) && identity.properties.containsKey(property.name);
+        return (propertyDescriptors != null) && propertyDescriptors.containsKey(property.name);
     }
 
     /**
@@ -363,7 +405,7 @@ public final class Material implements Serializable {
      * type, or {@code defaultValue} if the property is not set.
      */
     public <T> T getProperty(Property<T> property, T defaultValue) {
-        return hasProperty(property) ? property.fromString(identity.properties.get(property.name)) : defaultValue;
+        return ((identity.properties != null) && (identity.properties.containsKey(property.name))) ? property.fromString(identity.properties.get(property.name)) : defaultValue;
     }
 
     /**
@@ -392,21 +434,59 @@ public final class Material implements Serializable {
      * property set.
      */
     public <T> Material withProperty(Property<T> property, T value) {
-        Map<String, String> newProperties = new HashMap<>();
-        if (identity.properties != null) {
-            newProperties.putAll(identity.properties);
+        // Cache the variants here for quick access without synchronization, since WorldPainter is likely to request the
+        // same variants many times
+        if (variants == null) {
+            variants = new ConcurrentHashMap<>();
         }
-        newProperties.put(property.name, value.toString());
-        return get(identity.name, newProperties);
+        return variants.computeIfAbsent(new PropertyAndValue(property.name, value.toString()), key -> {
+            Map<String, String> newProperties = new HashMap<>();
+            if (identity.properties != null) {
+                newProperties.putAll(identity.properties);
+            }
+            newProperties.put(property.name, value.toString());
+            return get(identity.name, newProperties);
+        });
     }
 
     /**
-     * Indicates whether a specific property is present on this material.
+     * Indicates whether a specific property is present on this type of material, regardless of whether it is set on the
+     * current instance.
      *
      * @param name The name of the property to check for presence.
-     * @return {@code true} if the specified property is present.
+     * @return {@code true} if the specified property is present on this type of material.
      */
     public boolean hasProperty(String name) {
+        return (propertyDescriptors != null) && propertyDescriptors.containsKey(name);
+    }
+
+    /**
+     * Indicates whether one or more specific properties are all present on this type of material, regardless of whether
+     * they are set on the current instance.
+     *
+     * @param names The names of the property to check for presence.
+     * @return {@code true} if the specified properties are all present on this type of material.
+     */
+    public boolean hasProperties(String... names) {
+        if (propertyDescriptors != null) {
+            for (String name: names) {
+                if (! propertyDescriptors.containsKey(name)) {
+                    return false;
+                }
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * Indicates whether a specific property is currently set on this material.
+     *
+     * @param name The name of the property to check for presence.
+     * @return {@code true} if the specified property is currently set on this material.
+     */
+    public boolean isPropertySet(String name) {
         return (identity.properties != null) && identity.properties.containsKey(name);
     }
 
@@ -430,11 +510,38 @@ public final class Material implements Serializable {
      * property set.
      */
     public Material withProperty(String name, String value) {
-        Map<String, String> newProperties = new HashMap<>();
-        if (identity.properties != null) {
-            newProperties.putAll(identity.properties);
+        // Cache the variants here for quick access without synchronization, since WorldPainter is likely to request the
+        // same variants many times
+        if (variants == null) {
+            variants = new ConcurrentHashMap<>();
         }
-        newProperties.put(name, value);
+        return variants.computeIfAbsent(new PropertyAndValue(name, value), key -> {
+            Map<String, String> newProperties = new HashMap<>();
+            if (identity.properties != null) {
+                newProperties.putAll(identity.properties);
+            }
+            newProperties.put(name, value);
+            return get(identity.name, newProperties);
+        });
+    }
+
+    /**
+     * Returns a material identical to this one, except with the specified property removed.
+     *
+     * @param name The name of the property that should be removed.
+     * @return A material identical to this one, except with the specified property removed.
+     */
+    public Material withoutProperty(String name) {
+        Map<String, String> newProperties;
+        if (identity.properties != null) {
+            newProperties = new HashMap<>(identity.properties);
+            newProperties.remove(name);
+            if (newProperties.isEmpty()) {
+                newProperties = null;
+            }
+        } else {
+            newProperties = null;
+        }
         return get(identity.name, newProperties);
     }
 
@@ -595,7 +702,6 @@ public final class Material implements Serializable {
      *                 incompatible material.
      * @return A vertically mirrored version of the material.
      */
-    @SuppressWarnings("ConstantConditions") // Responsibility of client; we don't want to add expensive checks
     public Material invert(Platform platform) {
         if ((verticalOrientationScheme != null) || (legacyVerticalOrientationScheme != null)) {
             VerticalOrientationScheme scheme;
@@ -615,7 +721,11 @@ public final class Material implements Serializable {
                     case TYPE:
                         return withProperty(TYPE, getProperty(TYPE).equals("top") ? "bottom" : "top");
                     case UP:
-                        return withProperty(UP, !getProperty(UP));
+                        return withProperty(UP, ! getProperty(UP));
+                    case UP_DOWN:
+                        return withProperty(UP, getProperty(DOWN)).withProperty(DOWN, getProperty(UP));
+                    case VERTICAL_DIRECTION:
+                        return withProperty(VERTICAL_DIRECTION, getProperty(VERTICAL_DIRECTION).equals("up") ? "down" : "up");
                     default:
                         throw new InternalError();
                 }
@@ -781,9 +891,9 @@ public final class Material implements Serializable {
      * @return {@code true} if the specified material has the same name as
      * this one.
      */
-    @SuppressWarnings("StringEquality") // name is interned so there are many circumstances in which the comparison might work and be faster than equals()
+    @SuppressWarnings("StringEquality") // Interned string
     public boolean isNamedSameAs(Material material) {
-        return (material.name == this.name) || material.name.equals(this.name);
+        return material.name == this.name;
     }
 
     /**
@@ -793,16 +903,17 @@ public final class Material implements Serializable {
      * @return {@code true} if the specified material <em>does not</em>
      * have the same name as this one.
      */
+    @SuppressWarnings("StringEquality") // Interned string
     public boolean isNotNamedSameAs(Material material) {
-        return ! material.name.equals(this.name);
+        return material.name != this.name;
     }
 
     /**
-     * Indicate whether the block is filled with water (in addition to whatever
-     * else may be there).
+     * Indicate whether the block is filled with water (in addition to whatever else may be there), excepting flowing
+     * water.
      */
     public boolean containsWater() {
-        return watery || is(WATERLOGGED) || (isNamed(MC_WATER) && (getProperty(LEVEL) == 0));
+        return watery || is(WATERLOGGED) || (isNamed(MC_WATER) && (getProperty(LEVEL, 0) == 0));
     }
 
     private HorizontalOrientationScheme[] determineHorizontalOrientations(Identity identity) {
@@ -877,7 +988,6 @@ public final class Material implements Serializable {
         }
     }
 
-    @SuppressWarnings("ConstantConditions") // Responsibility of client; we don't want to add expensive checks
     private VerticalOrientationScheme determineLegacyVerticalOrientation() {
         if (verticalOrientationScheme != null) {
             Material invertedMaterial;
@@ -886,10 +996,13 @@ public final class Material implements Serializable {
                     invertedMaterial = withProperty(HALF, getProperty(HALF).equals("top") ? "bottom" : "top");
                     break;
                 case TYPE:
-                    invertedMaterial =  withProperty(TYPE, getProperty(TYPE).equals("top") ? "bottom" : "top");
+                    invertedMaterial = withProperty(TYPE, getProperty(TYPE).equals("top") ? "bottom" : "top");
                     break;
                 case UP:
-                    invertedMaterial =  withProperty(UP, !getProperty(UP));
+                    invertedMaterial = withProperty(UP, !getProperty(UP));
+                    break;
+                case UP_DOWN:
+                    invertedMaterial = withProperty(UP, getProperty(DOWN)).withProperty(DOWN, getProperty(UP));
                     break;
                 default:
                     throw new InternalError();
@@ -913,9 +1026,15 @@ public final class Material implements Serializable {
         if (identity.containsPropertyWithValues("half", "top", "bottom")) {
             return VerticalOrientationScheme.HALF;
         } else if (identity.containsPropertyWithValues("up", "true", "false")) {
-            return VerticalOrientationScheme.UP;
+            if (identity.containsPropertyWithValues("down", "true", "false")) {
+                return VerticalOrientationScheme.UP_DOWN;
+            } else {
+                return VerticalOrientationScheme.UP;
+            }
         } else if (identity.containsPropertyWithValues("type", "top", "bottom")) {
             return VerticalOrientationScheme.TYPE;
+        } else if (identity.containsPropertyWithValues("vertical_direction", "up", "down")) {
+            return VerticalOrientationScheme.VERTICAL_DIRECTION;
         } else {
             return null;
         }
@@ -940,12 +1059,13 @@ public final class Material implements Serializable {
     }
 
     private boolean determineCanSupportSnow() {
-        return (solid
+        return hasPropertySnowy
+                || (solid
                     && opaque
                     && (! ("bottom".equals(getProperty(MC_TYPE)) && (name.endsWith("_slab") || name.endsWith("_stairs"))))
                     && (! NO_SNOW_ON.contains(name)))
                 || SNOW_ON.contains(name)
-                || name.endsWith("_leaves");
+                || leafBlock;
     }
 
     private String createStringRep() {
@@ -1095,30 +1215,85 @@ public final class Material implements Serializable {
     }
 
     /**
-     * Get a known material by name only, disregarding the properties.
+     * Get a prototype of a known material by name. If the material is known by name, its known properties will be set
+     * to arbitrary values.
      *
-     * @param name The name of the material to get.
-     * @return A material with the specified name and unspecified properties, or
-     * {@code null} if no material by that name is known.
+     * @param name The name of the material of which to get a prototype.
+     * @return A material with the specified name its known properties set to arbitrary values.
      */
-    public static Material getDefault(String name) {
-        return DEFAULT_MATERIALS_BY_NAME.get(name);
+    @SuppressWarnings("unchecked") // Guaranteed by the code
+    public static Material getPrototype(String name) {
+        return PROTOTYPES.computeIfAbsent(name, key -> {
+            final Set<Map<String, Object>> specs = MATERIAL_SPECS.get(name);
+            if (specs != null) {
+                final Map<String, Object> spec = specs.iterator().next();
+                if (spec.containsKey("properties")) {
+                    return get(name, ((Map<String, PropertyDescriptor>) spec.get("properties")).entrySet().stream()
+                            .collect(toMap(Map.Entry::getKey, entry -> {
+                                final PropertyDescriptor descriptor = entry.getValue();
+                                switch (descriptor.type) {
+                                    case BOOLEAN:
+                                        return "false";
+                                    case INTEGER:
+                                        return Integer.toString(descriptor.minValue);
+                                    case ENUM:
+                                        return descriptor.enumValues[0];
+                                    default:
+                                        throw new IllegalArgumentException("Unknown property type: " + descriptor.type);
+                                }
+                            })));
+                }
+            }
+            return get(new Identity(name, null));
+        });
     }
 
+    /**
+     * Get all known namespaces.
+     */
     public static Set<String> getAllNamespaces() {
-        return Collections.unmodifiableSet(ALL_NAMESPACES);
+        return unmodifiableSet(SIMPLE_NAMES_BY_NAMESPACE.keySet());
     }
 
+    /**
+     * Get all known names for a specific namespace.
+     */
     public static Set<String> getAllSimpleNamesForNamespace(String namespace) {
-        return SIMPLE_NAMES_BY_NAMESPACE.containsKey(namespace) ? Collections.unmodifiableSet(SIMPLE_NAMES_BY_NAMESPACE.get(namespace)) : Collections.emptySet();
+        return SIMPLE_NAMES_BY_NAMESPACE.containsKey(namespace) ? unmodifiableSet(SIMPLE_NAMES_BY_NAMESPACE.get(namespace)) : emptySet();
     }
 
+    /**
+     * Get the fully qualified names of all realised materials.
+     */
     public static Set<String> getAllNames() {
         return ALL_MATERIALS.values().stream().map(material -> material.name).collect(toSet());
     }
 
+    /**
+     * Get all realised materials.
+     */
     public static Collection<Material> getAllMaterials() {
         return Collections.unmodifiableCollection(ALL_MATERIALS.values());
+    }
+
+    /**
+     * Get the specs for a known material. Returns an empty set if the specified material is not known.
+     */
+    public static Set<Map<String, Object>> getSpecs(String name) {
+        if (MATERIAL_SPECS.containsKey(name)) {
+            return MATERIAL_SPECS.get(name).stream().map(Collections::unmodifiableMap).collect(toSet());
+        } else {
+            return emptySet();
+        }
+    }
+
+    private static boolean isValidDataValue(String dataValue) {
+        try {
+            final int intValue = Integer.parseInt(dataValue);
+            return (intValue >= 0) && (intValue <= 15);
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     // Object
@@ -1127,7 +1302,7 @@ public final class Material implements Serializable {
         if (! (o instanceof Material)) {
             return false;
         }
-        if ((blockType != -1) && ((blockType != ((Material) o).blockType) || (data != ((Material) o).data))) {
+        if (((blockType != -1) || (((Material) o).blockType != -1)) && ((blockType != ((Material) o).blockType) || (data != ((Material) o).data))) {
             return false;
         }
         return identity.equals(((Material) o).identity);
@@ -1166,7 +1341,7 @@ public final class Material implements Serializable {
      * Get the full, non abreviated identity of this material as a string.
      */
     public String toFullString() {
-        return identity.toString() + ((blockType != -1) ? ("; id=" + blockType + "; data=" + data) : "");
+        return identity.toString() + ((blockType != -1) ? (" (id=" + blockType + "; data=" + data + ")") : "");
     }
 
     private Object readResolve() throws ObjectStreamException {
@@ -1185,6 +1360,28 @@ public final class Material implements Serializable {
         }
     }
 
+    public static int guessOpacity(String name) {
+        if (name.endsWith("_slab") || name.endsWith("_stairs") || name.contains("block") || name.endsWith("_log") || name.endsWith("_wood") || name.endsWith("_stem") || name.endsWith("_hyphea") || name.contains("bricks")) {
+            return 15;
+        } else if (name.contains("leaves")) {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+
+    public static boolean guessReceivesLight(String name) {
+        return name.endsWith("_slab") || name.endsWith("_stairs");
+    }
+
+    public static boolean guessResource(String name) {
+        return name.contains("ore");
+    }
+
+    public static boolean guessTreeRelated(String name) {
+        return name.endsWith("_log") || name.endsWith("_wood") || name.endsWith("_stem") || name.endsWith("_hyphea") || name.endsWith("_leaves") || name.endsWith("_sapling");
+    }
+
     /**
      * How much light the block blocks from 0 (fully transparent) to 15 (fully
      * opaque).
@@ -1192,10 +1389,8 @@ public final class Material implements Serializable {
     public final transient int opacity;
 
     /**
-     * The name of the block, including the namespace (if present; separated by
-     * a colon). This value is guaranteed to be interned, so that it is valid to
-     * compare it with {@code String} literals or constants using the
-     * {@code ==} operator.
+     * The name of the block, including the namespace (if present; separated by a colon). This string is interned, so
+     * that the {@code ==} operator may be used to make comparisons against it.
      */
     public final transient String name;
 
@@ -1213,6 +1408,11 @@ public final class Material implements Serializable {
      * Whether the block is fully opaque ({@link #opacity} == 15)
      */
     public final transient boolean opaque;
+
+    /**
+     * Whether the block receives light unto itself, despite being opaque to surrounding blocks.
+     */
+    public final transient boolean receivesLight;
 
     /**
      * Whether the block is part of Minecraft-generated natural ground; more
@@ -1250,8 +1450,12 @@ public final class Material implements Serializable {
     /**
      * Whether the block is a tile entity.
      */
-    // TODOMC13 make this valid for MC 1.15 blocks
     public final transient boolean tileEntity;
+
+    /**
+     * If {@link #tileEntity}, the name of the tile entity.
+     */
+    public final transient String tileEntityId;
 
     /**
      * Whether the block is part of or attached to naturally occurring
@@ -1322,13 +1526,14 @@ public final class Material implements Serializable {
     public final transient int index;
 
     /**
-     * The simple name (excluding the namespace, i.e. the part after the colon)
-     * of this material.
+     * The simple name (excluding the namespace, i.e. the part after the colon) of this material. This string is
+     * interned, so that the {@code ==} operator may be used to make comparisons against it.
      */
     public final transient String simpleName;
 
     /**
-     * The namespace (i.e. the part before the colon) of this material.
+     * The namespace (i.e. the part before the colon) of this material. This string is interned, so that the {@code ==}
+     * operator may be used to make comparisons against it.
      */
     public final transient String namespace;
 
@@ -1337,6 +1542,39 @@ public final class Material implements Serializable {
      */
     public final transient boolean canSupportSnow;
 
+    /**
+     * The colour of this material as an {@code int} in ARGB format.
+     */
+    public final transient int colour;
+
+    /**
+     * Descriptors of all the properties this type of material has, regardless of whether they are set on the current
+     * instance, sorted by their name.
+     */
+    public final transient SortedMap<String, PropertyDescriptor> propertyDescriptors;
+
+    /**
+     * Whether the material is vanilla or modded. In the case of Minecraft this indicates that the namespace is not
+     * {@code minecraft}.
+     */
+    public final transient boolean modded;
+
+    /**
+     * The material should be treated as a leaf block for the purposes of leaf decay calculations.
+     */
+    public final transient boolean leafBlock;
+
+    /**
+     * Whether the material should keep connected leaf blocks from decaying for the purposes of leaf decay calculations.
+     */
+    public final transient boolean sustainsLeaves;
+
+    /**
+     * A connecting block has boolean west, north, east and south properties which should be set if the block in that
+     * direction is the same type, or a solid and opaque block.
+     */
+    public final transient boolean connectingBlock;
+
     // Optimised versions of hasProperty(...):
 
     /**
@@ -1344,8 +1582,14 @@ public final class Material implements Serializable {
      */
     public final transient boolean hasPropertySnowy;
 
-    private final Identity identity;
+    /**
+     * The modern identity of the material, excluding legacy block type and data value (meaning there may be multiple
+     * {@link Material}s with the same {@code identity}.
+     */
+    public final Identity identity;
+
     private final transient String stringRep, legacyStringRep;
+    private transient Map<PropertyAndValue, Material> variants;
 
     private transient HorizontalOrientationScheme[] legacyHorizontalOrientationSchemesForMirroring;
     private transient boolean legacyHorizontalOrientationSchemesForMirroringSet;
@@ -1357,10 +1601,25 @@ public final class Material implements Serializable {
     private static final Map<Integer, Map<String, Object>> LEGACY_BLOCK_SPECS_BY_COMBINED_ID = new HashMap<>();
     private static final Map<String, Set<Map<String, Object>>> LEGACY_BLOCK_SPECS_BY_NAME = new HashMap<>();
     private static final Map<String, Set<Map<String, Object>>> MATERIAL_SPECS = new HashMap<>();
+    private static final Map<String, Material> PROTOTYPES = new ConcurrentHashMap<>();
+
+    /**
+     * To save space we only store the 256-ish vanilla blocks as pre-created
+     * legacy materials. 12-bit block ids above 255 are created on the fly.
+     */
+    private static final Material[] LEGACY_MATERIALS = new Material[4096];
+    private static final Map<Identity, Material> ALL_MATERIALS = new HashMap<>();
+    private static final Map<String, Set<String>> SIMPLE_NAMES_BY_NAMESPACE = new HashMap<>();
+    private static final Map<String, Material> DEFAULT_MATERIALS_BY_NAME = new HashMap<>();
+
+    // Namespaces
+
+    public static final String MINECRAFT = "minecraft";
+    public static final String LEGACY = "legacy";
 
     static {
         // Read legacy MC block database
-        try (Reader in = new InputStreamReader(Material.class.getResourceAsStream("legacy-mc-blocks.json"), UTF_8)) {
+        try (Reader in = new InputStreamReader(requireNonNull(Material.class.getResourceAsStream("legacy-mc-blocks.json")), UTF_8)) {
             @SuppressWarnings("unchecked") // Guaranteed by contents of file
             List<Object> items = (List<Object>) OBJECT_MAPPER.readValue(in, List.class);
             for (Object item: items) {
@@ -1383,48 +1642,61 @@ public final class Material implements Serializable {
         }
 
         // Read MC materials database
-        try (Reader in = new InputStreamReader(Material.class.getResourceAsStream("mc-materials.csv"), UTF_8)) {
+        final Set<String> minecraftNames = SIMPLE_NAMES_BY_NAMESPACE.computeIfAbsent(MINECRAFT, s -> new HashSet<>());
+        try (Reader in = new InputStreamReader(requireNonNull(Material.class.getResourceAsStream("mc-materials.csv")), UTF_8)) {
             CSVDataSource csvDataSource = new CSVDataSource();
             csvDataSource.openForReading(in);
             do {
                 Map<String, Object> materialSpecs = new HashMap<>();
                 String name = csvDataSource.getString("name");
                 materialSpecs.put("name", name);
-                String str = csvDataSource.getString("properties");
+                String str = csvDataSource.getString("discriminator");
                 if (! isNullOrEmpty(str)) {
-                    materialSpecs.put("properties", ImmutableSet.copyOf(str.split(",")));
+                    materialSpecs.put("discriminator", ImmutableSet.copyOf(str.split(",")));
+                }
+                str = csvDataSource.getString("properties");
+                if (! isNullOrEmpty(str)) {
+                    materialSpecs.put("properties", stream(str.split(","))
+                            .map(PropertyDescriptor::fromString)
+                            .collect(toImmutableSortedMap(String::compareTo, d -> d.name, identity())));
                 }
                 materialSpecs.put("opacity", csvDataSource.getInt("opacity"));
+                materialSpecs.put("receivesLight", csvDataSource.getBoolean("receivesLight"));
                 materialSpecs.put("terrain", csvDataSource.getBoolean("terrain"));
                 materialSpecs.put("insubstantial", csvDataSource.getBoolean("insubstantial"));
                 materialSpecs.put("veryInsubstantial", csvDataSource.getBoolean("veryInsubstantial"));
                 materialSpecs.put("resource", csvDataSource.getBoolean("resource"));
                 materialSpecs.put("tileEntity", csvDataSource.getBoolean("tileEntity"));
+                str = csvDataSource.getString("tileEntityId");
+                if (! isNullOrEmpty(str)) {
+                    materialSpecs.put("tileEntityId", str);
+                }
                 materialSpecs.put("treeRelated", csvDataSource.getBoolean("treeRelated"));
                 materialSpecs.put("vegetation", csvDataSource.getBoolean("vegetation"));
                 materialSpecs.put("blockLight", csvDataSource.getInt("blockLight"));
                 materialSpecs.put("natural", csvDataSource.getBoolean("natural"));
                 materialSpecs.put("watery", csvDataSource.getBoolean("watery"));
+                str = csvDataSource.getString("colour");
+                if (! isNullOrEmpty(str)) {
+                    materialSpecs.put("colour", Integer.parseUnsignedInt(str, 16));
+                }
+                str = csvDataSource.getString("colourOrigin");
+                if (! isNullOrEmpty(str)) {
+                    materialSpecs.put("colourOrigin", str);
+                }
                 MATERIAL_SPECS.computeIfAbsent(name, s -> new HashSet<>()).add(materialSpecs);
+                minecraftNames.add(name.substring(name.indexOf(':') + 1));
                 csvDataSource.next();
             } while (! csvDataSource.isEndOfFile());
         } catch (IOException e) {
             throw new RuntimeException("I/O error while reading Minecraft materials database materials.csv from classpath", e);
         }
+
+        importCustomMaterials(MATERIAL_SPECS, SIMPLE_NAMES_BY_NAMESPACE);
     }
 
-    /**
-     * To save space we only store the 256-ish vanilla blocks as pre-created
-     * legacy materials. 12-bit block ids above 255 are created on the fly.
-     */
-    private static final Material[] LEGACY_MATERIALS = new Material[4096];
-    private static final Map<Identity, Material> ALL_MATERIALS = new HashMap<>();
-    private static final Set<String> ALL_NAMESPACES = new HashSet<>();
-    private static final Map<String, Set<String>> SIMPLE_NAMES_BY_NAMESPACE = new HashMap<>();
-    private static final Map<String, Material> DEFAULT_MATERIALS_BY_NAME = new HashMap<>();
-
-    private static final Set<String> SNOW_ON = ImmutableSet.of(MC_SNOW_BLOCK);
-    private static final Set<String> NO_SNOW_ON = ImmutableSet.of(MC_END_PORTAL_FRAME, MC_PACKED_ICE, MC_GRASS_PATH, MC_FARMLAND);
+    private static final Set<String> SNOW_ON = ImmutableSet.of(MC_SNOW_BLOCK, MC_POWDER_SNOW);
+    private static final Set<String> NO_SNOW_ON = ImmutableSet.of(MC_END_PORTAL_FRAME, MC_PACKED_ICE, MC_GRASS_PATH, MC_DIRT_PATH, MC_FARMLAND, MC_MAGMA_BLOCK);
 
     static {
         for (int i = 0; i < 4096; i++) {
@@ -1454,6 +1726,9 @@ public final class Material implements Serializable {
     public static final Material FIRE = LEGACY_MATERIALS[(BLK_FIRE) << 4];
     public static final Material GLOWSTONE = LEGACY_MATERIALS[(BLK_GLOWSTONE) << 4];
     public static final Material SOUL_SAND = LEGACY_MATERIALS[(BLK_SOUL_SAND) << 4];
+    /**
+     * Lava that maps to flowing lava in Minecraft 1.12 and older. Minecraft 1.15+ does not make that distinction.
+     */
     public static final Material LAVA = LEGACY_MATERIALS[(BLK_LAVA) << 4];
     public static final Material NETHERRACK = LEGACY_MATERIALS[(BLK_NETHERRACK) << 4];
     public static final Material END_STONE = LEGACY_MATERIALS[BLK_END_STONE << 4];
@@ -1462,12 +1737,21 @@ public final class Material implements Serializable {
     public static final Material GRAVEL = LEGACY_MATERIALS[(BLK_GRAVEL) << 4];
     public static final Material REDSTONE_ORE = LEGACY_MATERIALS[(BLK_REDSTONE_ORE) << 4];
     public static final Material IRON_ORE = LEGACY_MATERIALS[(BLK_IRON_ORE) << 4];
+    /**
+     * Water that maps to flowing water in Minecraft 1.12 and older. Minecraft 1.15+ does not make that distinction.
+     */
     public static final Material WATER = LEGACY_MATERIALS[(BLK_WATER) << 4];
     public static final Material GOLD_ORE = LEGACY_MATERIALS[(BLK_GOLD_ORE) << 4];
     public static final Material LAPIS_LAZULI_ORE = LEGACY_MATERIALS[(BLK_LAPIS_LAZULI_ORE) << 4];
     public static final Material DIAMOND_ORE = LEGACY_MATERIALS[(BLK_DIAMOND_ORE) << 4];
     public static final Material BEDROCK = LEGACY_MATERIALS[(BLK_BEDROCK) << 4];
+    /**
+     * Water that maps to stationary water in Minecraft 1.12 and older. Minecraft 1.15+ does not make that distinction.
+     */
     public static final Material STATIONARY_WATER = LEGACY_MATERIALS[(BLK_STATIONARY_WATER) << 4];
+    /**
+     * Lava that maps to stationary lava in Minecraft 1.12 and older. Minecraft 1.15+ does not make that distinction.
+     */
     public static final Material STATIONARY_LAVA = LEGACY_MATERIALS[(BLK_STATIONARY_LAVA) << 4];
     public static final Material SNOW_BLOCK = LEGACY_MATERIALS[(BLK_SNOW_BLOCK) << 4];
     public static final Material SANDSTONE = LEGACY_MATERIALS[(BLK_SANDSTONE) << 4];
@@ -1572,6 +1856,17 @@ public final class Material implements Serializable {
     public static final Material WOOL_RED = LEGACY_MATERIALS[((BLK_WOOL) << 4) | (DATA_RED)];
     public static final Material WOOL_BLACK = LEGACY_MATERIALS[((BLK_WOOL) << 4) | (DATA_BLACK)];
 
+    /**
+     * All the colour wools, indexed by the {@code DATA_*} colour data constants (which correspond to the legacy data
+     * values for the wool block).
+     *
+     * <p><strong>PLEASE NOTE:</strong> {@link Annotations} layer values do <em>not</em> correspond to indices into this
+     * array!
+     */
+    public static final Material[] WOOLS = {WOOL_WHITE, WOOL_ORANGE, WOOL_MAGENTA, WOOL_LIGHT_BLUE, WOOL_YELLOW,
+            WOOL_LIME, WOOL_PINK, WOOL_GREY, WOOL_LIGHT_GREY, WOOL_CYAN, WOOL_PURPLE, WOOL_BLUE, WOOL_BROWN, WOOL_GREEN,
+            WOOL_RED, WOOL_BLACK};
+
     public static final Material COBBLESTONE_SLAB = LEGACY_MATERIALS[((BLK_SLAB) << 4) | (DATA_SLAB_COBBLESTONE)];
 
     public static final Material DOOR_OPEN_LEFT_BOTTOM = LEGACY_MATERIALS[((BLK_WOODEN_DOOR) << 4) | (DATA_DOOR_BOTTOM | DATA_DOOR_BOTTOM_OPEN)];
@@ -1590,42 +1885,70 @@ public final class Material implements Serializable {
     public static final Material COCOA_PLANT_HALF_RIPE = LEGACY_MATERIALS[((BLK_COCOA_PLANT) << 4) | (0x4)];
     public static final Material COCOA_PLANT_RIPE = LEGACY_MATERIALS[((BLK_COCOA_PLANT) << 4) | (0x8)];
 
+    @Deprecated // Here to support old plugins
     public static final Material PUMPKIN_NO_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_NO_FACE)];
-    public static final Material PUMPKIN_NORTH_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_NORTH_FACE)];
-    public static final Material PUMPKIN_EAST_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_EAST_FACE)];
-    public static final Material PUMPKIN_SOUTH_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_SOUTH_FACE)];
-    public static final Material PUMPKIN_WEST_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_WEST_FACE)];
+    public static final Material CARVED_PUMPKIN_NORTH_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_NORTH_FACE)];
+    public static final Material CARVED_PUMPKIN_EAST_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_EAST_FACE)];
+    public static final Material CARVED_PUMPKIN_SOUTH_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_SOUTH_FACE)];
+    public static final Material CARVED_PUMPKIN_WEST_FACE = LEGACY_MATERIALS[((BLK_PUMPKIN) << 4) | (DATA_PUMPKIN_WEST_FACE)];
+    public static final Material MELON = LEGACY_MATERIALS[BLK_MELON << 4];
+    public static final Material JACK_O_LANTERN_NORTH_FACE = LEGACY_MATERIALS[((BLK_JACK_O_LANTERN) << 4) | (DATA_PUMPKIN_NORTH_FACE)];
+    public static final Material JACK_O_LANTERN_EAST_FACE = LEGACY_MATERIALS[((BLK_JACK_O_LANTERN) << 4) | (DATA_PUMPKIN_EAST_FACE)];
+    public static final Material JACK_O_LANTERN_SOUTH_FACE = LEGACY_MATERIALS[((BLK_JACK_O_LANTERN) << 4) | (DATA_PUMPKIN_SOUTH_FACE)];
+    public static final Material JACK_O_LANTERN_WEST_FACE = LEGACY_MATERIALS[((BLK_JACK_O_LANTERN) << 4) | (DATA_PUMPKIN_WEST_FACE)];
 
-    // MC 1.13 block property access helpers
+    /**
+     * Lava that maps to sideways flowing, non-permanent lava in all Minecraft versions.
+     */
+    public static final Material FLOWING_LAVA = LEGACY_MATERIALS[(BLK_STATIONARY_LAVA << 4) | 2];
+    /**
+     * Water that maps to sideways flowing, non-permanent water in all Minecraft versions.
+     */
+    public static final Material FLOWING_WATER = LEGACY_MATERIALS[(BLK_STATIONARY_WATER << 4) | 1];
+    /**
+     * Lava that maps to falling, non-permanent lava in all Minecraft versions.
+     */
+    public static final Material FALLING_LAVA = LEGACY_MATERIALS[(BLK_STATIONARY_LAVA << 4) | 10];
+    /**
+     * Water that maps to falling, non-permanent water in all Minecraft versions.
+     */
+    public static final Material FALLING_WATER = LEGACY_MATERIALS[(BLK_STATIONARY_WATER << 4) | 9];
 
-    public static final Property<Boolean>   SNOWY       = new Property<>(MC_SNOWY,       Boolean.class);
-    public static final Property<Boolean>   NORTH       = new Property<>(MC_NORTH,       Boolean.class);
-    public static final Property<Boolean>   EAST        = new Property<>(MC_EAST,        Boolean.class);
-    public static final Property<Boolean>   SOUTH       = new Property<>(MC_SOUTH,       Boolean.class);
-    public static final Property<Boolean>   WEST        = new Property<>(MC_WEST,        Boolean.class);
-    public static final Property<Boolean>   UP          = new Property<>(MC_UP,          Boolean.class);
-    public static final Property<Integer>   LAYERS      = new Property<>(MC_LAYERS,      Integer.class);
-    public static final Property<String>    HALF        = new Property<>(MC_HALF,        String.class);
-    public static final Property<Integer>   LEVEL       = new Property<>(MC_LEVEL,       Integer.class);
-    public static final Property<Boolean>   WATERLOGGED = new Property<>(MC_WATERLOGGED, Boolean.class);
-    public static final Property<Integer>   AGE         = new Property<>(MC_AGE,         Integer.class);
-    public static final Property<Boolean>   PERSISTENT  = new Property<>(MC_PERSISTENT,  Boolean.class);
-    public static final Property<Direction> FACING      = new Property<>(MC_FACING,      Direction.class);
-    public static final Property<String>    AXIS        = new Property<>(MC_AXIS,        String.class);
-    public static final Property<String>    TYPE        = new Property<>(MC_TYPE,        String.class);
-    public static final Property<Integer>   PICKLES     = new Property<>(MC_PICKLES,     Integer.class);
-    public static final Property<Integer>   MOISTURE    = new Property<>(MC_MOISTURE,    Integer.class);
-    public static final Property<Integer>   ROTATION    = new Property<>(MC_ROTATION,    Integer.class);
-    public static final Property<String>    SHAPE       = new Property<>(MC_SHAPE,       String.class);
-    public static final Property<String>    HINGE       = new Property<>(MC_HINGE,       String.class);
+    // MC 1.13+ block property access helpers
 
-    // Modern materials (based on MC 1.13 block names and properties)
+    public static final Property<Boolean>   SNOWY              = new Property<>(MC_SNOWY,              Boolean.class);
+    public static final Property<Boolean>   NORTH              = new Property<>(MC_NORTH,              Boolean.class);
+    public static final Property<Boolean>   EAST               = new Property<>(MC_EAST,               Boolean.class);
+    public static final Property<Boolean>   SOUTH              = new Property<>(MC_SOUTH,              Boolean.class);
+    public static final Property<Boolean>   WEST               = new Property<>(MC_WEST,               Boolean.class);
+    public static final Property<Boolean>   UP                 = new Property<>(MC_UP,                 Boolean.class);
+    public static final Property<Boolean>   DOWN               = new Property<>(MC_DOWN,               Boolean.class);
+    public static final Property<Integer>   LAYERS             = new Property<>(MC_LAYERS,             Integer.class);
+    public static final Property<String>    HALF               = new Property<>(MC_HALF,               String.class);
+    public static final Property<Integer>   LEVEL              = new Property<>(MC_LEVEL,              Integer.class);
+    public static final Property<Boolean>   WATERLOGGED        = new Property<>(MC_WATERLOGGED,        Boolean.class);
+    public static final Property<Integer>   AGE                = new Property<>(MC_AGE,                Integer.class);
+    public static final Property<Boolean>   PERSISTENT         = new Property<>(MC_PERSISTENT,         Boolean.class);
+    public static final Property<Direction> FACING             = new Property<>(MC_FACING,             Direction.class);
+    public static final Property<String>    AXIS               = new Property<>(MC_AXIS,               String.class);
+    public static final Property<String>    TYPE               = new Property<>(MC_TYPE,               String.class);
+    public static final Property<Integer>   PICKLES            = new Property<>(MC_PICKLES,            Integer.class);
+    public static final Property<Integer>   MOISTURE           = new Property<>(MC_MOISTURE,           Integer.class);
+    public static final Property<Integer>   ROTATION           = new Property<>(MC_ROTATION,           Integer.class);
+    public static final Property<String>    SHAPE              = new Property<>(MC_SHAPE,              String.class);
+    public static final Property<String>    HINGE              = new Property<>(MC_HINGE,              String.class);
+    public static final Property<Boolean>   BERRIES            = new Property<>(MC_BERRIES,            Boolean.class);
+    public static final Property<Integer>   DISTANCE           = new Property<>(MC_DISTANCE,           Integer.class);
+    public static final Property<String>    VERTICAL_DIRECTION = new Property<>(MC_VERTICAL_DIRECTION, String.class);
+    public static final Property<Integer>   FLOWER_AMOUNT      = new Property<>(MC_FLOWER_AMOUNT,      Integer.class);
+
+    // Modern materials (based on MC 1.13+ block names and properties)
 
     /**
      * A vine with no directions turned on, which is not a valid block in
      * Minecraft, so you must set at least one direction.
      */
-    public static final Material VINE = get(MC_VINE, MC_NORTH, false, MC_EAST, false, MC_SOUTH, false, MC_WEST, false, MC_UP, false);
+    public static final Material VINE = get(MC_VINE, MC_NORTH, false, MC_EAST, false, MC_SOUTH, false, MC_WEST, false, MC_UP, false, MC_DOWN, false); // "down" is not a valid property, but without it we don't get the right vertical orientation scheme and Minecraft appears to ignore it
     public static final Material TERRACOTTA = get(MC_TERRACOTTA);
     public static final Material BLUE_ORCHID = get(MC_BLUE_ORCHID);
     public static final Material ALLIUM = get(MC_ALLIUM);
@@ -1635,30 +1958,12 @@ public final class Material implements Serializable {
     public static final Material WHITE_TULIP = get(MC_WHITE_TULIP);
     public static final Material PINK_TULIP = get(MC_PINK_TULIP);
     public static final Material OXEYE_DAISY = get(MC_OXEYE_DAISY);
-    /**
-     * Lower half of a sunflower.
-     */
-    public static final Material SUNFLOWER = get(MC_SUNFLOWER, MC_HALF, "lower");
-    /**
-     * Lower half of a lilac.
-     */
-    public static final Material LILAC = get(MC_LILAC, MC_HALF, "lower");
-    /**
-     * Lower half of tall grass.
-     */
-    public static final Material TALL_GRASS = get(MC_TALL_GRASS, MC_HALF, "lower");
-    /**
-     * Lower half of a large fern.
-     */
-    public static final Material LARGE_FERN = get(MC_LARGE_FERN, MC_HALF, "lower");
-    /**
-     * Lower half of a rose bush.
-     */
-    public static final Material ROSE_BUSH = get(MC_ROSE_BUSH, MC_HALF, "lower");
-    /**
-     * Lower half of a peony.
-     */
-    public static final Material PEONY = get(MC_PEONY, MC_HALF, "lower");
+    public static final Material SUNFLOWER_LOWER = get(MC_SUNFLOWER, MC_HALF, "lower");
+    public static final Material LILAC_LOWER = get(MC_LILAC, MC_HALF, "lower");
+    public static final Material TALL_GRASS_LOWER = get(MC_TALL_GRASS, MC_HALF, "lower");
+    public static final Material LARGE_FERN_LOWER = get(MC_LARGE_FERN, MC_HALF, "lower");
+    public static final Material ROSE_BUSH_LOWER = get(MC_ROSE_BUSH, MC_HALF, "lower");
+    public static final Material PEONY_LOWER = get(MC_PEONY, MC_HALF, "lower");
     public static final Material OAK_SAPLING = get(MC_OAK_SAPLING, MC_STAGE, 0);
     public static final Material DARK_OAK_SAPLING = get(MC_DARK_OAK_SAPLING, MC_STAGE, 0);
     public static final Material PINE_SAPLING = get(MC_SPRUCE_SAPLING, MC_STAGE, 0);
@@ -1730,14 +2035,11 @@ public final class Material implements Serializable {
     public static final Material KELP = get(MC_KELP, MC_AGE, 0);
     public static final Material KELP_PLANT = get(MC_KELP_PLANT);
     public static final Material SEAGRASS = get(MC_SEAGRASS);
-    /**
-     * Lower half of tall sea grass.
-     */
-    public static final Material TALL_SEAGRASS = get(MC_TALL_SEAGRASS, MC_HALF, "lower");
+    public static final Material TALL_SEAGRASS_LOWER = get(MC_TALL_SEAGRASS, MC_HALF, "lower");
     /**
      * One sea pickle. Set the "pickles" property up to 4 for more pickles.
      */
-    public static final Material SEA_PICKLE = get(MC_SEA_PICKLE, MC_WATERLOGGED, true, MC_PICKLES, 1);
+    public static final Material SEA_PICKLE_1 = get(MC_SEA_PICKLE, MC_WATERLOGGED, true, MC_PICKLES, 1);
     public static final Material CORNFLOWER = get(MC_CORNFLOWER);
     public static final Material LILY_OF_THE_VALLEY = get(MC_LILY_OF_THE_VALLEY);
     public static final Material WITHER_ROSE = get(MC_WITHER_ROSE);
@@ -1746,7 +2048,9 @@ public final class Material implements Serializable {
      */
     public static final Material SWEET_BERRY_BUSH = get(MC_SWEET_BERRY_BUSH, MC_AGE, 0);
     public static final Material OAK_SIGN = get(MC_OAK_SIGN);
+    public static final Material DEEPSLATE_X = get(MC_DEEPSLATE, MC_AXIS, "x");
     public static final Material DEEPSLATE_Y = get(MC_DEEPSLATE, MC_AXIS, "y");
+    public static final Material DEEPSLATE_Z = get(MC_DEEPSLATE, MC_AXIS, "z");
     public static final Material DEEPSLATE_COAL_ORE = get(MC_DEEPSLATE_COAL_ORE);
     public static final Material DEEPSLATE_COPPER_ORE = get(MC_DEEPSLATE_COPPER_ORE);
     public static final Material DEEPSLATE_LAPIS_ORE = get(MC_DEEPSLATE_LAPIS_ORE);
@@ -1759,11 +2063,67 @@ public final class Material implements Serializable {
     public static final Material COPPER_ORE = get(MC_COPPER_ORE);
     public static final Material NETHER_GOLD_ORE = get(MC_NETHER_GOLD_ORE);
     public static final Material ANCIENT_DEBRIS = get(MC_ANCIENT_DEBRIS);
-
-    // Namespaces
-
-    public static final String MINECRAFT = "minecraft";
-    public static final String LEGACY = "legacy";
+    public static final Material BASALT = get(MC_BASALT);
+    public static final Material BLACKSTONE = get(MC_BLACKSTONE);
+    public static final Material SOUL_SOIL = get(MC_SOUL_SOIL);
+    public static final Material GRASS_PATH = get(MC_GRASS_PATH);
+    public static final Material DIRT_PATH = get(MC_DIRT_PATH);
+    public static final Material WARPED_NYLIUM = get(MC_WARPED_NYLIUM);
+    public static final Material CRIMSON_NYLIUM = get(MC_CRIMSON_NYLIUM);
+    public static final Material ROOTED_DIRT = get(MC_ROOTED_DIRT);
+    public static final Material INFESTED_DEEPSLATE = get(MC_INFESTED_DEEPSLATE);
+    public static final Material BAMBOO_NO_LEAVES = get(MC_BAMBOO, MC_STAGE, 0, MC_AGE, 0, MC_LEAVES, "none");
+    public static final Material BAMBOO_SMALL_LEAVES = get(MC_BAMBOO, MC_STAGE, 0, MC_AGE, 0, MC_LEAVES, "small");
+    public static final Material BAMBOO_LARGE_LEAVES = get(MC_BAMBOO, MC_STAGE, 0, MC_AGE, 0, MC_LEAVES, "large");
+    public static final Material AZALEA = get(MC_AZALEA);
+    public static final Material FLOWERING_AZALEA = get(MC_FLOWERING_AZALEA);
+    public static final Material CRIMSON_FUNGUS = get(MC_CRIMSON_FUNGUS);
+    public static final Material WARPED_FUNGUS = get(MC_WARPED_FUNGUS);
+    public static final Material CRIMSON_ROOTS = get(MC_CRIMSON_ROOTS);
+    public static final Material WARPED_ROOTS = get(MC_WARPED_ROOTS);
+    public static final Material NETHER_SPROUTS = get(MC_NETHER_SPROUTS);
+    public static final Material TWISTING_VINES_PLANT = get(MC_TWISTING_VINES_PLANT);
+    public static final Material TWISTING_VINES_25 = get(MC_TWISTING_VINES, MC_AGE, 25);
+    /**
+     * A {@code glow_lichen} block with <em>none</em> of the directions enabled. This is not a valid block; you must
+     * enable at least one direction.
+     */
+    public static final Material GLOW_LICHEN_NONE = get(MC_GLOW_LICHEN, MC_UP, false, MC_DOWN, false, MC_NORTH, false, MC_SOUTH, false, MC_EAST, false, MC_WEST, false, MC_WATERLOGGED, false);
+    public static final Material GLOW_LICHEN_DOWN = get(MC_GLOW_LICHEN, MC_UP, false, MC_DOWN, true, MC_NORTH, false, MC_SOUTH, false, MC_EAST, false, MC_WEST, false, MC_WATERLOGGED, false);
+    public static final Material GLOW_LICHEN_UP = get(MC_GLOW_LICHEN, MC_UP, true, MC_DOWN, false, MC_NORTH, false, MC_SOUTH, false, MC_EAST, false, MC_WEST, false, MC_WATERLOGGED, false);
+    public static final Material MOSS_CARPET = get(MC_MOSS_CARPET);
+    public static final Material BIG_DRIPLEAF_STEM_SOUTH = get(MC_BIG_DRIPLEAF_STEM, MC_FACING, "south");
+    public static final Material BIG_DRIPLEAF_SOUTH = get(MC_BIG_DRIPLEAF, MC_FACING, "south");
+    public static final Material PUMPKIN = get(MC_PUMPKIN);
+    public static final Material CALCITE = get(MC_CALCITE);
+    public static final Material SPORE_BLOSSOM = get(MC_SPORE_BLOSSOM);
+    public static final Material WEEPING_VINES = get(MC_WEEPING_VIVES);
+    public static final Material WEEPING_VINES_PLANT = get(MC_WEEPING_VIVES_PLANT);
+    public static final Material HANGING_ROOTS = get(MC_HANGING_ROOTS);
+    public static final Material CAVE_VINES_NO_BERRIES = get(MC_CAVE_VINES, MC_BERRIES, false);
+    public static final Material CAVE_VINES_PLANT_NO_BERRIES = get(MC_CAVE_VINES_PLANT, MC_BERRIES, false);
+    public static final Material SMALL_DRIPLEAF_SOUTH_LOWER = get(MC_SMALL_DRIPLEAF, MC_HALF, "lower", MC_FACING, "south", MC_WATERLOGGED, false);
+    public static final Material BARRIER = get(MC_BARRIER);
+    public static final Material POINTED_DRIPSTONE_UP_TIP       = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "tip",     MC_VERTICAL_DIRECTION, "up",   MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_UP_FRUSTUM   = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "frustum", MC_VERTICAL_DIRECTION, "up",   MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_UP_MIDDLE    = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "middle",  MC_VERTICAL_DIRECTION, "up",   MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_UP_BASE      = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "base",    MC_VERTICAL_DIRECTION, "up",   MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_DOWN_TIP     = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "tip",     MC_VERTICAL_DIRECTION, "down", MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_DOWN_FRUSTUM = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "frustum", MC_VERTICAL_DIRECTION, "down", MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_DOWN_MIDDLE  = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "middle",  MC_VERTICAL_DIRECTION, "down", MC_WATERLOGGED, false);
+    public static final Material POINTED_DRIPSTONE_DOWN_BASE    = get(MC_POINTED_DRIPSTONE, MC_THICKNESS, "base",    MC_VERTICAL_DIRECTION, "down", MC_WATERLOGGED, false);
+    public static final Material MOSS_BLOCK = get(MC_MOSS_BLOCK);
+    public static final Material DRIPSTONE_BLOCK = get(MC_DRIPSTONE_BLOCK);
+    public static final Material MUD = get(MC_MUD);
+    public static final Material INFESTED_STONE = get(MC_INFESTED_STONE);
+    public static final Material MANGROVE_PROPAGULE = get(MC_MANGROVE_PROPAGULE);
+    public static final Material CHERRY_SAPLING = get(MC_CHERRY_SAPLING);
+    public static final Material PINK_PETALS_1 = get(MC_PINK_PETALS, MC_FLOWER_AMOUNT, 1, MC_FACING, "south");
+    public static final Material PITCHER_CROP_0_LOWER = get(MC_PITCHER_CROP, MC_AGE, 0, MC_HALF, "lower");
+    public static final Material PITCHER_PLANT_LOWER = get(MC_PITCHER_PLANT, MC_HALF, "lower");
+    public static final Material TORCHFLOWER_CROP = get(MC_TORCHFLOWER_CROP);
+    public static final Material TORCHFLOWER = get(MC_TORCHFLOWER);
+    public static final Material LEAVES_CHERRY = get(MC_CHERRY_LEAVES);
 
     // Material type categories
 
@@ -1775,6 +2135,27 @@ public final class Material implements Serializable {
     public static final int CATEGORY_NATURAL_SOLID = 5;
     public static final int CATEGORY_UNKNOWN       = 6;
 
+    public static final Set<Material> STONE_ORES = ImmutableSet.of(GOLD_ORE, IRON_ORE, COAL, LAPIS_LAZULI_ORE, DIAMOND_ORE, REDSTONE_ORE, COPPER_ORE, EMERALD_ORE);
+    public static final Set<Material> DEEPSLATE_ORES = ImmutableSet.of(DEEPSLATE_GOLD_ORE, DEEPSLATE_IRON_ORE, DEEPSLATE_COAL_ORE, DEEPSLATE_LAPIS_ORE, DEEPSLATE_DIAMOND_ORE, DEEPSLATE_REDSTONE_ORE, DEEPSLATE_COPPER_ORE, DEEPSLATE_EMERALD_ORE);
+
+    /**
+     * A map of modern tile entity IDs mapped to the modern block IDs they are associated with.
+     */
+    public static final Map<String, Set<String>> TILE_ENTITY_MAP;
+
+    static {
+        final Map<String, Set<String>> tileEntityMap = new HashMap<>();
+        for (Map.Entry<String, Set<Map<String, Object>>> entry: MATERIAL_SPECS.entrySet()) {
+            final String name = entry.getKey();
+            for (Map<String, Object> spec: entry.getValue()) {
+                if (spec.containsKey("tileEntityId")) {
+                    tileEntityMap.computeIfAbsent((String) spec.get("tileEntityId"), k -> new HashSet<>()).add(name);
+                }
+            }
+        }
+        TILE_ENTITY_MAP = unmodifiableMap(tileEntityMap);
+    }
+
     private static final long serialVersionUID = 2011101001L;
 
     /**
@@ -1782,15 +2163,15 @@ public final class Material implements Serializable {
      * since it does not include the block ID and data value of legacy
      * materials, multiple ones of which map map to the same modern identity.
      */
-    static final class Identity implements Serializable {
-        Identity(String name, Map<String, String> properties) {
+    public static final class Identity implements Serializable {
+        public Identity(String name, Map<String, String> properties) {
             if (name == null) {
                 throw new NullPointerException("name");
             }
             if (name.indexOf(':') == -1) {
                 throw new IllegalArgumentException("name \"" + name + "\"");
             }
-            this.name = name;
+            this.name = name.intern();
             this.properties = ((properties != null) && (! properties.isEmpty())) ? ImmutableMap.copyOf(properties) : null;
         }
 
@@ -1841,9 +2222,51 @@ public final class Material implements Serializable {
             return properties != null ? name + properties : name;
         }
 
-        final String name;
-        final Map<String, String> properties;
+        public final String name;
+        public final Map<String, String> properties;
 
         private static final long serialVersionUID = 1L;
     }
+
+    static final class PropertyAndValue extends Pair<String, String> {
+        PropertyAndValue(String property, String value) {
+            super(property, value);
+        }
+    }
+
+    public static class PropertyDescriptor {
+        private PropertyDescriptor(String name, PropertyType type, int minValue, int maxValue, String[] enumValues) {
+            this.name = name;
+            this.type = type;
+            this.minValue = minValue;
+            this.maxValue = maxValue;
+            this.enumValues = enumValues;
+        }
+
+        static PropertyDescriptor fromString(String str) {
+            final int p = str.indexOf(':');
+            final String name = str.substring(0, p);
+            final String typeDescriptor = str.substring(p + 1);
+            if (typeDescriptor.equals("b")) {
+                return new PropertyDescriptor(name, BOOLEAN, 0, 0, null);
+            } else if (typeDescriptor.startsWith("i[")) {
+                final String[] parts = typeDescriptor.substring(2, typeDescriptor.length() - 1).split("-");
+                final int minValue = Integer.parseInt(parts[0]);
+                final int maxValue = Integer.parseInt(parts[1]);
+                return new PropertyDescriptor(name, INTEGER, minValue, maxValue, null);
+            } else if (typeDescriptor.startsWith("e[")) {
+                final String[] enumValues = typeDescriptor.substring(2, typeDescriptor.length() - 1).split(";");
+                return new PropertyDescriptor(name, ENUM, 0, 0, enumValues);
+            } else {
+                throw new IllegalArgumentException("Could not parse property descriptor \"" + str + '"');
+            }
+        }
+
+        public final String name;
+        public final PropertyType type;
+        public final int minValue, maxValue;
+        public final String[] enumValues;
+    }
+
+    public enum PropertyType { BOOLEAN, INTEGER, ENUM }
 }

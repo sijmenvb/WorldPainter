@@ -14,6 +14,7 @@ import org.pepsoft.util.SystemUtils;
 import org.pepsoft.util.swing.TiledImageViewer;
 import org.pepsoft.worldpainter.Dimension.Border;
 import org.pepsoft.worldpainter.TileRenderer.LightOrigin;
+import org.pepsoft.worldpainter.exporting.ExportSettings;
 import org.pepsoft.worldpainter.layers.CustomLayer;
 import org.pepsoft.worldpainter.layers.Frost;
 import org.pepsoft.worldpainter.layers.Layer;
@@ -32,11 +33,19 @@ import java.util.List;
 import java.util.*;
 
 import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.minecraft.Material.DIRT;
-import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
+import static org.pepsoft.util.CollectionUtils.copyOf;
+import static org.pepsoft.util.XDG.HOME;
+import static org.pepsoft.util.XDG.XDG_DATA_HOME;
+import static org.pepsoft.worldpainter.Configuration.DonationStatus.DONATED;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_15;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
 import static org.pepsoft.worldpainter.Generator.DEFAULT;
+import static org.pepsoft.worldpainter.Generator.LARGE_BIOMES;
+import static org.pepsoft.worldpainter.Terrain.ROCK;
+import static org.pepsoft.worldpainter.Terrain.STONE_MIX;
 import static org.pepsoft.worldpainter.World2.DEFAULT_OCEAN_SEED;
 
 /**
@@ -182,22 +191,6 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
         this.beaches = beaches;
     }
 
-    public synchronized boolean isMergeWarningDisplayed() {
-        return mergeWarningDisplayed;
-    }
-
-    public synchronized void setMergeWarningDisplayed(boolean mergeWarningDisplayed) {
-        this.mergeWarningDisplayed = mergeWarningDisplayed;
-    }
-
-    public synchronized boolean isImportWarningDisplayed() {
-        return importWarningDisplayed;
-    }
-
-    public synchronized void setImportWarningDisplayed(boolean importWarningDisplayed) {
-        this.importWarningDisplayed = importWarningDisplayed;
-    }
-
     public synchronized Boolean getPingAllowed() {
         return pingAllowed;
     }
@@ -218,7 +211,7 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     public synchronized void setColourschemeIndex(int colourschemeIndex) {
         this.colourschemeIndex = colourschemeIndex;
     }
-    
+
     public synchronized Map<Integer, File> getMinecraftJars() {
         return minecraftJars;
     }
@@ -313,8 +306,8 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
 
     public synchronized void setDefaultHeight(int defaultHeight) {
         if (this.defaultHeight != CIRCULAR_WORLD) {
-        this.defaultHeight = defaultHeight;
-    }
+            this.defaultHeight = defaultHeight;
+        }
     }
 
     public synchronized int getDefaultMaxHeight() {
@@ -483,6 +476,14 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     
     public synchronized void setHeightMapsDirectory(File heightMapsDirectory) {
         this.heightMapsDirectory = heightMapsDirectory;
+    }
+
+    public synchronized File getOverlaysDirectory() {
+        return overlaysDirectory;
+    }
+
+    public synchronized void setOverlaysDirectory(File overlaysDirectory) {
+        this.overlaysDirectory = overlaysDirectory;
     }
 
     public synchronized Theme getHeightMapDefaultTheme() {
@@ -677,22 +678,6 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
         this.autosaveInterval = autosaveInterval;
     }
 
-    public synchronized boolean isSnapshotWarningDisplayed() {
-        return snapshotWarningDisplayed;
-    }
-
-    public synchronized void setSnapshotWarningDisplayed(boolean snapshotWarningDisplayed) {
-        this.snapshotWarningDisplayed = snapshotWarningDisplayed;
-    }
-
-    public synchronized boolean isBeta118WarningDisplayed() {
-        return beta118WarningDisplayed;
-    }
-
-    public synchronized void setBeta118WarningDisplayed(boolean beta118WarningDisplayed) {
-        this.beta118WarningDisplayed = beta118WarningDisplayed;
-    }
-
     public synchronized int getMinimumFreeSpaceForMaps() {
         return minimumFreeSpaceForMaps;
     }
@@ -707,6 +692,42 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
 
     public synchronized void setAutoDeleteBackups(boolean autoDeleteBackups) {
         this.autoDeleteBackups = autoDeleteBackups;
+    }
+
+    public synchronized ExportSettings getDefaultExportSettings() {
+        return defaultExportSettings;
+    }
+
+    public synchronized void setDefaultExportSettings(ExportSettings defaultExportSettings) {
+        this.defaultExportSettings = defaultExportSettings;
+    }
+
+    public synchronized boolean isMessageDisplayed(String messageKey) {
+        return displayedMessages.containsKey(messageKey);
+    }
+
+    public synchronized boolean isMessageDisplayedCountAtLeast(String messageKey, int count) {
+        return displayedMessages.containsKey(messageKey) && (displayedMessages.get(messageKey).size() >= count);
+    }
+
+    public synchronized void setMessageDisplayed(String messageKey) {
+        displayedMessages.computeIfAbsent(messageKey, k -> new ArrayList<>()).add(new MessageDisplayed(launchCount));
+    }
+
+    public synchronized Integer getMaxThreadCount() {
+        return maxThreadCount;
+    }
+
+    public synchronized void setMaxThreadCount(Integer maxThreadCount) {
+        this.maxThreadCount = maxThreadCount;
+    }
+
+    public synchronized int getViewDistance() {
+        return viewDistance;
+    }
+
+    public synchronized void setViewDistance(int viewDistance) {
+        this.viewDistance = viewDistance;
     }
 
     // Transient settings which aren't stored on disk
@@ -733,6 +754,30 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
 
     public void setUiScale(float uiScale) {
         this.uiScale = uiScale;
+    }
+
+    public int getDefaultResourcesMinimumLevel() {
+        return defaultResourcesMinimumLevel;
+    }
+
+    public void setDefaultResourcesMinimumLevel(int defaultResourcesMinimumLevel) {
+        this.defaultResourcesMinimumLevel = defaultResourcesMinimumLevel;
+    }
+
+    public Integer getMerchStoreDialogDisplayed() {
+        return merchStoreDialogDisplayed;
+    }
+
+    public void setMerchStoreDialogDisplayed(Integer merchStoreDialogDisplayed) {
+        this.merchStoreDialogDisplayed = merchStoreDialogDisplayed;
+    }
+
+    public int getShowDonationDialogAfter() {
+        return showDonationDialogAfter;
+    }
+
+    public void setShowDonationDialogAfter(int showDonationDialogAfter) {
+        this.showDonationDialogAfter = showDonationDialogAfter;
     }
 
     public <T> T getAdvancedSetting(AttributeKey<T> key) {
@@ -774,7 +819,7 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     }
     
     public synchronized List<EventVO> getEventLog() {
-        return (eventLog != null) ? new ArrayList<>(eventLog) : null;
+        return copyOf(eventLog);
     }
 
     public synchronized void removeEvents(Collection<EventVO> events) {
@@ -835,7 +880,10 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
             defaultMaxHeight = DEFAULT_MAX_HEIGHT_ANVIL;
         }
         if (defaultTerrainAndLayerSettings == null) {
-            defaultTerrainAndLayerSettings = new World2(JAVA_ANVIL_1_15, World2.DEFAULT_OCEAN_SEED, TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), surface, JAVA_ANVIL_1_15.minZ, defaultMaxHeight, level, waterLevel, lava, beaches, 20, 1.0), defaultMaxHeight).getDimension(DIM_NORMAL);
+            defaultTerrainAndLayerSettings = new World2(JAVA_ANVIL_1_15, World2.DEFAULT_OCEAN_SEED, TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), surface, JAVA_ANVIL_1_15.minZ, defaultMaxHeight, level, waterLevel, lava, beaches, 20, 1.0)).getDimension(NORMAL_DETAIL);
+        }
+        if (viewDistance == 0) {
+            viewDistance = 192; // 12 chunks (default of Minecraft 1.18.2)
         }
         
         // New legacy mechanism with version number
@@ -893,10 +941,10 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
                     for (Map.Entry<Integer, Terrain> entry : terrainRanges.entrySet()) {
                         if (entry.getValue() == Terrain.SNOW) {
                             if (!frostAdded) {
-                                layerMap.put(new HeightFilter(defaultMaxHeight, entry.getKey(), defaultMaxHeight - 1, theme.isRandomise()), Frost.INSTANCE);
+                                layerMap.put(new HeightFilter(0, defaultMaxHeight, entry.getKey(), defaultMaxHeight - 1, theme.isRandomise()), Frost.INSTANCE);
                                 frostAdded = true;
                             }
-                            entry.setValue(Terrain.ROCK);
+                            entry.setValue(Terrain.STONE_MIX);
                         }
                     }
                     if (! layerMap.isEmpty()) {
@@ -988,14 +1036,67 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
                 defaultPlatformId = JAVA_ANVIL_1_15.id;
             }
         }
-        if (minimumFreeSpaceForMaps == 0) {
-            minimumFreeSpaceForMaps = 5;
-            autoDeleteBackups = true;
+        if (version < 20) {
+            // Check whether the default terrain map still has the "rock" terrain type, which is inconsistent and
+            // problematic, and if so replace it with "stone mix".
+            if ((defaultTerrainAndLayerSettings.getTileFactory() instanceof HeightMapTileFactory)
+                    && (((HeightMapTileFactory) defaultTerrainAndLayerSettings.getTileFactory()).getTheme() instanceof SimpleTheme)) {
+                SimpleTheme theme = (SimpleTheme) ((HeightMapTileFactory) defaultTerrainAndLayerSettings.getTileFactory()).getTheme();
+                // Very old maps don't have terrainRanges set. They are out of
+                // luck; it's not worth migrating them as well
+                if (theme.getTerrainRanges() != null) {
+                    theme.getTerrainRanges().entrySet().forEach(entry -> {
+                        if (entry.getValue() == ROCK) {
+                            entry.setValue(STONE_MIX);
+                        }
+                    });
+                }
+            }
         }
-        if (defaultGeneratorObj == null) {
-            defaultGeneratorObj = MapGenerator.fromLegacySettings(defaultGenerator, DEFAULT_OCEAN_SEED, null, defaultGeneratorOptions, Platform.getById(defaultPlatformId));
-            defaultGenerator = null;
-            defaultGeneratorOptions = null;
+        if (version < 21) {
+            if (minimumFreeSpaceForMaps == 0) {
+                minimumFreeSpaceForMaps = 5;
+                autoDeleteBackups = true;
+            }
+            if (defaultGeneratorObj == null) {
+                defaultGeneratorObj = MapGenerator.fromLegacySettings(defaultGenerator, DEFAULT_OCEAN_SEED, null, defaultGeneratorOptions, Platform.getById(defaultPlatformId), null);
+                defaultGenerator = null;
+                defaultGeneratorOptions = null;
+            }
+            if ((defaultGeneratorObj.getType() == DEFAULT) && (getDefaultPlatform().supportedGenerators.contains(LARGE_BIOMES))){
+                defaultGeneratorObj = new SeededGenerator(LARGE_BIOMES, DEFAULT_OCEAN_SEED);
+            }
+        }
+        if (version < 22) {
+            defaultResourcesMinimumLevel = 8;
+        }
+        if (version < 23) {
+            if (launchCount < 5) {
+                showDonationDialogAfter = 5;
+            } else if (donationStatus == DONATED) {
+                showDonationDialogAfter = Math.max(launchCount + 5, 100);
+            } else {
+                showDonationDialogAfter = Math.max(launchCount + 5, 50);
+            }
+        }
+        if (version < 24) {
+            displayedMessages = new HashMap<>();
+            if (mergeWarningDisplayed) {
+                displayedMessages.put("org.pepsoft.worldpainter.mergeWarning", new ArrayList<>(Collections.singletonList(new MessageDisplayed(0))));
+                mergeWarningDisplayed = false;
+            }
+            if (importWarningDisplayed) {
+                displayedMessages.put("org.pepsoft.worldpainter.importWarning", new ArrayList<>(Collections.singletonList(new MessageDisplayed(0))));
+                importWarningDisplayed = false;
+            }
+            if (snapshotWarningDisplayed) {
+                displayedMessages.put("org.pepsoft.worldpainter.snapshotWarning", new ArrayList<>(Collections.singletonList(new MessageDisplayed(0))));
+                snapshotWarningDisplayed = false;
+            }
+            if (beta118WarningDisplayed) {
+                displayedMessages.put("org.pepsoft.worldpainter.beta118Warning", new ArrayList<>(Collections.singletonList(new MessageDisplayed(0))));
+                beta118WarningDisplayed = false;
+            }
         }
         if (defaultTerrainAndLayerSettings.getLayerSettings(Resources.INSTANCE) != null) {
             defaultTerrainAndLayerSettings.setLayerSettings(Resources.INSTANCE, null);
@@ -1015,10 +1116,9 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     }
 
     private void writeObject(ObjectOutputStream out) throws IOException {
-        // We keep having difficulties on Windows with Files being Windows-
-        // specific subclasses of File which don't serialise correctly and end
-        // up being null somehow. Work around the problem by making sure all
-        // Files are actually java.io.Files
+        // We keep having difficulties on Windows with Files being Windows- specific subclasses of File which don't
+        // serialise correctly and end up being null somehow. Work around the problem by making sure all Files are
+        // actually java.io.Files
         worldDirectory = FileUtils.absolutise(worldDirectory);
         savesDirectory = FileUtils.absolutise(savesDirectory);
         customObjectsDirectory = FileUtils.absolutise(customObjectsDirectory);
@@ -1031,6 +1131,7 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
         masksDirectory = FileUtils.absolutise(masksDirectory);
         backgroundImage = FileUtils.absolutise(backgroundImage);
         exportDirectoriesById = FileUtils.absolutise(exportDirectoriesById);
+        overlaysDirectory = FileUtils.absolutise(overlaysDirectory);
         
         out.defaultWriteObject();
     }
@@ -1066,33 +1167,20 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     }
 
     public static File getConfigDir() {
-        if (Version.isSnapshot()) {
-            if (SystemUtils.isMac()) {
-                return new File(System.getProperty("user.home"), "Library/Application Support/WorldPainter [SNAPSHOT]");
-            } else if (SystemUtils.isWindows()) {
-                String appDataStr = System.getenv("APPDATA");
-                if (appDataStr != null) {
-                    return new File(appDataStr, "WorldPainter [SNAPSHOT]");
-                } else {
-                    return new File(System.getProperty("user.home"), ".worldpainter-snapshot");
-                }
-            } else {
-                return new File(System.getProperty("user.home"), ".worldpainter-snapshot");
-            }
-        } else {
-            if (SystemUtils.isMac()) {
-                return new File(System.getProperty("user.home"), "Library/Application Support/WorldPainter");
-            } else if (SystemUtils.isWindows()) {
-                String appDataStr = System.getenv("APPDATA");
-                if (appDataStr != null) {
-                    return new File(appDataStr, "WorldPainter");
-                } else {
-                    return new File(System.getProperty("user.home"), ".worldpainter");
-                }
-            } else {
-                return new File(System.getProperty("user.home"), ".worldpainter");
+        if (SystemUtils.isMac()) {
+            return new File(System.getProperty("user.home"), "Library/Application Support/WorldPainter" + (Version.isSnapshot() ? " [SNAPSHOT]" : ""));
+        } else if (SystemUtils.isWindows()) {
+            final String appDataStr = System.getenv("APPDATA");
+            if (appDataStr != null) {
+                return new File(appDataStr, "WorldPainter" + (Version.isSnapshot() ? " [SNAPSHOT]" : ""));
             }
         }
+        // Backwards compatibility with existing installations:
+        final File defaultDir = new File(HOME, ".worldpainter" + (Version.isSnapshot() ? "-snapshot" : ""));
+        if (defaultDir.isDirectory()) {
+            return defaultDir;
+        }
+        return new File(XDG_DATA_HOME, "worldpainter" + (Version.isSnapshot() ? "-snapshot" : ""));
     }
 
     public static File getConfigFile() {
@@ -1122,8 +1210,10 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     }
 
     private Rectangle windowBounds;
-    private boolean maximised, hilly = true, lava, goodies = true, populate, beaches = true, mergeWarningDisplayed, importWarningDisplayed;
-    private int level = 58, waterLevel = 62, borderLevel = 62;
+    private boolean maximised, hilly = true, lava, goodies = true, populate, beaches = true;
+    @Deprecated
+    private boolean mergeWarningDisplayed, importWarningDisplayed;
+    private int level = 58, waterLevel = DEFAULT_WATER_LEVEL, borderLevel = DEFAULT_WATER_LEVEL;
     private Terrain surface = Terrain.GRASS, underground = Terrain.RESOURCES;
     private File worldDirectory;
     @Deprecated
@@ -1135,14 +1225,16 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     private Boolean pingAllowed;
     @Deprecated
     private Material[] customMaterials = {DIRT, DIRT, DIRT, DIRT, DIRT};
-    private int colourschemeIndex, launchCount;
+    @Deprecated
+    private int colourschemeIndex;
+    private int launchCount;
     private Map<Integer, File> minecraftJars = new HashMap<>();
     private DonationStatus donationStatus;
     private UUID uuid = UUID.randomUUID();
     // Default view and world settings
     private boolean checkForUpdates = true, undoEnabled = true, defaultGridEnabled, defaultContoursEnabled = true, defaultViewDistanceEnabled, defaultWalkingDistanceEnabled;
     private int undoLevels = 100, defaultGridSize = 128, defaultContourSeparation = 10, defaultWidth = 5, defaultHeight = 5, defaultMaxHeight = World2.DEFAULT_MAX_HEIGHT;
-    private Dimension defaultTerrainAndLayerSettings = new World2(DefaultPlugin.JAVA_ANVIL_1_15, World2.DEFAULT_OCEAN_SEED, TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), surface, JAVA_ANVIL_1_15.minZ, defaultMaxHeight, level, waterLevel, lava, beaches, 20, 1.0), defaultMaxHeight).getDimension(DIM_NORMAL);
+    private Dimension defaultTerrainAndLayerSettings = new World2(DEFAULT_PLATFORM, World2.DEFAULT_OCEAN_SEED, TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), surface, DEFAULT_PLATFORM.minZ, defaultMaxHeight, level, waterLevel, lava, beaches, 20, 1.0)).getDimension(NORMAL_DETAIL);
     private boolean toolbarsLocked;
     private int version = CURRENT_VERSION, worldFileBackups = 3;
     private float defaultRange = 20, uiScale;
@@ -1179,14 +1271,21 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     @Deprecated
     private Map<Platform, File> exportDirectories;
     private boolean autosaveEnabled = true;
-    private int autosaveDelay = 10000, autosaveInterval = 300000; // Ten seconds delay; five minutes interval
-    private String defaultPlatformId = DefaultPlugin.JAVA_ANVIL_1_15.id;
+    private int autosaveDelay = 60000, autosaveInterval = 600000; // One minute delay; ten minutes interval
+    private String defaultPlatformId = DEFAULT_PLATFORM.id;
     private Map<String, File> exportDirectoriesById = new HashMap<>();
-    private boolean snapshotWarningDisplayed;
-    private boolean beta118WarningDisplayed;
+    @Deprecated
+    private boolean snapshotWarningDisplayed, beta118WarningDisplayed;
     private int minimumFreeSpaceForMaps = 1;
     private boolean autoDeleteBackups = true;
-    private MapGenerator defaultGeneratorObj = new SeededGenerator(DEFAULT, DEFAULT_OCEAN_SEED);
+    private MapGenerator defaultGeneratorObj = new SeededGenerator(LARGE_BIOMES, DEFAULT_OCEAN_SEED);
+    private ExportSettings defaultExportSettings;
+    private int defaultResourcesMinimumLevel = 8, showDonationDialogAfter = 5;
+    private Integer merchStoreDialogDisplayed = 0;
+    private Map<String, List<MessageDisplayed>> displayedMessages = new HashMap<>();
+    private File overlaysDirectory;
+    private Integer maxThreadCount;
+    private int viewDistance = 192; // 12 chunks (default of Minecraft 1.18.2)
 
     /**
      * The acceleration type is only stored here at runtime. It is saved to disk
@@ -1202,12 +1301,24 @@ public final class Configuration implements Serializable, EventLogger, Minecraft
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Configuration.class);
     private static final long serialVersionUID = 2011041801L;
     private static final int CIRCULAR_WORLD = -1;
-    private static final int CURRENT_VERSION = 19;
+    private static final int CURRENT_VERSION = 24;
+
     public static final String ADVANCED_SETTING_PREFIX = "org.pepsoft.worldpainter";
+    public static final Platform DEFAULT_PLATFORM = JAVA_ANVIL_1_15;
 
     public enum DonationStatus {DONATED, NO_THANK_YOU}
     
     public enum LookAndFeel {SYSTEM, METAL, NIMBUS, DARK_METAL, DARK_NIMBUS}
 
     public enum OverlayType {SCALE_ON_LOAD, OPTIMISE_ON_LOAD, SCALE_ON_PAINT}
+
+    public static class MessageDisplayed implements Serializable {
+        public MessageDisplayed(int launchCount) {
+            this.launchCount = launchCount;
+            timestamp = new Date();
+        }
+
+        public int launchCount;
+        public Date timestamp;
+    }
 }

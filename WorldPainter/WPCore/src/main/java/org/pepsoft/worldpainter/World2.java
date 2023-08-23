@@ -8,11 +8,10 @@ package org.pepsoft.worldpainter;
 import org.jnbt.CompoundTag;
 import org.jnbt.XMLTransformer;
 import org.pepsoft.minecraft.*;
-import org.pepsoft.util.AttributeKey;
-import org.pepsoft.util.MemoryUtils;
-import org.pepsoft.util.ProgressReceiver;
-import org.pepsoft.util.SubProgressReceiver;
+import org.pepsoft.util.*;
 import org.pepsoft.util.undo.UndoManager;
+import org.pepsoft.worldpainter.Dimension.Anchor;
+import org.pepsoft.worldpainter.exporting.WorldExportSettings;
 import org.pepsoft.worldpainter.history.HistoryEntry;
 import org.pepsoft.worldpainter.layers.Biome;
 import org.pepsoft.worldpainter.layers.Layer;
@@ -23,11 +22,17 @@ import java.beans.PropertyChangeSupport;
 import java.io.*;
 import java.util.List;
 import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
+import static com.google.common.collect.ImmutableSortedSet.toImmutableSortedSet;
+import static java.util.Comparator.comparingInt;
+import static java.util.Objects.requireNonNull;
 import static org.pepsoft.minecraft.Material.WOOL_MAGENTA;
-import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
-import static org.pepsoft.worldpainter.Constants.TILE_SIZE;
-import static org.pepsoft.worldpainter.Generator.DEFAULT;
+import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.worldpainter.Dimension.Anchor.*;
+import static org.pepsoft.worldpainter.Generator.END;
+import static org.pepsoft.worldpainter.Generator.NETHER;
 import static org.pepsoft.worldpainter.World2.Warning.MISSING_CUSTOM_TERRAINS;
 import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_PLAINS;
 
@@ -36,31 +41,37 @@ import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_PLA
  * @author pepijn
  */
 public class World2 extends InstanceKeeper implements Serializable, Cloneable {
-    public World2(Platform platform, int maxHeight) {
+    public World2(Platform platform, int minHeight, int maxHeight) {
         if (platform == null) {
             throw new NullPointerException();
+        } else if ((minHeight < platform.minMinHeight) || (minHeight > platform.maxMinHeight)) {
+            throw new IllegalArgumentException("minHeight " + minHeight + " outside platform " + platform.displayName + " minHeight limits (" + platform.minMinHeight + " - " + platform.maxMinHeight + ")");
         } else if ((maxHeight < platform.minMaxHeight) || (maxHeight > platform.maxMaxHeight)) {
-            throw new IllegalArgumentException();
+            throw new IllegalArgumentException("maxHeight " + maxHeight + " outside platform " + platform.displayName + " maxHeight limits (" + platform.minMaxHeight + " - " + platform.maxMaxHeight + ")");
         }
         this.platform = platform;
+        this.minHeight = minHeight;
         this.maxheight = maxHeight;
     }
     
-    public World2(Platform platform, long minecraftSeed, TileFactory tileFactory, int maxHeight) {
+    public World2(Platform platform, long minecraftSeed, TileFactory tileFactory) {
         if (platform == null) {
             throw new NullPointerException();
-        } else if ((maxHeight < platform.minMaxHeight) || (maxHeight > platform.maxMaxHeight)) {
-            throw new IllegalArgumentException();
+        } else if ((tileFactory.getMinHeight() < platform.minMinHeight) || (tileFactory.getMinHeight() > platform.maxMinHeight)) {
+            throw new IllegalArgumentException("tileFactory.minHeight " + tileFactory.getMinHeight() + " < " + platform.minMinHeight + " or > " + platform.maxMinHeight);
+        } else if ((tileFactory.getMaxHeight() < platform.minMaxHeight) || (tileFactory.getMaxHeight() > platform.maxMaxHeight)) {
+            throw new IllegalArgumentException("tileFactory.maxHeight " + tileFactory.getMaxHeight() + " < " + platform.minMaxHeight + " or > " + platform.maxMaxHeight);
         }
         this.platform = platform;
-        this.maxheight = maxHeight;
-        Dimension dim = new Dimension(this, minecraftSeed, tileFactory, 0, platform.minZ, maxHeight);
+        this.minHeight = tileFactory.getMinHeight();
+        this.maxheight = tileFactory.getMaxHeight();
+        Dimension dim = new Dimension(this, "Surface", minecraftSeed, tileFactory, NORMAL_DETAIL);
         addDimension(dim);
     }
     
     public long getChangeNo() {
         long totalChangeNo = changeNo + borderSettings.getChangeNo();
-        for (Dimension dimension: dimensions.values()) {
+        for (Dimension dimension: dimensionsByAnchor.values()) {
             totalChangeNo += dimension.getChangeNo();
         }
         if (logger.isDebugEnabled()) {
@@ -74,6 +85,7 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
     }
 
     public void setName(String name) {
+        requireNonNull(name);
         if (! (name.equals(this.name))) {
             String oldName = this.name;
             this.name = name;
@@ -117,6 +129,9 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         }
     }
 
+    /**
+     * The {@code level.dat} file of the map this world was Imported from.
+     */
     public File getImportedFrom() {
         return importedFrom;
     }
@@ -169,26 +184,63 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
     public void removePropertyChangeListener(String propertyName, PropertyChangeListener listener) {
         propertyChangeSupport.removePropertyChangeListener(propertyName, listener);
     }
-    
+
+    /**
+     * @deprecated Use {@link #getDimension(Anchor)}.
+     */
+    @Deprecated
     public Dimension getDimension(int dim) {
-        return dimensions.get(dim);
+        switch (dim) {
+            case -3:
+                return getDimension(END_DETAIL_CEILING);
+            case -2:
+                return getDimension(NETHER_DETAIL_CEILING);
+            case -1:
+                return getDimension(NORMAL_DETAIL_CEILING);
+            case DIM_NORMAL:
+                return getDimension(NORMAL_DETAIL);
+            case DIM_NETHER:
+                return getDimension(NETHER_DETAIL);
+            case DIM_END:
+                return getDimension(END_DETAIL);
+            default:
+                return null;
+        }
     }
-    
-    public Dimension[] getDimensions() {
-        return dimensions.values().toArray(new Dimension[dimensions.size()]);
+
+    public boolean isDimensionPresent(Anchor anchor) {
+        return dimensionsByAnchor.containsKey(anchor);
     }
-    
+
+    public Dimension getDimension(Anchor anchor) {
+        return dimensionsByAnchor.get(anchor);
+    }
+
+    public Set<Dimension> getDimensions() {
+        return new HashSet<>(dimensionsByAnchor.values());
+    }
+
+    public Set<Dimension> getDimensionsWithRole(Dimension.Role role, boolean inverted, int id) {
+        return dimensionsByAnchor.values().stream()
+                .filter(dimension -> {
+                    final Anchor anchor = dimension.getAnchor();
+                    return (anchor.role == role) && (anchor.invert == inverted) && (anchor.id == id);
+                }).collect(toImmutableSortedSet(comparingInt(dimension -> dimension.getAnchor().dim)));
+    }
+
     public final void addDimension(Dimension dimension) {
-        if (dimensions.containsKey(dimension.getDim())) {
-            throw new IllegalStateException("Dimension " + dimension.getDim() + " already exists");
-        } else if (dimension.getMaxHeight() != maxheight) {
-            throw new IllegalStateException("Dimension has different max height (" + dimension.getMaxHeight() + ") than world (" + maxheight + ")");
+        if (dimensionsByAnchor.containsKey(dimension.getAnchor())) {
+            throw new IllegalStateException("Dimension " + dimension.getAnchor() + " already exists");
+        } else if (dimension.getMinHeight() < minHeight) {
+            throw new IllegalStateException("Dimension has lower min height (" + dimension.getMinHeight() + ") than world (" + minHeight + ")");
+        } else if (dimension.getMaxHeight() > maxheight) {
+            throw new IllegalStateException("Dimension has higher max height (" + dimension.getMaxHeight() + ") than world (" + maxheight + ")");
         } else {
             if (dimension.getWorld() != this) {
                 throw new IllegalArgumentException("Dimension belongs to another world");
             }
-            dimensions.put(dimension.getDim(), dimension);
-            if (dimension.getDim() == 0) {
+            dimensionsByAnchor.put(dimension.getAnchor(), dimension);
+            if (dimension.getAnchor().dim == DIM_NORMAL) {
                 TileFactory tileFactory = dimension.getTileFactory();
                 if (tileFactory instanceof HeightMapTileFactory) {
                     if (((HeightMapTileFactory) tileFactory).getWaterHeight() < 32) {
@@ -198,19 +250,19 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
                 }
             }
         }
-        if (dimension.getDim() != DIM_NORMAL) {
+        if (! dimension.getAnchor().equals(NORMAL_DETAIL)) {
             history.add(new HistoryEntry(HistoryEntry.WORLD_DIMENSION_ADDED, dimension.getName()));
         }
     }
 
-    public Dimension removeDimension(int dim) {
-        if (dimensions.containsKey(dim)) {
+    public Dimension removeDimension(Anchor anchor) {
+        if (dimensionsByAnchor.containsKey(anchor)) {
             changeNo++;
-            Dimension dimension = dimensions.remove(dim);
+            Dimension dimension = dimensionsByAnchor.remove(anchor);
             history.add(new HistoryEntry(HistoryEntry.WORLD_DIMENSION_REMOVED, dimension.getName()));
             return dimension;
         } else {
-            throw new IllegalStateException("Dimension " + dim + " does not exist");
+            throw new IllegalStateException("Dimension " + anchor + " does not exist");
         }
     }
 
@@ -227,17 +279,40 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         }
     }
 
+    public int getMinHeight() {
+        return minHeight;
+    }
+
+    public void setMinHeight(int minHeight) {
+        if (minHeight != this.minHeight) {
+            final int oldMinHeight = this.minHeight;
+            this.minHeight = minHeight;
+            changeNo++;
+            propertyChangeSupport.firePropertyChange("minHeight", oldMinHeight, minHeight);
+        }
+    }
+
     public int getMaxHeight() {
         return maxheight;
     }
 
     public void setMaxHeight(int maxHeight) {
         if (maxHeight != this.maxheight) {
-            int oldMaxHeight = this.maxheight;
+            final int oldMaxHeight = this.maxheight;
             this.maxheight = maxHeight;
             changeNo++;
             propertyChangeSupport.firePropertyChange("maxHeight", oldMaxHeight, maxHeight);
         }
+    }
+
+    /**
+     * Returns the generator type setting of the surface dimension.
+     *
+     * @deprecated Use {@link Dimension#getGenerator()}.
+     */
+    @Deprecated
+    public Generator getGenerator() {
+        return dimensionsByAnchor.get(NORMAL_DETAIL).getGenerator().getType();
     }
 
     public Platform getPlatform() {
@@ -268,14 +343,6 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
             changeNo++;
             propertyChangeSupport.firePropertyChange("askToConvertToAnvil", askToConvertToAnvil, !askToConvertToAnvil);
         }
-    }
-
-    public Set<Point> getTilesToExport() {
-        return tilesToExport;
-    }
-
-    public void setTilesToExport(Set<Point> tilesToExport) {
-        this.tilesToExport = tilesToExport;
     }
 
     public boolean isAskToRotate() {
@@ -323,6 +390,19 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         }
     }
 
+    /**
+     * Returns the custom generator name setting of the surface dimension, or {@code null} if the surface dimension
+     * generator is not a custom generator.
+     *
+     * @deprecated Use {@link Dimension#getGenerator()}.
+     */
+    @Deprecated
+    public String getGeneratorOptions() {
+        return (dimensionsByAnchor.get(NORMAL_DETAIL).getGenerator() instanceof CustomGenerator)
+                ? ((CustomGenerator) dimensionsByAnchor.get(NORMAL_DETAIL).getGenerator()).getName()
+                : null;
+    }
+
     public boolean isExtendedBlockIds() {
         return extendedBlockIds;
     }
@@ -345,6 +425,19 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
             this.difficulty = difficulty;
             changeNo++;
             propertyChangeSupport.firePropertyChange("difficulty", oldDifficulty, difficulty);
+        }
+    }
+
+    public WorldExportSettings getExportSettings() {
+        return exportSettings;
+    }
+
+    public void setExportSettings(WorldExportSettings exportSettings) {
+        if (! Objects.equals(exportSettings, this.exportSettings)) {
+            final WorldExportSettings oldExportSettings = this.exportSettings;
+            this.exportSettings = exportSettings;
+            changeNo++;
+            propertyChangeSupport.firePropertyChange("exportSettings", oldExportSettings, exportSettings);
         }
     }
 
@@ -372,6 +465,9 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         return borderSettings;
     }
 
+    /**
+     * The {@code level.dat} file of the map with which this world was last Merged.
+     */
     public File getMergedWith() {
         return mergedWith;
     }
@@ -385,16 +481,16 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         }
     }
 
-    public Set<Integer> getDimensionsToExport() {
-        return dimensionsToExport;
+    public List<File> getDataPacks() {
+        return dataPacks;
     }
 
-    public void setDimensionsToExport(Set<Integer> dimensionsToExport) {
-        if ((dimensionsToExport == null) ? (this.dimensionsToExport != null) : (! dimensionsToExport.equals(this.dimensionsToExport))) {
-            Set<Integer> oldMergedDimensions = this.dimensionsToExport;
-            this.dimensionsToExport = dimensionsToExport;
+    public void setDataPacks(List<File> dataPacks) {
+        if (! Objects.equals(dataPacks, this.dataPacks)) {
+            final List<File> oldDataPacks = this.dataPacks;
+            this.dataPacks = dataPacks;
             changeNo++;
-            propertyChangeSupport.firePropertyChange("mergedDimensions", oldMergedDimensions, dimensionsToExport);
+            propertyChangeSupport.firePropertyChange("dataPacks", oldDataPacks, dataPacks);
         }
     }
 
@@ -430,8 +526,8 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
      *     rotation progress.
      */
     public void transform(CoordinateTransform transform, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
-        int dimCount = dimensions.size(), dim = 0;
-        for (Dimension dimension: dimensions.values()) {
+        int dimCount = dimensionsByAnchor.size(), dim = 0;
+        for (Dimension dimension: dimensionsByAnchor.values()) {
             dimension.transform(transform, (progressReceiver != null) ? new SubProgressReceiver(progressReceiver, (float) dim / dimCount, 1.0f / dimCount) : null);
             dim++;
         }
@@ -449,14 +545,14 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
      * transforms any surface-related metadata stored in the world. If an undo
      * manager is installed this operation will destroy all undo info.
      *
-     * @param dim The index of the dimension to transform.
+     * @param anchor The anchor of the dimension to transform.
      * @param transform The coordinate transform to apply.
      * @param progressReceiver A progress receiver which will be informed of
      *     rotation progress.
      */
-    public void transform(int dim, CoordinateTransform transform, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
-        dimensions.get(dim).transform(transform, progressReceiver);
-        if (dim == DIM_NORMAL) {
+    public void transform(Anchor anchor, CoordinateTransform transform, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
+        dimensionsByAnchor.get(anchor).transform(transform, progressReceiver);
+        if (anchor.equals(NORMAL_DETAIL)) {
             Point oldSpawnPoint = spawnPoint;
             spawnPoint = transform.transform(spawnPoint);
             propertyChangeSupport.firePropertyChange("spawnPoint", oldSpawnPoint, spawnPoint);
@@ -468,15 +564,37 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
     }
 
     public void clearLayerData(Layer layer) {
-        for (Dimension dimension: dimensions.values()) {
+        for (Dimension dimension: dimensionsByAnchor.values()) {
             dimension.clearLayerData(layer);
         }
     }
     
-    @SuppressWarnings("unchecked")
     public long measureSize() {
-        dimensions.values().forEach(org.pepsoft.worldpainter.Dimension::ensureAllReadable);
+        dimensionsByAnchor.values().forEach(org.pepsoft.worldpainter.Dimension::ensureAllReadable);
         return MemoryUtils.getSize(this, new HashSet<>(Arrays.asList(UndoManager.class, Dimension.Listener.class, PropertyChangeSupport.class, Layer.class, Terrain.class)));
+    }
+
+    public synchronized void save(ZipOutputStream out) throws IOException {
+        // First serialise everything but the dimensions to a separate file
+        out.putNextEntry(new ZipEntry("world-data.bin"));
+        try {
+            final Map<Anchor, Dimension> savedDimensions = dimensionsByAnchor;
+            try {
+                dimensionsByAnchor = null;
+                final ObjectOutputStream dataout = new ObjectOutputStream(out);
+                dataout.writeObject(this);
+                dataout.flush();
+            } finally {
+                dimensionsByAnchor = savedDimensions;
+            }
+        } finally {
+            out.closeEntry();
+        }
+
+        // Then serialise the dimensions individually
+        for (Dimension dimension: dimensionsByAnchor.values()) {
+            dimension.save(out);
+        }
     }
 
     /**
@@ -497,9 +615,22 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         }
     }
 
+    private void writeObject(ObjectOutputStream out) throws IOException {
+        // We keep having difficulties on Windows with Files being Windows- specific subclasses of File which don't
+        // serialise correctly and end up being null somehow. Work around the problem by making sure all Files are
+        // actually java.io.Files
+        dataPacks = FileUtils.absolutise(dataPacks);
+
+        out.defaultWriteObject();
+    }
+
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
         propertyChangeSupport = new PropertyChangeSupport(this);
+
+        if (dimensionsByAnchor == null) {
+            dimensionsByAnchor = new HashMap<>();
+        }
 
         // Legacy maps
         if (wpVersion < 1) {
@@ -633,8 +764,14 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
                     platform = (maxheight == org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL) ? DefaultPlugin.JAVA_ANVIL : DefaultPlugin.JAVA_MCREGION;
             }
             version = -1;
-            gameTypeObj = GameType.values()[gameType];
-            gameType = -1;
+            if (gameType == -1) {
+                // No idea how this can happen, but it has been observed in the wild
+                addWarning(Warning.GAME_TYPE_RESET);
+                gameTypeObj = GameType.SURVIVAL;
+            } else {
+                gameTypeObj = GameType.values()[gameType];
+                gameType = -1;
+            }
         }
         if (wpVersion < 7) {
             if ((generatorOptions != null) && (! generatorOptions.trim().isEmpty())) {
@@ -679,29 +816,41 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         }
         if (wpVersion < 9) {
             dimensions.values().forEach(dimension -> {
-                if (dimension.getDim() == DIM_NORMAL) {
-                    MapGenerator generator = MapGenerator.fromLegacySettings(this.generator, dimensions.get(DIM_NORMAL).getMinecraftSeed(), generatorName, generatorOptions, platform);
-                    dimension.setGenerator(generator);
-                } else {
-                    dimension.setGenerator(new SeededGenerator(DEFAULT, dimension.getMinecraftSeed()));
+                switch (dimension.getAnchor().dim) {
+                    case DIM_NORMAL:
+                        MapGenerator generator = MapGenerator.fromLegacySettings(this.generator, dimension.getMinecraftSeed(), generatorName, generatorOptions, platform, this::addWarning);
+                        dimension.setGenerator(generator);
+                        break;
+                    case DIM_NETHER:
+                        dimension.setGenerator(new SeededGenerator(NETHER, dimension.getSeed()));
+                        break;
+                    case DIM_END:
+                        dimension.setGenerator(new SeededGenerator(END, dimension.getSeed()));
+                        break;
                 }
             });
             this.generator = null;
             generatorName = null;
             generatorOptions = null;
         }
+        if (wpVersion < 10) {
+            dimensions.values().forEach(dimension -> dimensionsByAnchor.put(dimension.getAnchor(), dimension));
+            dimensions = null;
+        }
+        if (wpVersion < 11) {
+            if (((dimensionsToExport != null) && (! dimensionsToExport.isEmpty())) || ((tilesToExport != null) && (! tilesToExport.isEmpty()))) {
+                exportSettings = new WorldExportSettings(((dimensionsToExport != null) && (! dimensionsToExport.isEmpty())) ? dimensionsToExport : null,
+                        ((tilesToExport != null) && (! tilesToExport.isEmpty())) ? tilesToExport : null,
+                        null);
+            }
+            dimensionsToExport = null;
+            tilesToExport = null;
+        }
+        if (wpVersion < 12) {
+            minHeight = platform.minZ;
+        }
         wpVersion = CURRENT_WP_VERSION;
-        
-        // Bug fix: fix the maxHeight of the dimensions, which somehow is not
-        // always correctly set (possibly only on imported worlds from
-        // non-standard height maps due to a bug which should be fixed).
-        dimensions.values().stream()
-            .filter(dimension -> (dimension.getMaxHeight() != maxheight) && (dimension.getMaxHeight() != 0))
-            .forEach(dimension -> {
-                logger.warn("Fixing maxHeight of dimension " + dimension.getDim() + " (was " + dimension.getMaxHeight() + ", should be " + maxheight + ")");
-                dimension.setMaxHeight(maxheight);
-            });
-        
+
         // The number of custom terrains increases now and again; correct old
         // worlds for it
         if (mixedMaterials.length != Terrain.CUSTOM_TERRAIN_COUNT) {
@@ -713,7 +862,8 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
     private boolean createGoodiesChest = true;
     private Point spawnPoint = new Point(0, 0);
     private File importedFrom;
-    private final SortedMap<Integer, Dimension> dimensions = new TreeMap<>();
+    @Deprecated
+    private SortedMap<Integer, Dimension> dimensions;
     private boolean mapFeatures = true;
     @Deprecated
     private int gameType;
@@ -733,6 +883,7 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
     private boolean customBiomes;
     @Deprecated
     private int dimensionToExport;
+    @Deprecated
     private Set<Point> tilesToExport;
     private boolean askToRotate, allowMerging = true;
     private Direction upIs = Direction.NORTH;
@@ -746,12 +897,17 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
     private List<HistoryEntry> history = new ArrayList<>();
     private BorderSettings borderSettings = new BorderSettings();
     private File mergedWith;
+    @Deprecated
     private Set<Integer> dimensionsToExport;
     private Platform platform;
     private GameType gameTypeObj = GameType.SURVIVAL;
     private Map<String, Object> attributes;
     @Deprecated
     private SuperflatPreset superflatPreset;
+    private Map<Anchor, Dimension> dimensionsByAnchor = new HashMap<>();
+    private WorldExportSettings exportSettings;
+    private List<File> dataPacks;
+    private int minHeight;
     private transient Set<Warning> warnings;
     private transient Map<String, Object> metadata;
     private transient long changeNo;
@@ -794,12 +950,17 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
      */
     public static final String METADATA_KEY_PLUGINS = "org.pepsoft.worldpainter.plugins";
 
-    private static final int CURRENT_WP_VERSION = 9;
+    /**
+     * A string containing the name of the world.
+     */
+    public static final String METADATA_KEY_NAME = "name";
+
+    private static final int CURRENT_WP_VERSION = 12;
 
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(World2.class);
     private static final long serialVersionUID = 2011062401L;
 
-    enum Warning {
+    public enum Warning {
         /**
          * Warn the user that automatic biomes are now the default and are enabled.
          */
@@ -813,7 +974,17 @@ public class World2 extends InstanceKeeper implements Serializable, Cloneable {
         /**
          * Warn the user that one or more custom terrain types were missing and have been replaced with magenta wool.
          */
-        MISSING_CUSTOM_TERRAINS
+        MISSING_CUSTOM_TERRAINS,
+
+        /**
+         * Warn the user that the Superflat settings could not be parsed and were reset to defaults.
+         */
+        SUPERFLAT_SETTINGS_RESET,
+
+        /**
+         * The game type was lost and was reset to Survival.
+         */
+        GAME_TYPE_RESET
     }
     
     public static class BorderSettings implements Serializable, org.pepsoft.util.undo.Cloneable<BorderSettings> {

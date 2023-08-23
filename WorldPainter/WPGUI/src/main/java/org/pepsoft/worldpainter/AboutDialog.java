@@ -32,12 +32,14 @@ import java.net.MalformedURLException;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.charset.Charset;
 import java.text.MessageFormat;
 import java.util.List;
 import java.util.ResourceBundle;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pepsoft.util.GUIUtils.scaleToUI;
+import static org.pepsoft.util.GUIUtils.scaleWindow;
+import static org.pepsoft.util.swing.MessageUtils.showInfo;
 
 /**
  *
@@ -69,6 +71,7 @@ public class AboutDialog extends javax.swing.JDialog implements WindowListener {
 
         scaleToUI(this);
         jLabel1.setIcon(new ImageIcon(scaleToUI(((ImageIcon) jLabel1.getIcon()).getImage(), true)));
+        scaleWindow(this);
         setLocationRelativeTo(parent);
         addWindowListener(this);
     }
@@ -111,8 +114,7 @@ public class AboutDialog extends javax.swing.JDialog implements WindowListener {
         String style = String.format("body {font-family: %s; font-size: %dpt; color: #%06x; background-color: #%06x;} a {color: #%06x;}",
             defaultTextPaneFont.getFamily(), defaultTextPaneFont.getSize(), textColour.getRGB() & 0xffffff,
             jTextPane2.getBackground().getRGB() & 0xffffff, linkColour.getRGB() & 0xffffff);
-        InputStreamReader in = new InputStreamReader(AboutDialog.class.getResourceAsStream("resources/credits.html"), Charset.forName("UTF-8"));
-        try {
+        try (InputStreamReader in = new InputStreamReader(AboutDialog.class.getResourceAsStream("resources/credits.html"), UTF_8)){
             StringBuilder sb = new StringBuilder();
             char[] buffer = new char[BUFFER_SIZE];
             int read;
@@ -130,18 +132,12 @@ public class AboutDialog extends javax.swing.JDialog implements WindowListener {
                 style});
         } catch (IOException e) {
             throw new RuntimeException("I/O error reading resource", e);
-        } finally {
-            try {
-                in.close();
-            } catch (IOException e) {
-                throw new RuntimeException("I/O error closing resource", e);
-            }
         }
     }
     
     private String loadChangelog() {
         try {
-            return FileUtils.load(ClassLoader.getSystemResourceAsStream("CHANGELOG"), Charset.forName("UTF-8"));
+            return FileUtils.load(ClassLoader.getSystemResourceAsStream("CHANGELOG"), UTF_8);
         } catch (IOException e) {
             throw new RuntimeException("I/O error while loading change log from classpath", e);
         }
@@ -156,7 +152,7 @@ public class AboutDialog extends javax.swing.JDialog implements WindowListener {
             DesktopUtils.open(new URL("https://www.worldpainter.net/donate/paypal"));
             Configuration config = Configuration.getInstance();
             config.setDonationStatus(Configuration.DonationStatus.DONATED);
-            JOptionPane.showMessageDialog(this, strings.getString("the.donation.paypal.page.has.been.opened"), strings.getString("thank.you"), JOptionPane.INFORMATION_MESSAGE);
+            showInfo(this, strings.getString("the.donation.paypal.page.has.been.opened"), strings.getString("thank.you"));
             config.logEvent(new EventVO(Constants.EVENT_KEY_DONATION_DONATE).addTimestamp());
         } catch (MalformedURLException e) {
             throw new RuntimeException(e);

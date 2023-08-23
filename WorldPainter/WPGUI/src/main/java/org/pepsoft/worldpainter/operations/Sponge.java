@@ -7,6 +7,8 @@ package org.pepsoft.worldpainter.operations;
 import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.layers.FloodWithLava;
 
+import javax.swing.*;
+
 /**
  *
  * @author pepijn
@@ -17,8 +19,17 @@ public class Sponge extends RadiusOperation {
     }
 
     @Override
+    public JPanel getOptionsPanel() {
+        return OPTIONS_PANEL;
+    }
+
+    @Override
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
         final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
         final int waterHeight, minHeight = dimension.getMinHeight();
         final TileFactory tileFactory = dimension.getTileFactory();
         if (tileFactory instanceof HeightMapTileFactory) {
@@ -49,4 +60,6 @@ public class Sponge extends RadiusOperation {
             dimension.setEventsInhibited(false);
         }
     }
+
+    private static final JPanel OPTIONS_PANEL = new StandardOptionsPanel("Sponge", "<ul><li>Left-click to remove water and lava<li>Right-click to reset to the default fluid type and height</ul>");
 }

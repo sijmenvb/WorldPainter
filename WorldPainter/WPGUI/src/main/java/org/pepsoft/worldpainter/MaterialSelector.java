@@ -7,16 +7,26 @@ package org.pepsoft.worldpainter;
 
 import org.pepsoft.minecraft.Material;
 import org.pepsoft.util.DesktopUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
+import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Vector;
 
 import static org.pepsoft.minecraft.Block.BLOCKS;
+import static org.pepsoft.minecraft.Material.MINECRAFT;
+import static org.pepsoft.util.AwtUtils.doLaterOnEventThread;
+import static org.pepsoft.util.CollectionUtils.copyOf;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowError;
 import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
 
 /**
@@ -25,6 +35,7 @@ import static org.pepsoft.worldpainter.Platform.Capability.NAME_BASED;
  *
  * @author Pepijn
  */
+@SuppressWarnings({"unused", "FieldCanBeLocal"})
 public class MaterialSelector extends javax.swing.JPanel {
     /**
      * Creates new form MaterialEditor
@@ -59,8 +70,7 @@ public class MaterialSelector extends javax.swing.JPanel {
             namespace = material.namespace;
             simpleName = material.simpleName;
             loadActualProperties();
-            if (namespace.equals(Material.MINECRAFT) || ((platform != null) && (! platform.capabilities.contains(NAME_BASED)))) {
-                radioButtonMinecraft.setSelected(true);
+            if (legacyMode) {
                 int blockType = material.blockType;
                 if (blockType >= 0) {
                     comboBoxBlockType.setSelectedIndex(blockType);
@@ -68,16 +78,17 @@ public class MaterialSelector extends javax.swing.JPanel {
                 } else {
                     comboBoxBlockType.setSelectedItem(null);
                     spinnerDataValue.setValue(0);
+                    doLaterOnEventThread(() -> beepAndShowError(this, "The material (" + material.name + ") is not compatible with the current map format (" + platform.displayName + ").\nSelect a compatible material.", "Incompatible Material"));
                 }
-                updateModernIds();
+                updateMaterialName();
+            } else if (namespace.equals(MINECRAFT)) {
+                radioButtonMinecraft.setSelected(true);
+                comboBoxMinecraftName.setSelectedItem(simpleName);
             } else {
                 radioButtonCustom.setSelected(true);
                 comboBoxNamespace.setSelectedItem(namespace);
-                fieldCustomName.setText(simpleName);
-                comboBoxBlockType.setSelectedItem(null);
-                spinnerDataValue.setValue(0);
-                comboBoxMinecraftName.setSelectedItem(null);
-                updateLegacyIds();
+                updateKnownCustomNames();
+                comboBoxCustomName.setSelectedItem(simpleName);
             }
             setControlStates();
         } finally {
@@ -86,6 +97,7 @@ public class MaterialSelector extends javax.swing.JPanel {
     }
     
     public Material getMaterial() {
+        updateMaterial();
         return material;
     }
 
@@ -113,17 +125,27 @@ public class MaterialSelector extends javax.swing.JPanel {
     }
 
     public void setPlatform(Platform platform) {
-        if (! Objects.equals(platform, this.platform)) {
-            this.platform = platform;
-            setControlStates();
+        if (platform == null) {
+            throw new NullPointerException();
+        } else if (this.platform != null) {
+            throw new IllegalStateException("Platform already set");
         }
+        this.platform = platform;
+        legacyMode = ! platform.capabilities.contains(NAME_BASED);
+        if (legacyMode) {
+            remove(0);
+            ((TitledBorder) jScrollPane1.getBorder()).setTitle("Modern properties");
+        } else {
+            remove(1);
+        }
+        setControlStates();
     }
 
     /**
      * Load the properties of the current material into the properties panel.
      */
     private void loadActualProperties() {
-        properties = (material.getProperties() != null) ? new HashMap<>(material.getProperties()) : null;
+        properties = copyOf(material.getProperties());
         updateProperties();
     }
 
@@ -132,12 +154,8 @@ public class MaterialSelector extends javax.swing.JPanel {
      * the current namespace and simple name) into the properties panel.
      */
     private void loadDefaultProperties() {
-        Material defaultMaterial = Material.getDefault(namespace + ":" + simpleName);
-        if (defaultMaterial != null) {
-            properties = (defaultMaterial.getProperties() != null) ? new HashMap<>(defaultMaterial.getProperties()) : null;
-        } else {
-            properties = null;
-        }
+        Material defaultMaterial = Material.getPrototype(namespace + ":" + simpleName);
+        properties = copyOf(defaultMaterial.getProperties());
         updateProperties();
     }
 
@@ -145,66 +163,52 @@ public class MaterialSelector extends javax.swing.JPanel {
      * Update the properties panel to reflect the current properties.
      */
     private void updateProperties() {
-        panelProperties.removeAll();
-        propertyEditors.clear();
+        boolean propertiesChanged = false;
+        if (panelProperties.getComponentCount() > 0) {
+            panelProperties.removeAll();
+            propertyEditors.clear();
+            propertiesChanged = true;
+        }
         if (properties != null) {
             for (Map.Entry<String, String> entry: properties.entrySet()) {
-                String key = entry.getKey();
-                String value = entry.getValue();
-                // TODO: is this robust enough?
-                // Is it a boolean?
-                if (value.equals("true") || (value.equals("false"))) {
-                    addBooleanProperty(key, Boolean.valueOf(value), false);
-                } else {
-                    // Not a boolean, try an int
-                    try {
-                        addIntProperty(key, Integer.parseInt(value), false);
-                    } catch (NumberFormatException e) {
-                        // Not an int, that leaves string
-                        // TODO: support enums (do those exist in properties?)
-                        addStringProperty(key, value, false);
+                final String name = entry.getKey();
+                final String value = entry.getValue();
+                final Material.PropertyDescriptor descriptor = (material.propertyDescriptors != null) ? material.propertyDescriptors.get(name) : null;
+                if (descriptor != null) {
+                    switch (descriptor.type) {
+                        case BOOLEAN:
+                            addBooleanProperty(name, Boolean.parseBoolean(value));
+                            break;
+                        case INTEGER:
+                            addIntProperty(name, descriptor.minValue, Integer.parseInt(value), descriptor.maxValue);
+                            break;
+                        case ENUM:
+                            addStringProperty(name, value, descriptor.enumValues, false);
+                            break;
+                        default:
+                            throw new IllegalArgumentException("Unknown property type: " + descriptor.type);
                     }
+                } else {
+                    // No idea; just fall back to a string
+                    addStringProperty(name, value, null, false);
                 }
+                propertiesChanged = true;
             }
-//            GridBagConstraints constraints = new GridBagConstraints();
-//            constraints.gridwidth = GridBagConstraints.REMAINDER;
-//            constraints.weighty = 1.0;
-//            panelProperties.add(Box.createGlue(), constraints);
         }
-        Window parentWindow = SwingUtilities.windowForComponent(this);
-        if (parentWindow != null) {
-            parentWindow.validate();
-            repaint();
+        if (propertiesChanged) {
+            Window parentWindow = SwingUtilities.windowForComponent(this);
+            if (parentWindow != null) {
+                parentWindow.validate();
+                repaint();
+            }
         }
     }
 
     /**
-     * Update the legacy block ID and data value to match the current material,
-     * if appropriate.
+     * Update the modern material name field to match the current material.
      */
-    private void updateLegacyIds() {
-        if (material.blockType >= 0) {
-            comboBoxBlockType.setSelectedIndex(material.blockType);
-            spinnerDataValue.setValue(material.data);
-        } else {
-            comboBoxBlockType.setSelectedItem(null);
-            spinnerDataValue.setValue(0);
-        }
-    }
-
-    /**
-     * Update the modern ID fields to match the current material.
-     */
-    private void updateModernIds() {
-        if (namespace.equals(Material.MINECRAFT)) {
-            comboBoxMinecraftName.setSelectedItem(simpleName);
-            comboBoxNamespace.setSelectedItem(null);
-            fieldCustomName.setText(null);
-        } else {
-            comboBoxMinecraftName.setSelectedItem(null);
-            comboBoxNamespace.setSelectedItem(namespace);
-            fieldCustomName.setText(simpleName);
-        }
+    private void updateMaterialName() {
+        labelMaterialName.setText(namespace + ":" + simpleName);
     }
 
     /**
@@ -212,25 +216,46 @@ public class MaterialSelector extends javax.swing.JPanel {
      *
      * @param key The key of the property.
      * @param value The initial value of the property.
+     * @param values Optionally, the possible values of the property.
      * @param focus Whether the new field should receive the keyboard focus.
      */
-    private void addStringProperty(String key, String value, boolean focus) {
+    private void addStringProperty(String key, String value, String[] values, boolean focus) {
         if (propertyEditors.containsKey(key)) {
             throw new IllegalStateException("Property " + key + " already present");
+        } else if (focus && legacyMode) {
+            throw new IllegalArgumentException("focus may not be true in legacy mode");
         }
-        JTextField control = new JTextField(value, 15);
-        control.setEnabled(propertiesEnabled);
+        JComponent control;
+        if (values != null) {
+            control = new JComboBox<>(values);
+            ((JComboBox<?>) control).setSelectedItem(value);
+        } else {
+            control = new JTextField(value, 15);
+        }
+        control.setEnabled(! legacyMode);
         propertyEditors.put(key, control);
-        control.addFocusListener(new FocusAdapter() {
-            @Override
-            public void focusLost(FocusEvent e) {
-                if (properties == null) {
-                    properties = new HashMap<>();
-                }
-                properties.put(key, control.getText());
-                updateMaterial();
+        if (! legacyMode) {
+            if (control instanceof JComboBox) {
+                ((JComboBox<?>) control).addActionListener(e -> {
+                    if (properties == null) {
+                        properties = new HashMap<>();
+                    }
+                    properties.put(key, (String) ((JComboBox<?>) control).getSelectedItem());
+                    updateMaterial();
+                });
+            } else {
+                control.addFocusListener(new FocusAdapter() {
+                    @Override
+                    public void focusLost(FocusEvent e) {
+                        if (properties == null) {
+                            properties = new HashMap<>();
+                        }
+                        properties.put(key, ((JTextField) control).getText());
+                        updateMaterial();
+                    }
+                });
             }
-        });
+        }
         JLabel label = new JLabel(uppercaseFirst(key) + ':');
         label.setLabelFor(control);
         addControlsRow(label, control);
@@ -242,61 +267,59 @@ public class MaterialSelector extends javax.swing.JPanel {
     /**
      * Add a integer-typed property to the properties panel.
      *
-     * @param key The key of the property.
-     * @param value The initial value of the property.
-     * @param focus Whether the new field should receive the keyboard focus.
+     * @param key      The key of the property.
+     * @param minValue The minimum value of the property.
+     * @param value    The initial value of the property.
+     * @param maxValue The maximum value of the property.
      */
-    private void addIntProperty(String key, int value, boolean focus) {
+    private void addIntProperty(String key, int minValue, int value, int maxValue) {
         if (propertyEditors.containsKey(key)) {
             throw new IllegalStateException("Property " + key + " already present");
         }
-        JSpinner control = new JSpinner(new SpinnerNumberModel(value, 0, 999, 1));
-        control.setEnabled(propertiesEnabled);
+        JSpinner control = new JSpinner(new SpinnerNumberModel(value, minValue, maxValue, 1));
+        control.setEnabled(! legacyMode);
         propertyEditors.put(key, control);
-        control.addChangeListener(e -> {
-            if (properties == null) {
-                properties = new HashMap<>();
-            }
-            properties.put(key, Integer.toString((Integer) control.getValue()));
-            updateMaterial();
-        });
+        if (! legacyMode) {
+            control.addChangeListener(e -> {
+                if (properties == null) {
+                    properties = new HashMap<>();
+                }
+                properties.put(key, Integer.toString((Integer) control.getValue()));
+                updateMaterial();
+            });
+        }
         JLabel label = new JLabel(uppercaseFirst(key) + ':');
         label.setLabelFor(control);
         addControlsRow(label, control); // TODO: determine actual bounds, if any
-        if (focus) {
-            control.requestFocusInWindow();
-        }
     }
 
     /**
      * Add a boolean-typed property to the properties panel.
      *
-     * @param key The key of the property.
+     * @param key   The key of the property.
      * @param value The initial value of the property.
-     * @param focus Whether the new field should receive the keyboard focus.
      */
-    private void addBooleanProperty(String key, boolean value, boolean focus) {
+    private void addBooleanProperty(String key, boolean value) {
         if (propertyEditors.containsKey(key)) {
             throw new IllegalStateException("Property " + key + " already present");
         }
         // Use a zero width space as the text so that the checkbox aligns to the
         // base line of the label
         JCheckBox control = new JCheckBox("\u200b", value);
-        control.setEnabled(propertiesEnabled);
+        control.setEnabled(! legacyMode);
         propertyEditors.put(key, control);
-        control.addActionListener(e -> {
-            if (properties == null) {
-                properties = new HashMap<>();
-            }
-            properties.put(key, Boolean.toString(control.isSelected()));
-            updateMaterial();
-        });
+        if (! legacyMode) {
+            control.addActionListener(e -> {
+                if (properties == null) {
+                    properties = new HashMap<>();
+                }
+                properties.put(key, Boolean.toString(control.isSelected()));
+                updateMaterial();
+            });
+        }
         JLabel label = new JLabel(uppercaseFirst(key) + ':');
         label.setLabelFor(control);
         addControlsRow(label, control);
-        if (focus) {
-            control.requestFocusInWindow();
-        }
     }
 
     /**
@@ -306,11 +329,11 @@ public class MaterialSelector extends javax.swing.JPanel {
      * @return The string with its first letter changed to uppercase.
      */
     private String uppercaseFirst(String str) {
-        return Character.toUpperCase(str.charAt(0)) + str.substring(1);
+        return str.isEmpty() ? str : Character.toUpperCase(str.charAt(0)) + str.substring(1);
     }
 
     /**
-     * Add a left-adjusted row of AWT contols to the properties panel.
+     * Add a left-adjusted row of AWT controls to the properties panel.
      *
      * @param controls The controls to add.
      */
@@ -331,20 +354,9 @@ public class MaterialSelector extends javax.swing.JPanel {
      * panel.
      */
     private void addProperty() {
-        AddPropertyDialog dialog = new AddPropertyDialog(SwingUtilities.getWindowAncestor(this));
-        dialog.setVisible(true);
-        if (! dialog.isCancelled()) {
-            switch (dialog.getPropertyType()) {
-                case AddPropertyDialog.TYPE_BOOLEAN:
-                    addBooleanProperty(dialog.getPropertyKey(), false, true);
-                    break;
-                case AddPropertyDialog.TYPE_INTEGER:
-                    addIntProperty(dialog.getPropertyKey(), 0, true);
-                    break;
-                case AddPropertyDialog.TYPE_STRING:
-                    addStringProperty(dialog.getPropertyKey(), "", true);
-                    break;
-            }
+        final String name = JOptionPane.showInputDialog(this, "Enter the name of the property to add:", "Add Property", JOptionPane.QUESTION_MESSAGE);
+        if ((name != null) && (! name.trim().isEmpty())) {
+            addStringProperty(name.trim(), "", null, true);
             SwingUtilities.windowForComponent(this).validate();
             repaint();
         }
@@ -355,19 +367,12 @@ public class MaterialSelector extends javax.swing.JPanel {
      * their current settings.
      */
     private void setControlStates() {
-        boolean minecraft = radioButtonMinecraft.isSelected();
-        boolean platformHasNames = (platform == null) || platform.capabilities.contains(NAME_BASED);
-        radioButtonMinecraft.setEnabled(platformHasNames);
-        radioButtonCustom.setEnabled(platformHasNames);
-        comboBoxBlockType.setEnabled(minecraft);
-        spinnerDataValue.setEnabled(minecraft);
-        comboBoxMinecraftName.setEnabled(minecraft && platformHasNames);
-        comboBoxNamespace.setEnabled(! minecraft);
-        fieldCustomName.setEnabled(! minecraft);
-        buttonAddProperty.setEnabled(! minecraft);
-        propertiesEnabled = platformHasNames;
-        for (Component control: propertyEditors.values()) {
-            control.setEnabled(propertiesEnabled);
+        if (! legacyMode) {
+            boolean minecraft = radioButtonMinecraft.isSelected();
+            comboBoxMinecraftName.setEnabled(minecraft);
+            comboBoxNamespace.setEnabled(! minecraft);
+            comboBoxCustomName.setEnabled(! minecraft);
+            buttonAddProperty.setEnabled(! minecraft);
         }
     }
 
@@ -378,11 +383,17 @@ public class MaterialSelector extends javax.swing.JPanel {
     private void blockIdOrDataChanged() {
         int blockType = comboBoxBlockType.getSelectedIndex();
         int dataValue = (Integer) spinnerDataValue.getValue();
+        if ((blockType < 0) || (blockType > 4095) || (dataValue < 0) || (dataValue > 15)) {
+            // No idea why this happens, but it has been observed in the wild TODO find out why and fix the underlying
+            //  cause
+            logger.error("blockIdOrDataChanged(): blockType = {}, dataValue = {}, comboBoxMinecraftName.selectedItem = {}, comboBoxNamespace.selectedItem = {}, comboBoxCustomName.selectedItem = {}", blockType, dataValue, comboBoxMinecraftName.getSelectedItem(), comboBoxNamespace.getSelectedItem(), comboBoxCustomName.getSelectedItem());
+            return;
+        }
         material = Material.get(blockType, dataValue);
         namespace = material.namespace;
         simpleName = material.simpleName;
         loadActualProperties();
-        updateModernIds();
+        updateMaterialName();
         firePropertyChange("material", null, getMaterial());
     }
 
@@ -394,25 +405,52 @@ public class MaterialSelector extends javax.swing.JPanel {
     private void minecraftNameChanged() {
         namespace = Material.MINECRAFT;
         simpleName = (String) comboBoxMinecraftName.getSelectedItem();
-        material = Material.getDefault(namespace + ':' + simpleName);
+        material = Material.getPrototype(namespace + ':' + simpleName);
         loadDefaultProperties();
-        updateLegacyIds();
         firePropertyChange("material", null, getMaterial());
     }
     
     private void updateMaterial() {
-        if ((namespace != null) && (! namespace.trim().isEmpty()) && (simpleName != null) && (! simpleName.trim().isEmpty())) {
-            programmaticChange = true;
-            try {
-                material = Material.get(namespace.trim() + ':' + simpleName.trim(), properties);
-                if (namespace.equals(Material.MINECRAFT)) {
-                    updateLegacyIds();
+        final Material oldMaterial = material;
+        final boolean previousProgrammaticChange = programmaticChange;
+        programmaticChange = true;
+        try {
+            if (legacyMode) {
+                if (comboBoxBlockType.getSelectedItem() != null) {
+                    material = Material.get(comboBoxBlockType.getSelectedIndex(), (int) spinnerDataValue.getValue());
                 }
-                firePropertyChange("material", null, material);
-            } finally {
-                programmaticChange = false;
+            } else {
+                if (radioButtonCustom.isSelected()) {
+                    // Make sure to finish editing the custom name, even if the field still has the keyboard focus
+                    simpleName = (String) comboBoxCustomName.getSelectedItem();
+                } else {
+                    simpleName = (String) comboBoxMinecraftName.getSelectedItem();
+                }
+                if ((simpleName != null) && (! simpleName.trim().isEmpty())) {
+                    if ((namespace == null) || namespace.trim().isEmpty()) {
+                        namespace = Material.MINECRAFT;
+                    }
+                    material = Material.get(namespace.trim() + ':' + simpleName.trim(), properties);
+                }
             }
+            if (material != oldMaterial) {
+                firePropertyChange("material", null, material);
+            }
+        } finally {
+            programmaticChange = previousProgrammaticChange;
         }
+    }
+
+    private void updateKnownCustomNames() {
+        final Vector<String> simpleNames;
+        if (MINECRAFT.equals(namespace)) {
+            simpleNames = new Vector<>();
+        } else {
+            simpleNames = new Vector<>(Material.getAllSimpleNamesForNamespace(namespace));
+            Collections.sort(simpleNames);
+        }
+        comboBoxCustomName.setModel(new DefaultComboBoxModel<>(simpleNames));
+        comboBoxCustomName.setSelectedItem(simpleName);
     }
 
     /**
@@ -420,28 +458,33 @@ public class MaterialSelector extends javax.swing.JPanel {
      * WARNING: Do NOT modify this code. The content of this method is always
      * regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"Convert2Lambda", "Anonymous2MethodRef", "DataFlowIssue"})
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
         buttonGroup1 = new javax.swing.ButtonGroup();
+        jPanel1 = new javax.swing.JPanel();
         radioButtonCustom = new javax.swing.JRadioButton();
         jLabel1 = new javax.swing.JLabel();
-        fieldCustomName = new javax.swing.JTextField();
         jLabel2 = new javax.swing.JLabel();
         comboBoxMinecraftName = new javax.swing.JComboBox<>();
-        buttonAddProperty = new javax.swing.JButton();
         comboBoxNamespace = new javax.swing.JComboBox<>();
         radioButtonMinecraft = new javax.swing.JRadioButton();
+        comboBoxCustomName = new javax.swing.JComboBox<>();
+        jPanel2 = new javax.swing.JPanel();
         jLabel3 = new javax.swing.JLabel();
         comboBoxBlockType = new javax.swing.JComboBox<>();
         jLabel4 = new javax.swing.JLabel();
         spinnerDataValue = new javax.swing.JSpinner();
         jLabel5 = new javax.swing.JLabel();
-        jLabel7 = new javax.swing.JLabel();
-        jLabel9 = new javax.swing.JLabel();
+        jLabel6 = new javax.swing.JLabel();
+        labelMaterialName = new javax.swing.JLabel();
+        jPanel3 = new javax.swing.JPanel();
         jScrollPane1 = new javax.swing.JScrollPane();
         panelProperties = new javax.swing.JPanel();
+        buttonAddProperty = new javax.swing.JButton();
+
+        setLayout(new javax.swing.BoxLayout(this, javax.swing.BoxLayout.PAGE_AXIS));
 
         buttonGroup1.add(radioButtonCustom);
         radioButtonCustom.setText("<html><em>Custom:</em></html>");
@@ -453,30 +496,12 @@ public class MaterialSelector extends javax.swing.JPanel {
 
         jLabel1.setText(":");
 
-        fieldCustomName.setColumns(15);
-        fieldCustomName.setEnabled(false);
-        fieldCustomName.addFocusListener(new java.awt.event.FocusAdapter() {
-            public void focusLost(java.awt.event.FocusEvent evt) {
-                fieldCustomNameFocusLost(evt);
-            }
-        });
-
         jLabel2.setText("minecraft:");
 
         comboBoxMinecraftName.setModel(new javax.swing.DefaultComboBoxModel<>(new String[] { "Item 1", "Item 2", "Item 3", "Item 4" }));
         comboBoxMinecraftName.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 comboBoxMinecraftNameActionPerformed(evt);
-            }
-        });
-
-        buttonAddProperty.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_add.png"))); // NOI18N
-        buttonAddProperty.setToolTipText("Add a property");
-        buttonAddProperty.setEnabled(false);
-        buttonAddProperty.setMargin(new java.awt.Insets(2, 2, 2, 2));
-        buttonAddProperty.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                buttonAddPropertyActionPerformed(evt);
             }
         });
 
@@ -498,7 +523,62 @@ public class MaterialSelector extends javax.swing.JPanel {
             }
         });
 
-        jLabel3.setText("block ID:");
+        comboBoxCustomName.setEditable(true);
+        comboBoxCustomName.addFocusListener(new java.awt.event.FocusAdapter() {
+            public void focusLost(java.awt.event.FocusEvent evt) {
+                comboBoxCustomNameFocusLost(evt);
+            }
+        });
+        comboBoxCustomName.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                comboBoxCustomNameActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout jPanel1Layout = new javax.swing.GroupLayout(jPanel1);
+        jPanel1.setLayout(jPanel1Layout);
+        jPanel1Layout.setHorizontalGroup(
+            jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel1Layout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(radioButtonCustom, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addComponent(radioButtonMinecraft, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(jLabel2)
+                        .addGap(0, 0, 0)
+                        .addComponent(comboBoxMinecraftName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                    .addGroup(jPanel1Layout.createSequentialGroup()
+                        .addGap(21, 21, 21)
+                        .addComponent(comboBoxNamespace, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(jLabel1)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(comboBoxCustomName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                .addContainerGap(62, Short.MAX_VALUE))
+        );
+        jPanel1Layout.setVerticalGroup(
+            jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel1Layout.createSequentialGroup()
+                .addContainerGap()
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(radioButtonMinecraft, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel2)
+                    .addComponent(comboBoxMinecraftName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(radioButtonCustom, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel1)
+                    .addComponent(comboBoxNamespace, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(comboBoxCustomName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        add(jPanel1);
+
+        jLabel3.setText("Block ID:");
 
         comboBoxBlockType.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -506,7 +586,7 @@ public class MaterialSelector extends javax.swing.JPanel {
             }
         });
 
-        jLabel4.setText("data value:");
+        jLabel4.setText("Data value:");
 
         spinnerDataValue.setModel(new javax.swing.SpinnerNumberModel(0, 0, 15, 1));
         spinnerDataValue.addChangeListener(new javax.swing.event.ChangeListener() {
@@ -525,115 +605,109 @@ public class MaterialSelector extends javax.swing.JPanel {
             }
         });
 
-        jLabel7.setText("Legacy:");
+        jLabel6.setText("Modern name:");
 
-        jLabel9.setText("Modern:");
+        labelMaterialName.setText("minecraft:grass_block");
 
-        jScrollPane1.setBorder(javax.swing.BorderFactory.createTitledBorder("Properties"));
-
-        panelProperties.setLayout(new java.awt.GridBagLayout());
-        jScrollPane1.setViewportView(panelProperties);
-
-        javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);
-        this.setLayout(layout);
-        layout.setHorizontalGroup(
-            layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(layout.createSequentialGroup()
+        javax.swing.GroupLayout jPanel2Layout = new javax.swing.GroupLayout(jPanel2);
+        jPanel2.setLayout(jPanel2Layout);
+        jPanel2Layout.setHorizontalGroup(
+            jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel2Layout.createSequentialGroup()
                 .addContainerGap()
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addGroup(layout.createSequentialGroup()
-                        .addComponent(jScrollPane1)
+                .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(jLabel5, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addGroup(jPanel2Layout.createSequentialGroup()
+                        .addComponent(jLabel3)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(buttonAddProperty))
-                    .addGroup(layout.createSequentialGroup()
-                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addComponent(radioButtonCustom, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(radioButtonMinecraft, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addGroup(layout.createSequentialGroup()
-                                .addGap(21, 21, 21)
-                                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                    .addGroup(layout.createSequentialGroup()
-                                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                            .addComponent(jLabel7)
-                                            .addComponent(jLabel9))
-                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                            .addGroup(layout.createSequentialGroup()
-                                                .addComponent(jLabel2)
-                                                .addGap(0, 0, 0)
-                                                .addComponent(comboBoxMinecraftName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                                            .addComponent(jLabel5, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                            .addGroup(layout.createSequentialGroup()
-                                                .addComponent(jLabel3)
-                                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                                .addComponent(comboBoxBlockType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                                .addGap(18, 18, 18)
-                                                .addComponent(jLabel4)
-                                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                                .addComponent(spinnerDataValue, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))))
-                                    .addGroup(layout.createSequentialGroup()
-                                        .addComponent(comboBoxNamespace, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                        .addComponent(jLabel1)
-                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                        .addComponent(fieldCustomName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))))
-                        .addGap(0, 0, Short.MAX_VALUE)))
-                .addContainerGap())
+                        .addComponent(comboBoxBlockType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addGap(18, 18, 18)
+                        .addComponent(jLabel4)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(spinnerDataValue, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                    .addGroup(jPanel2Layout.createSequentialGroup()
+                        .addComponent(jLabel6)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(labelMaterialName)))
+                .addContainerGap(135, Short.MAX_VALUE))
         );
-        layout.setVerticalGroup(
-            layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(layout.createSequentialGroup()
+        jPanel2Layout.setVerticalGroup(
+            jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel2Layout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(radioButtonMinecraft, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(jLabel2)
-                    .addComponent(comboBoxMinecraftName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(jLabel9))
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(jLabel7)
+                .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel3)
                     .addComponent(comboBoxBlockType, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel4)
                     .addComponent(spinnerDataValue, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jLabel5, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addGap(18, 18, 18)
+                .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel6)
+                    .addComponent(labelMaterialName))
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+        );
+
+        add(jPanel2);
+
+        jScrollPane1.setBorder(javax.swing.BorderFactory.createTitledBorder("Properties"));
+
+        panelProperties.setLayout(new java.awt.GridBagLayout());
+        jScrollPane1.setViewportView(panelProperties);
+
+        buttonAddProperty.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/pepsoft/worldpainter/icons/brick_add.png"))); // NOI18N
+        buttonAddProperty.setToolTipText("Add a property");
+        buttonAddProperty.setEnabled(false);
+        buttonAddProperty.setMargin(new java.awt.Insets(2, 2, 2, 2));
+        buttonAddProperty.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonAddPropertyActionPerformed(evt);
+            }
+        });
+
+        javax.swing.GroupLayout jPanel3Layout = new javax.swing.GroupLayout(jPanel3);
+        jPanel3.setLayout(jPanel3Layout);
+        jPanel3Layout.setHorizontalGroup(
+            jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel3Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 307, Short.MAX_VALUE)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(radioButtonCustom, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(jLabel1)
-                    .addComponent(fieldCustomName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(comboBoxNamespace, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addGroup(layout.createSequentialGroup()
+                .addComponent(buttonAddProperty)
+                .addContainerGap())
+        );
+        jPanel3Layout.setVerticalGroup(
+            jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel3Layout.createSequentialGroup()
+                .addGap(0, 0, 0)
+                .addGroup(jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addGroup(jPanel3Layout.createSequentialGroup()
                         .addComponent(buttonAddProperty)
-                        .addGap(0, 8, Short.MAX_VALUE))
+                        .addGap(0, 62, Short.MAX_VALUE))
                     .addComponent(jScrollPane1))
                 .addContainerGap())
         );
+
+        add(jPanel3);
     }// </editor-fold>//GEN-END:initComponents
 
     private void radioButtonCustomActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonCustomActionPerformed
         namespace = (String) comboBoxNamespace.getSelectedItem();
-        simpleName = fieldCustomName.getText();
+        simpleName = (String) comboBoxCustomName.getSelectedItem();
+        updateKnownCustomNames();
         setControlStates();
         properties = null;
         updateProperties();
         updateMaterial();
     }//GEN-LAST:event_radioButtonCustomActionPerformed
 
-    private void buttonAddPropertyActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonAddPropertyActionPerformed
-        addProperty();
-    }//GEN-LAST:event_buttonAddPropertyActionPerformed
-
     private void comboBoxNamespaceActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxNamespaceActionPerformed
         if (! programmaticChange) {
             programmaticChange = true;
             try {
                 namespace = (String) comboBoxNamespace.getSelectedItem();
+                updateKnownCustomNames();
                 updateMaterial();
             } finally {
                 programmaticChange = false;
@@ -666,6 +740,7 @@ public class MaterialSelector extends javax.swing.JPanel {
 
     private void radioButtonMinecraftActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_radioButtonMinecraftActionPerformed
         namespace = Material.MINECRAFT;
+        updateMaterial();
         setControlStates();
         loadDefaultProperties();
         firePropertyChange("material", null, getMaterial());
@@ -690,32 +765,51 @@ public class MaterialSelector extends javax.swing.JPanel {
         }
     }//GEN-LAST:event_comboBoxMinecraftNameActionPerformed
 
-    private void fieldCustomNameFocusLost(java.awt.event.FocusEvent evt) {//GEN-FIRST:event_fieldCustomNameFocusLost
-        simpleName = fieldCustomName.getText();
+    private void comboBoxCustomNameFocusLost(java.awt.event.FocusEvent evt) {//GEN-FIRST:event_comboBoxCustomNameFocusLost
+        simpleName = (String) comboBoxCustomName.getSelectedItem();
         programmaticChange = true;
         try {
             updateMaterial();
         } finally {
             programmaticChange = false;
         }
-    }//GEN-LAST:event_fieldCustomNameFocusLost
+    }//GEN-LAST:event_comboBoxCustomNameFocusLost
+
+    private void comboBoxCustomNameActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_comboBoxCustomNameActionPerformed
+        if (! programmaticChange) {
+            simpleName = (String) comboBoxCustomName.getSelectedItem();
+            programmaticChange = true;
+            try {
+                updateMaterial();
+            } finally {
+                programmaticChange = false;
+            }
+        }
+    }//GEN-LAST:event_comboBoxCustomNameActionPerformed
+
+    private void buttonAddPropertyActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonAddPropertyActionPerformed
+        addProperty();
+    }//GEN-LAST:event_buttonAddPropertyActionPerformed
 
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton buttonAddProperty;
     private javax.swing.ButtonGroup buttonGroup1;
     private javax.swing.JComboBox<String> comboBoxBlockType;
+    private javax.swing.JComboBox<String> comboBoxCustomName;
     private javax.swing.JComboBox<String> comboBoxMinecraftName;
     private javax.swing.JComboBox<String> comboBoxNamespace;
-    private javax.swing.JTextField fieldCustomName;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
     private javax.swing.JLabel jLabel5;
-    private javax.swing.JLabel jLabel7;
-    private javax.swing.JLabel jLabel9;
+    private javax.swing.JLabel jLabel6;
+    private javax.swing.JPanel jPanel1;
+    private javax.swing.JPanel jPanel2;
+    private javax.swing.JPanel jPanel3;
     private javax.swing.JScrollPane jScrollPane1;
+    private javax.swing.JLabel labelMaterialName;
     private javax.swing.JPanel panelProperties;
     private javax.swing.JRadioButton radioButtonCustom;
     private javax.swing.JRadioButton radioButtonMinecraft;
@@ -723,9 +817,11 @@ public class MaterialSelector extends javax.swing.JPanel {
     // End of variables declaration//GEN-END:variables
 
     private final Map<String, Component> propertyEditors = new HashMap<>();
-    private boolean extendedBlockIds, programmaticChange, propertiesEnabled;
+    private boolean extendedBlockIds, programmaticChange, legacyMode;
     private Platform platform;
     private Material material;
     private String namespace, simpleName;
     private Map<String, String> properties;
+
+    private static final Logger logger = LoggerFactory.getLogger(MaterialSelector.class);
 }

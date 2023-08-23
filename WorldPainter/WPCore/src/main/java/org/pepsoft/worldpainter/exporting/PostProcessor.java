@@ -52,7 +52,7 @@ public abstract class PostProcessor {
      */
     public abstract void postProcess(MinecraftWorld minecraftWorld, Box volume, ExportSettings exportSettings, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled;
 
-    protected void dropBlock(MinecraftWorld world, int x, int y, int z) {
+    protected final void dropBlock(MinecraftWorld world, int x, int y, int z) {
         final int minZ = world.getMinHeight();
         int solidFloor = z - 1;
         for (; solidFloor > minZ; solidFloor--) {
@@ -75,14 +75,14 @@ public abstract class PostProcessor {
         }
     }
 
-    protected void dropFluid(MinecraftWorld world, int x, int y, int z) {
+    protected final void dropFluid(MinecraftWorld world, int x, int y, int z) {
         final int minZ = world.getMinHeight();
         final boolean lava = world.getMaterialAt(x, y, z).isNamed(MC_LAVA);
         int solidFloor = z - 1;
         for (; solidFloor > minZ; solidFloor--) {
             Material material = world.getMaterialAt(x, y, solidFloor);
             if (material == AIR || (material.insubstantial && material.isNotNamed(lava ? MC_LAVA : MC_WATER))) {
-                world.setMaterialAt(x, y, solidFloor, lava ? STATIONARY_LAVA : STATIONARY_WATER);
+                world.setMaterialAt(x, y, solidFloor, lava ? FALLING_LAVA : FALLING_WATER);
             } else {
                 break;
             }
@@ -94,23 +94,40 @@ public abstract class PostProcessor {
         }
     }
 
-    protected boolean isWaterContained(MinecraftWorld world, int x, int y, int z, Material materialBelow) {
-        if ((! materialBelow.containsWater()) && (! materialBelow.solid)) {
+    protected final boolean isWaterContained(MinecraftWorld world, int x, int y, int z, Material materialBelow) {
+        if (containsAnyWater(materialBelow)) {
+            // There is already water below
+            return true;
+        } else if ((! materialBelow.containsWater()) && (! materialBelow.solid)) {
+            // The water can flow down
             return false;
         } else {
+            // Check whether the water can flow sideways
             final Material materialNorth = world.getMaterialAt(x, y - 1, z), materialEast = world.getMaterialAt(x + 1, y, z),
                     materialSouth = world.getMaterialAt(x, y + 1, z), materialWest = world.getMaterialAt(x - 1, y, z);
-            return (materialNorth.containsWater() || materialNorth.solid)
-                    && (materialEast.containsWater() || materialEast.solid)
-                    && (materialSouth.containsWater() || materialSouth.solid)
-                    && (materialWest.containsWater() || materialWest.solid);
+            return (containsAnyWater(materialNorth) || materialNorth.solid)
+                    && (containsAnyWater(materialEast) || materialEast.solid)
+                    && (containsAnyWater(materialSouth) || materialSouth.solid)
+                    && (containsAnyWater(materialWest) || materialWest.solid);
         }
     }
 
-    protected boolean isLavaContained(MinecraftWorld world, int x, int y, int z, Material materialBelow) {
-        if ((! materialBelow.isNamed(MC_LAVA)) && (! materialBelow.solid)) {
+    /**
+     * Whether the material is any kind of water, including falling or flowing water (with a non zero level).
+     */
+    protected final boolean containsAnyWater(Material material) {
+        return material.containsWater() || material.isNamed(MC_WATER);
+    }
+
+    protected final boolean isLavaContained(MinecraftWorld world, int x, int y, int z, Material materialBelow) {
+        if (materialBelow.isNamed(MC_LAVA)) {
+            // There is already lava below
+            return true;
+        } else if ((! materialBelow.isNamed(MC_LAVA)) && (! materialBelow.solid)) {
+            // The lava can flow down
             return false;
         } else {
+            // Check whether the lava can flow sideways
             final Material materialNorth = world.getMaterialAt(x, y - 1, z), materialEast = world.getMaterialAt(x + 1, y, z),
                     materialSouth = world.getMaterialAt(x, y + 1, z), materialWest = world.getMaterialAt(x - 1, y, z);
             return (materialNorth.isNamed(MC_LAVA) || materialNorth.solid)

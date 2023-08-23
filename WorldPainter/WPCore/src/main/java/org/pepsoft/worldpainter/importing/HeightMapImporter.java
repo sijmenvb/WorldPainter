@@ -7,7 +7,6 @@
 package org.pepsoft.worldpainter.importing;
 
 import org.pepsoft.minecraft.MapGenerator;
-import org.pepsoft.minecraft.SeededGenerator;
 import org.pepsoft.util.MathUtils;
 import org.pepsoft.util.PerlinNoise;
 import org.pepsoft.util.ProgressReceiver;
@@ -17,10 +16,11 @@ import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.heightMaps.BitmapHeightMap;
 import org.pepsoft.worldpainter.heightMaps.TransformingHeightMap;
 import org.pepsoft.worldpainter.history.HistoryEntry;
-import org.pepsoft.worldpainter.layers.Frost;
-import org.pepsoft.worldpainter.layers.Layer;
+import org.pepsoft.worldpainter.layers.Void;
+import org.pepsoft.worldpainter.layers.*;
 import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 import org.pepsoft.worldpainter.layers.exporters.FrostExporter;
+import org.pepsoft.worldpainter.layers.exporters.ResourcesExporter;
 import org.pepsoft.worldpainter.themes.Theme;
 
 import java.awt.*;
@@ -28,9 +28,10 @@ import java.io.File;
 import java.util.Map;
 
 import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.worldpainter.Constants.*;
-import static org.pepsoft.worldpainter.Generator.DEFAULT;
-import static org.pepsoft.worldpainter.Generator.LARGE_BIOMES;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
+import static org.pepsoft.worldpainter.Dimension.Role.MASTER;
 
 /**
  *
@@ -48,19 +49,30 @@ public class HeightMapImporter {
      *     the specified progress received throws it (when the user cancels the
      *     operation).
      */
-    public World2 importToNewWorld(ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
+    public World2 importToNewWorld(Dimension.Anchor anchor, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
         Rectangle extent = heightMap.getExtent();
         logger.info("Importing world from height map {} (size: {}x{})", name, extent.width, extent.height);
 
         calculateFlags();
-        final World2 world = new World2(platform, minecraftSeed, tileFactory, maxHeight);
+        final World2 world = new World2(platform, minecraftSeed, tileFactory);
         world.addHistoryEntry(HistoryEntry.WORLD_IMPORTED_FROM_HEIGHT_MAP, imageFile);
-        int p = name.lastIndexOf('.');
-        if (p != -1) {
-            name = name.substring(0, p);
-        }
         world.setName(name);
-        final Dimension dimension = world.getDimension(0);
+        final Dimension dimension;
+        if (anchor.equals(NORMAL_DETAIL)) {
+            dimension = world.getDimension(NORMAL_DETAIL);
+        } else {
+            final TileFactory dimensionTileFactory;
+            if (anchor.role == MASTER) {
+                dimensionTileFactory = new HeightMapTileFactory(tileFactory.getSeed(), ((HeightMapTileFactory) tileFactory).getHeightMap().scaled(0.0625f), tileFactory.getMinHeight(), tileFactory.getMaxHeight(), ((HeightMapTileFactory) tileFactory).isFloodWithLava(), ((HeightMapTileFactory) tileFactory).getTheme());
+            } else {
+                dimensionTileFactory = new HeightMapTileFactory(tileFactory.getSeed(), ((HeightMapTileFactory) tileFactory).getHeightMap(), tileFactory.getMinHeight(), tileFactory.getMaxHeight(), ((HeightMapTileFactory) tileFactory).isFloodWithLava(), ((HeightMapTileFactory) tileFactory).getTheme());
+            }
+            dimension = new Dimension(world, anchor.getDefaultName(), minecraftSeed, dimensionTileFactory, anchor);
+            if (anchor.role == MASTER) {
+                dimension.setScale(16.0f);
+            }
+            world.addDimension(dimension);
+        }
 
         // Export settings
         final Configuration config = Configuration.getInstance();
@@ -78,19 +90,14 @@ public class HeightMapImporter {
 
         importToDimension(dimension, true, progressReceiver);
 
-        final boolean minecraft11Only = dimension.getMaxHeight() != DEFAULT_MAX_HEIGHT_ANVIL;
         MapGenerator generator = config.getDefaultGenerator();
-        if (minecraft11Only && (generator.getType() == Generator.LARGE_BIOMES)) {
-            generator = new SeededGenerator(DEFAULT, minecraftSeed);
-        } else if ((! minecraft11Only) && (generator.getType() == DEFAULT)) {
-            generator = new SeededGenerator(LARGE_BIOMES, minecraftSeed);
-        }
         dimension.setGenerator(generator);
         Dimension defaults = config.getDefaultTerrainAndLayerSettings();
         dimension.setBorder(defaults.getBorder());
         dimension.setBorderSize(defaults.getBorderSize());
         dimension.setBorderLevel(worldWaterLevel);
-        dimension.setBedrockWall(defaults.isBedrockWall());
+        dimension.setWallType(defaults.getWallType());
+        dimension.setRoofType(defaults.getRoofType());
         dimension.setSubsurfaceMaterial(defaults.getSubsurfaceMaterial());
         dimension.setPopulate(defaults.isPopulate());
         dimension.setTopLayerMinDepth(defaults.getTopLayerMinDepth());
@@ -99,6 +106,7 @@ public class HeightMapImporter {
         for (Map.Entry<Layer, ExporterSettings> entry: defaults.getAllLayerSettings().entrySet()) {
             dimension.setLayerSettings(entry.getKey(), entry.getValue().clone());
         }
+        ((ResourcesExporter.ResourcesExporterSettings) dimension.getLayerSettings(Resources.INSTANCE)).setMinimumLevel(config.getDefaultResourcesMinimumLevel());
 
         dimension.setGridEnabled(config.isDefaultGridEnabled());
         dimension.setGridSize(config.getDefaultGridSize());
@@ -112,7 +120,9 @@ public class HeightMapImporter {
 
     public void importToDimension(Dimension dimension, boolean createTiles, ProgressReceiver progressReceiver) throws ProgressReceiver.OperationCancelled {
         // Sanity checks
-        if (dimension.getMaxHeight() != maxHeight) {
+        if (dimension.getMinHeight() != minHeight) {
+            throw new IllegalArgumentException(String.format("Dimension has different minHeight (%d) than configured (%d)", dimension.getMinHeight(), minHeight));
+        } else if (dimension.getMaxHeight() != maxHeight) {
             throw new IllegalArgumentException(String.format("Dimension has different maxHeight (%d) than configured (%d)", dimension.getMaxHeight(), maxHeight));
         }
 
@@ -120,7 +130,6 @@ public class HeightMapImporter {
             dimension.getWorld().addHistoryEntry(HistoryEntry.WORLD_HEIGHT_MAP_IMPORTED_TO_DIMENSION, dimension.getName(), imageFile);
         }
 
-        final boolean useVoidBelow = voidBelowLevel > 0;
         final Rectangle extent = heightMap.getExtent();
         final int x1 = extent.x;
         final int x2 = extent.x + extent.width - 1;
@@ -132,7 +141,7 @@ public class HeightMapImporter {
         final int tileX2 = extentInTiles.x + extentInTiles.width - 1;
         final int tileY2 = extentInTiles.y + extentInTiles.height - 1;
         final int totalTileCount = extentInTiles.width * extentInTiles.height;
-        final int floor = Math.max(worldWaterLevel - 20, 0);
+        final int floor = Math.max(worldWaterLevel - 20, minHeight);
         final int variation = Math.min(15, (worldWaterLevel - floor) / 2);
         final PerlinNoise noiseGenerator = new PerlinNoise(0);
         noiseGenerator.setSeed(dimension.getSeed());
@@ -163,20 +172,24 @@ public class HeightMapImporter {
                         final int imageX = xOffset + x;
                         final int imageY = yOffset + y;
                         if ((imageX >= x1) && (imageX <= x2) && (imageY >= y1) && (imageY <= y2)) {
-                            final float imageLevel = heightMap.getHeight(imageX, imageY);
+                            final double imageLevel = heightMap.getHeight(imageX, imageY);
                             final float height = calculateHeight(imageLevel);
                             if (onlyRaise && (! tileIsNew)) {
                                 if (height > tile.getHeight(x, y)) {
                                     tile.setHeight(x, y, height);
-                                    tileFactory.applyTheme(tile, x, y);
+                                    if (theme != null) {
+                                        theme.apply(tile, x, y);
+                                    }
                                 }
                             } else {
                                 tile.setHeight(x, y, height);
                                 tile.setWaterLevel(x, y, worldWaterLevel);
-                                if (useVoidBelow && (imageLevel < voidBelowLevel)) {
+                                if (useVoidBelow && (imageLevel <= voidBelowLevel)) {
                                     tile.setBitLayerValue(org.pepsoft.worldpainter.layers.Void.INSTANCE, x, y, true);
                                 }
-                                tileFactory.applyTheme(tile, x, y);
+                                if (theme != null) {
+                                    theme.apply(tile, x, y);
+                                }
                             }
                         } else if (tileIsNew) {
                             tile.setHeight(x, y, floor + (noiseGenerator.getPerlinNoise(imageX / MEDIUM_BLOBS, imageY / MEDIUM_BLOBS) + 0.5f) * variation);
@@ -201,10 +214,10 @@ public class HeightMapImporter {
         }
     }
 
-    public TileProvider getPreviewProvider(ColourScheme colourScheme, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin) {
+    public TileProvider getPreviewProvider(Dimension targetDimension, ColourScheme colourScheme, boolean contourLines, int contourSeparation, TileRenderer.LightOrigin lightOrigin) {
         if (tileFactory instanceof HeightMapTileFactory) {
             calculateFlags();
-            HeightMap previewHeightMap;
+            final HeightMap previewHeightMap;
             if (highRes) {
                 previewHeightMap = heightMap.minus(imageLowLevel).times(levelScale).plus(worldLowLevel);
             } else {
@@ -219,11 +232,11 @@ public class HeightMapImporter {
                 }
             }
 
-            HeightMapTileFactory heightMapTileFactory = (HeightMapTileFactory) this.tileFactory;
-            Theme theme = heightMapTileFactory.getTheme().clone();
+            final HeightMapTileFactory heightMapTileFactory = (HeightMapTileFactory) this.tileFactory;
+            final Theme theme = ((this.theme != null) ? this.theme : heightMapTileFactory.getTheme()).clone();
             theme.setWaterHeight(worldWaterLevel);
-            HeightMapTileFactory tileFactory = new HeightMapTileFactory(1L, previewHeightMap, platform.minZ, maxHeight, heightMapTileFactory.isFloodWithLava(), theme);
-            return new WPTileProvider(tileFactory, colourScheme, null, null, contourLines, contourSeparation, lightOrigin, false, null);
+            final HeightMapTileFactory tileFactory = new PreviewTileFactory(1L, previewHeightMap, targetDimension, minHeight, maxHeight, heightMapTileFactory.isFloodWithLava(), theme, heightMap, useVoidBelow, voidBelowLevel, this.theme == null);
+            return new WPTileProvider(tileFactory, colourScheme, null, null, contourLines, contourSeparation, lightOrigin, null);
         } else {
             return null;
         }
@@ -274,20 +287,28 @@ public class HeightMapImporter {
         this.worldHighLevel = worldHighLevel;
     }
 
-    public int getImageLowLevel() {
+    public double getImageLowLevel() {
         return imageLowLevel;
     }
 
-    public void setImageLowLevel(int imageLowLevel) {
+    public void setImageLowLevel(double imageLowLevel) {
         this.imageLowLevel = imageLowLevel;
     }
 
-    public int getImageHighLevel() {
+    public double getImageHighLevel() {
         return imageHighLevel;
     }
 
-    public void setImageHighLevel(int imageHighLevel) {
+    public void setImageHighLevel(double imageHighLevel) {
         this.imageHighLevel = imageHighLevel;
+    }
+
+    public int getMinHeight() {
+        return minHeight;
+    }
+
+    public void setMinHeight(int minHeight) {
+        this.minHeight = minHeight;
     }
 
     public int getMaxHeight() {
@@ -298,11 +319,19 @@ public class HeightMapImporter {
         this.maxHeight = maxHeight;
     }
 
-    public int getVoidBelowLevel() {
+    public boolean isVoidBelow() {
+        return useVoidBelow;
+    }
+
+    public void setVoidBelow(boolean voidBelow) {
+        useVoidBelow = voidBelow;
+    }
+
+    public double getVoidBelowLevel() {
         return voidBelowLevel;
     }
 
-    public void setVoidBelowLevel(int voidBelowLevel) {
+    public void setVoidBelowLevel(double voidBelowLevel) {
         this.voidBelowLevel = voidBelowLevel;
     }
 
@@ -312,6 +341,17 @@ public class HeightMapImporter {
 
     public void setTileFactory(TileFactory tileFactory) {
         this.tileFactory = tileFactory;
+        if ((tileFactory instanceof HeightMapTileFactory) && (theme == null)){
+            setTheme(((HeightMapTileFactory) tileFactory).getTheme());
+        }
+    }
+
+    public Theme getTheme() {
+        return theme;
+    }
+
+    public void setTheme(Theme theme) {
+        this.theme = theme;
     }
 
     public String getName() {
@@ -352,12 +392,12 @@ public class HeightMapImporter {
         // each block height 1/8 higher, in order to make smooth snow work less surprisingly
         mayBeScaled = ! ((heightMap instanceof BitmapHeightMap)
                 || ((heightMap instanceof TransformingHeightMap)
-                    && (((TransformingHeightMap) heightMap).getScaleX() == 100)
-                    && (((TransformingHeightMap) heightMap).getScaleY() == 100)
+                    && (((TransformingHeightMap) heightMap).getScaleX() == 1.0f)
+                    && (((TransformingHeightMap) heightMap).getScaleY() == 1.0f)
                     && (((TransformingHeightMap) heightMap).getBaseHeightMap() instanceof BitmapHeightMap)));
         oneOnOne = (worldLowLevel == imageLowLevel) && (worldHighLevel == imageHighLevel);
         highRes = (imageHighLevel >= maxHeight) && (worldHighLevel < maxHeight);
-        levelScale = (float) (worldHighLevel - worldLowLevel) / (imageHighLevel - imageLowLevel);
+        levelScale = (worldHighLevel - worldLowLevel) / (imageHighLevel - imageLowLevel);
         maxZ = maxHeight - 1;
 
         Rectangle extent = heightMap.getExtent();
@@ -368,26 +408,87 @@ public class HeightMapImporter {
         extentInTiles = new Rectangle(tileX1, tileY1, tileX2 - tileX1 + 1, tileY2 - tileY1 + 1);
     }
 
-    private float calculateHeight(final float imageLevel) {
+    private float calculateHeight(final double imageLevel) {
         if (highRes) {
-            return MathUtils.clamp(0.0f, (imageLevel - imageLowLevel) * levelScale + worldLowLevel, maxZ);
+            return MathUtils.clamp(minHeight, (float) ((imageLevel - imageLowLevel) * levelScale + worldLowLevel), maxZ);
         } else {
-            return MathUtils.clamp(0.0f, oneOnOne
-                ? (mayBeScaled ? imageLevel : (imageLevel - 0.4375f))
-                : ((imageLevel - imageLowLevel) * levelScale + worldLowLevel), maxZ);
+            return MathUtils.clamp(minHeight, (float) (oneOnOne
+                ? (mayBeScaled ? imageLevel : (imageLevel - 0.4375))
+                : ((imageLevel - imageLowLevel) * levelScale + worldLowLevel)), maxZ);
         }
     }
 
-    private Platform platform;
+    private Platform platform = Configuration.getInstance().getDefaultPlatform();
     private HeightMap heightMap;
-    private int worldLowLevel, worldWaterLevel = 62, worldHighLevel = DEFAULT_MAX_HEIGHT_ANVIL - 1, imageLowLevel, imageHighLevel = DEFAULT_MAX_HEIGHT_ANVIL - 1, maxHeight = DEFAULT_MAX_HEIGHT_ANVIL, voidBelowLevel, maxZ;
+    private int worldLowLevel, worldWaterLevel = DEFAULT_WATER_LEVEL, worldHighLevel = DEFAULT_MAX_HEIGHT_ANVIL - 1, minHeight = 0, maxHeight = DEFAULT_MAX_HEIGHT_ANVIL, maxZ;
+    private double imageLowLevel, imageHighLevel = DEFAULT_MAX_HEIGHT_ANVIL - 1, /** The input level <strong>at or</strong> below which Void should be generated. */ voidBelowLevel;
     private TileFactory tileFactory;
+    private Theme theme;
     private String name;
-    private boolean onlyRaise, oneOnOne, highRes, mayBeScaled;
+    private boolean onlyRaise, oneOnOne, highRes, mayBeScaled, useVoidBelow;
     private File imageFile;
-    private float levelScale;
+    private double levelScale;
     private long minecraftSeed = World2.DEFAULT_OCEAN_SEED;
     private Rectangle extentInTiles;
 
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(HeightMapImporter.class);
+
+    private static class PreviewTileFactory extends HeightMapTileFactory {
+        private PreviewTileFactory(long seed, HeightMap heightMap, Dimension targetDimension, int minHeight, int maxHeight, boolean floodWithLava, Theme theme, HeightMap imageHeightMap, boolean voidBelow, double voidBelowLevel, boolean leaveTerrain) {
+            super(seed, heightMap, minHeight, maxHeight, floodWithLava, theme);
+            this.targetDimension = targetDimension;
+            this.imageHeightMap = imageHeightMap;
+            useVoidBelow = voidBelow;
+            this.voidBelowLevel = voidBelowLevel;
+            this.leaveTerrain = leaveTerrain;
+        }
+
+        @Override
+        public Tile createTile(int tileX, int tileY) {
+            final Tile tile = super.createTile(tileX, tileY);
+            if (targetDimension != null) {
+                final Tile targetTile = targetDimension.getTile(tileX, tileY);
+                if (targetTile != null) {
+                    for (int x = 0; x < TILE_SIZE; x++) {
+                        for (int y = 0; y < TILE_SIZE; y++) {
+                            final float targetHeight = targetTile.getHeight(x, y);
+                            if (targetHeight >= tile.getHeight(x, y)) {
+                                tile.setHeight(x, y, targetHeight);
+                                tile.setWaterLevel(x, y, targetTile.getWaterLevel(x, y));
+                                tile.setBitLayerValue(FloodWithLava.INSTANCE, x, y, targetTile.getBitLayerValue(FloodWithLava.INSTANCE, x, y));
+                                tile.setTerrain(x, y, targetTile.getTerrain(x, y));
+                            } else if (leaveTerrain) {
+                                tile.setTerrain(x, y, targetTile.getTerrain(x, y));
+                            }
+                        }
+                    }
+                }
+            }
+            if (useVoidBelow) {
+                final int worldTileX = tileX * TILE_SIZE, worldTileY = tileY * TILE_SIZE;
+                tile.inhibitEvents();
+                try {
+                    for (int x = 0; x < TILE_SIZE; x++) {
+                        for (int y = 0; y < TILE_SIZE; y++) {
+                            final int blockX = worldTileX + x, blockY = worldTileY + y;
+                            if (imageHeightMap.getHeight(blockX, blockY) <= voidBelowLevel) {
+                                tile.setBitLayerValue(Void.INSTANCE, x, y, true);
+                            }
+                        }
+                    }
+                } finally {
+                    tile.releaseEvents();
+                }
+            }
+            return tile;
+        }
+
+        private final HeightMap imageHeightMap;
+        private final boolean useVoidBelow, leaveTerrain;
+        /**
+         * The input level <strong>at or</strong> below which Void should be generated.
+         */
+        private final double voidBelowLevel;
+        private final Dimension targetDimension;
+    }
 }

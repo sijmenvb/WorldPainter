@@ -15,6 +15,8 @@ import java.awt.font.FontRenderContext;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 
+import static java.awt.RenderingHints.KEY_TEXT_ANTIALIASING;
+import static java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_OFF;
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE_BITS;
 
 /**
@@ -90,7 +92,7 @@ public final class DimensionPainter {
             float x = x1 - 0.5f;
             final float fDx = (float) (x2 - x1) / dy;
             for (int y = y1; y <= y2; y++) {
-                drawPoint(dimension, (int) (x + 0.5f), y);
+                drawPoint(dimension, Math.round(x), y);
                 x += fDx;
             }
         } else {
@@ -107,7 +109,7 @@ public final class DimensionPainter {
             float y = y1 - 0.5f;
             final float fDy = (float) (y2 - y1) / dx;
             for (int x = x1; x <= x2; x++) {
-                drawPoint(dimension, x, (int) (y + 0.5f));
+                drawPoint(dimension, x, Math.round(y));
                 y += fDy;
             }
         }
@@ -141,7 +143,7 @@ public final class DimensionPainter {
             float x = x1 - 0.5f;
             final float fDx = (float) (x2 - x1) / dy;
             for (int y = y1; y <= y2; y++) {
-                drawPoint(dimension, (int) (x + 0.5f), y, dynamicLevel);
+                drawPoint(dimension, Math.round(x), y, dynamicLevel);
                 x += fDx;
             }
         } else {
@@ -158,7 +160,7 @@ public final class DimensionPainter {
             float y = y1 - 0.5f;
             final float fDy = (float) (y2 - y1) / dx;
             for (int x = x1; x <= x2; x++) {
-                drawPoint(dimension, x, (int) (y + 0.5f), dynamicLevel);
+                drawPoint(dimension, x, Math.round(y), dynamicLevel);
                 y += fDy;
             }
         }
@@ -174,9 +176,9 @@ public final class DimensionPainter {
      */
     @SuppressWarnings("SuspiciousNameCombination")
     public void drawText(Dimension dimension, int x, int y, String text) {
-        String[] lines = text.split("\\n");
+        final String[] lines = text.split("\\n");
         for (String line: lines) {
-            int lineHeight = drawTextLine(dimension, x, y, line);
+            final int lineHeight = drawTextLine(dimension, x, y, line);
             switch (textAngle) {
                 case 0:
                     y += lineHeight;
@@ -200,12 +202,18 @@ public final class DimensionPainter {
      * nothing happens. If the operation takes more than two seconds a modal dialog is shown to the user with an
      * indeterminate progress bar.
      *
+     * <p>The total filled area cannot exceed a square around the given coordinates with a surface area of
+     * {@link Integer#MAX_VALUE}, due to Java limitations. If the boundary of this area has been hit, the method will
+     * return {@code false} and the entire matching area may not have been filled.
+     *
      * @param x The X coordinate to start the flood fill.
      * @param y The Y coordinate to start the flood fill.
      * @param parent The window to use as parent for the modal dialog shown if the operation takes more than two
      *               seconds.
+     * @return {@code true} if the fill operation was completed, or {@code false} if the filled area touched the
+     * maximum bounds and the operation may not have filled the entire matching area.
      */
-    public void fill(Dimension dimension, final int x, final int y, Window parent) {
+    public boolean fill(Dimension dimension, final int x, final int y, Window parent) {
         AbstractDimensionPaintFillMethod fillMethod;
         if (paint instanceof LayerPaint) {
             final Layer layer = ((LayerPaint) paint).getLayer();
@@ -253,7 +261,7 @@ public final class DimensionPainter {
 
                                 @Override
                                 boolean isFilled(int x, int y) {
-                                    return dimension.getLayerValueAt(layer, x, y) == (int) ((DiscreteLayerPaint) paint).getValue();
+                                    return dimension.getLayerValueAt(layer, x, y) == ((DiscreteLayerPaint) paint).getValue();
                                 }
                             };
                         }
@@ -272,7 +280,7 @@ public final class DimensionPainter {
                                     return dimension.getLayerValueAt(layer, x, y) >= targetValue;
                                 }
 
-                                final int targetValue = 1 + (int) ((layer.getDataSize() == Layer.DataSize.NIBBLE) ? (paint.getBrush().getLevel() * 14 + 0.5f) : (paint.getBrush().getLevel() * 254 + 0.5f));
+                                final int targetValue = 1 + Math.round((layer.getDataSize() == Layer.DataSize.NIBBLE) ? (paint.getBrush().getLevel() * 14) : (paint.getBrush().getLevel() * 254));
                             };
                         }
                     }
@@ -308,13 +316,16 @@ public final class DimensionPainter {
                 };
             }
         } else if (paint instanceof PaintFactory.NullPaint) {
-            return;
+            return true;
         } else {
             throw new IllegalArgumentException("Don't know how to fill with paint " + paint);
         }
         if (! fillMethod.isFilled(x, y)) {
             GeneralQueueLinearFloodFiller filler = new GeneralQueueLinearFloodFiller(fillMethod);
             filler.floodFill(x, y, parent);
+            return ! filler.isBoundsHit();
+        } else {
+            return true;
         }
     }
 
@@ -401,19 +412,24 @@ public final class DimensionPainter {
 
     private int drawTextLine(Dimension dimension, int x, int y, String text) {
         BufferedImage image = new BufferedImage(1000, 100, BufferedImage.TYPE_BYTE_BINARY);
-        Rectangle2D bounds;
+        final Rectangle2D bounds;
         Graphics2D g2 = image.createGraphics();
+        g2.setRenderingHint(KEY_TEXT_ANTIALIASING, VALUE_TEXT_ANTIALIAS_OFF);
         final int textWidth, textHeight;
         try {
             g2.setFont(font);
-            FontRenderContext frc = g2.getFontRenderContext();
+            final FontRenderContext frc = g2.getFontRenderContext();
             bounds = font.getStringBounds(text, frc);
             textWidth = (int) Math.ceil(bounds.getWidth());
             textHeight = (int) Math.ceil(bounds.getHeight());
+            if ((textWidth < 1) || (textHeight < 1)) {
+                return (int) bounds.getHeight();
+            }
             if ((textWidth > 1000) || (textHeight > 100)) {
                 g2.dispose();
                 image = new BufferedImage(textWidth, textHeight, BufferedImage.TYPE_BYTE_BINARY);
                 g2 = image.createGraphics();
+                g2.setRenderingHint(KEY_TEXT_ANTIALIASING, VALUE_TEXT_ANTIALIAS_OFF);
                 g2.setFont(font);
             }
             g2.drawString(text, (int) (-bounds.getX()), (int) (-bounds.getY()));

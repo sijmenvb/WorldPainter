@@ -5,13 +5,13 @@
 package org.pepsoft.worldpainter.layers.groundcover;
 
 import org.pepsoft.minecraft.Material;
-import org.pepsoft.worldpainter.DefaultPlugin;
-import org.pepsoft.worldpainter.MixedMaterial;
-import org.pepsoft.worldpainter.MixedMaterialManager;
-import org.pepsoft.worldpainter.NoiseSettings;
+import org.pepsoft.worldpainter.Dimension;
+import org.pepsoft.worldpainter.*;
+import org.pepsoft.worldpainter.exporting.LayerExporter;
 import org.pepsoft.worldpainter.layers.CustomLayer;
-import org.pepsoft.worldpainter.layers.Layer;
+import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 
+import java.awt.*;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 
@@ -20,8 +20,8 @@ import java.io.ObjectInputStream;
  * @author pepijn
  */
 public class GroundCoverLayer extends CustomLayer {
-    public GroundCoverLayer(String name, MixedMaterial material, int colour) {
-        super(name, "a layer of " + material.getName() + " on top of the terrain", DataSize.BIT, 30, colour);
+    public GroundCoverLayer(String name, MixedMaterial material, Object paint) {
+        super(name, "a layer of " + material.getName() + " on top of the terrain", DataSize.BIT, 30, paint);
         mixedMaterial = material;
     }
 
@@ -29,6 +29,11 @@ public class GroundCoverLayer extends CustomLayer {
     public void setName(String name) {
         super.setName(name);
         setDescription("a " + thickness + " block layer of " + name + " on top of the terrain");
+    }
+
+    @Override
+    public String getType() {
+        return "Ground Cover";
     }
 
     public MixedMaterial getMaterial() {
@@ -92,18 +97,13 @@ public class GroundCoverLayer extends CustomLayer {
     }
 
     @Override
-    public GroundCoverLayerExporter getExporter() {
-        return new GroundCoverLayerExporter(this);
+    public Class<? extends LayerExporter> getExporterType() {
+        return GroundCoverLayerExporter.class;
     }
 
-    // Comparable
     @Override
-    public int compareTo(Layer layer) {
-        if ((layer instanceof GroundCoverLayer) && (Math.abs(((GroundCoverLayer) layer).thickness) != Math.abs(thickness))) {
-            return Math.abs(((GroundCoverLayer) layer).thickness) - Math.abs(thickness);
-        } else {
-            return super.compareTo(layer);
-        }
+    public GroundCoverLayerExporter getExporter(Dimension dimension, Platform platform, ExporterSettings settings) {
+        return new GroundCoverLayerExporter(dimension, platform, this);
     }
 
     // Cloneable
@@ -124,7 +124,7 @@ public class GroundCoverLayer extends CustomLayer {
 
         // Legacy support
         if (colour != 0) {
-            setColour(colour);
+            setPaint(new Color(colour));
             colour = 0;
         }
         if (thickness == 0) {

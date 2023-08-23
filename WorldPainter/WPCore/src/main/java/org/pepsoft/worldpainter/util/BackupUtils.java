@@ -1,5 +1,6 @@
 package org.pepsoft.worldpainter.util;
 
+import org.pepsoft.util.mdc.MDCCapturingRuntimeException;
 import org.pepsoft.worldpainter.Configuration;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.slf4j.Logger;
@@ -23,6 +24,7 @@ import static java.util.stream.Collectors.toList;
 import static javax.swing.JOptionPane.*;
 import static org.pepsoft.util.DesktopUtils.beep;
 import static org.pepsoft.util.FileUtils.deleteDir;
+import static org.pepsoft.util.swing.MessageUtils.showInfo;
 import static org.pepsoft.worldpainter.Constants.GB;
 import static org.pepsoft.worldpainter.exporting.AbstractWorldExporter.DATE_FORMAT;
 
@@ -135,7 +137,7 @@ public final class BackupUtils {
             }
         } else {
             // Manual cleanup; report the results
-            JOptionPane.showMessageDialog(parent, report.toString(), "Clean Up Results", INFORMATION_MESSAGE);
+            showInfo(parent, report.toString(), "Clean Up Results");
         }
 
         return true;
@@ -151,12 +153,12 @@ public final class BackupUtils {
                 if (exportDir != null) {
                     final File backupsDir = platformManager.getPlatformProvider(platform).selectBackupDir(exportDir);
                     if ((backupsDir != null) && backupsDir.isDirectory()) {
-                        FileStore backupsDirStore = Files.getFileStore(exportDir.toPath());
+                        FileStore backupsDirStore = Files.getFileStore(backupsDir.toPath());
                         backupsDirs.computeIfAbsent(backupsDirStore, key -> new HashSet<>()).add(backupsDir);
                     }
                 }
             } catch (IOException e) {
-                throw new RuntimeException("I/O error getting backups directory file store for platform " + platform, e);
+                throw new MDCCapturingRuntimeException("I/O error getting backups directory file store for platform " + platform, e);
             }
         });
         File backupsDir = new File(System.getProperty("user.home"), "WorldPainter Backups");
@@ -188,7 +190,7 @@ public final class BackupUtils {
                     backupsDirs.computeIfAbsent(backupsDirStore, key -> new HashSet<>()).add(backupsDir);
                 }
             } catch (IOException e) {
-                throw new RuntimeException("I/O error getting backups directory file store for platform " + platform, e);
+                throw new MDCCapturingRuntimeException("I/O error getting backups directory file store for platform " + platform, e);
             }
         });
         // Remove the backup dirs on different file stores than the export dir
@@ -234,7 +236,7 @@ public final class BackupUtils {
         try {
             return DATE_FORMAT.parse(name.substring(name.length() - 14));
         } catch (ParseException e) {
-            throw new RuntimeException("Could not parse date in filename \"" + name + '"', e);
+            throw new MDCCapturingRuntimeException("Could not parse date in filename \"" + name + '"', e);
         }
     }
 

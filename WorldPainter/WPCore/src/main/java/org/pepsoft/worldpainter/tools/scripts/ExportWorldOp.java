@@ -17,9 +17,7 @@
  */
 package org.pepsoft.worldpainter.tools.scripts;
 
-import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.ProgressReceiver;
-import org.pepsoft.worldpainter.DefaultPlugin;
 import org.pepsoft.worldpainter.MixedMaterial;
 import org.pepsoft.worldpainter.Terrain;
 import org.pepsoft.worldpainter.World2;
@@ -28,8 +26,6 @@ import org.pepsoft.worldpainter.util.MinecraftUtil;
 
 import java.io.File;
 import java.io.IOException;
-
-import static org.pepsoft.minecraft.Constants.DEFAULT_MAX_HEIGHT_ANVIL;
 
 /**
  *
@@ -60,12 +56,6 @@ public class ExportWorldOp extends AbstractOperation<Void> {
     public Void go() throws ScriptException {
         goCalled();
 
-        // Set the file format if it was not set yet (because this world was
-        // not exported before)
-        if (world.getPlatform() == null) {
-            world.setPlatform((world.getMaxHeight() == DEFAULT_MAX_HEIGHT_ANVIL) ? DefaultPlugin.JAVA_ANVIL : DefaultPlugin.JAVA_MCREGION);
-        }
-
         // Load any custom materials defined in the world
         for (int i = 0; i < Terrain.CUSTOM_TERRAIN_COUNT; i++) {
             MixedMaterial material = world.getMixedMaterial(i);
@@ -77,10 +67,9 @@ public class ExportWorldOp extends AbstractOperation<Void> {
         if (! baseDir.isDirectory()) {
             throw new ScriptException("Directory " + directory + " does not exist or is not a directory");
         }
-        File worldDir = new File(baseDir, FileUtils.sanitiseName(world.getName()));
-        JavaWorldExporter exporter = new JavaWorldExporter(world);
+        JavaWorldExporter exporter = new JavaWorldExporter(world, null);
         try {
-            File backupDir = exporter.selectBackupDir(worldDir);
+            File backupDir = exporter.selectBackupDir(baseDir, world.getName());
         
             // Export the world
             exporter.export(baseDir, world.getName(), backupDir, null);

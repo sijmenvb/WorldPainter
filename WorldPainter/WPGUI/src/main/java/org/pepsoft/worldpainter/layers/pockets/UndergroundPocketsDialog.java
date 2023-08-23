@@ -17,25 +17,26 @@ import java.beans.PropertyChangeListener;
  *
  * @author pepijn
  */
+@SuppressWarnings({"unused", "FieldCanBeLocal", "rawtypes"}) // Managed by NetBeans
 public class UndergroundPocketsDialog extends AbstractEditLayerDialog<UndergroundPocketsLayer> implements PropertyChangeListener {
     /**
      * Creates new form UndergroundPocketsDialog
      */
-    public UndergroundPocketsDialog(Window parent, Platform platform, MixedMaterial material, ColourScheme colourScheme, int maxHeight, boolean extendedBlockIds) {
-        this(parent, platform, material, null, colourScheme, maxHeight, extendedBlockIds);
+    public UndergroundPocketsDialog(Window parent, Platform platform, MixedMaterial material, ColourScheme colourScheme, int minHeight, int maxHeight, boolean extendedBlockIds) {
+        this(parent, platform, material, null, colourScheme, minHeight, maxHeight, extendedBlockIds);
     }
     
     /**
      * Creates new form UndergroundPocketsDialog
      */
-    public UndergroundPocketsDialog(Window parent, Platform platform, UndergroundPocketsLayer existingLayer, ColourScheme colourScheme, int maxHeight, boolean extendedBlockIds) {
-        this(parent, platform, null, existingLayer, colourScheme, maxHeight, extendedBlockIds);
+    public UndergroundPocketsDialog(Window parent, Platform platform, UndergroundPocketsLayer existingLayer, ColourScheme colourScheme, int minHeight, int maxHeight, boolean extendedBlockIds) {
+        this(parent, platform, null, existingLayer, colourScheme, minHeight, maxHeight, extendedBlockIds);
     }
     
     /**
      * Creates new form UndergroundPocketsDialog
      */
-    private UndergroundPocketsDialog(Window parent, Platform platform, MixedMaterial material, UndergroundPocketsLayer existingLayer, ColourScheme colourScheme, int maxHeight, boolean extendedBlockIds) {
+    private UndergroundPocketsDialog(Window parent, Platform platform, MixedMaterial material, UndergroundPocketsLayer existingLayer, ColourScheme colourScheme, int minHeight, int maxHeight, boolean extendedBlockIds) {
         super(parent);
         this.colourScheme = colourScheme;
         
@@ -48,7 +49,8 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
         if (existingLayer != null) {
             layer = existingLayer;
             fieldName.setText(existingLayer.getName());
-            selectedColour = existingLayer.getColour();
+            paintPicker1.setPaint(existingLayer.getPaint());
+            paintPicker1.setOpacity(existingLayer.getOpacity());
             if (existingLayer.getMaterial() != null) {
                 mixedMaterialChooser.setMaterial(existingLayer.getMaterial());
             } else {
@@ -61,9 +63,12 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
             spinnerScale.setValue(existingLayer.getScale());
         } else {
             mixedMaterialChooser.setMaterial(material);
+            spinnerMinLevel.setValue(minHeight);
             spinnerMaxLevel.setValue(maxHeight - 1);
         }
+        ((SpinnerNumberModel) spinnerMinLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerMinLevel.getModel()).setMaximum(maxHeight - 1);
+        ((SpinnerNumberModel) spinnerMaxLevel.getModel()).setMinimum(minHeight);
         ((SpinnerNumberModel) spinnerMaxLevel.getModel()).setMaximum(maxHeight - 1);
         spinnerOccurrence.setEditor(new JSpinner.NumberEditor(spinnerOccurrence, "0"));
         JSpinner.NumberEditor scaleEditor = new JSpinner.NumberEditor(spinnerScale, "0");
@@ -72,12 +77,12 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
         spinnerMinLevel.setEditor(new JSpinner.NumberEditor(spinnerMinLevel, "0"));
         spinnerMaxLevel.setEditor(new JSpinner.NumberEditor(spinnerMaxLevel, "0"));
         
-        setLabelColour();
         setControlStates();
         
         rootPane.setDefaultButton(buttonOK);
         scaleToUI();
         pack();
+        scaleWindowToUI();
         setLocationRelativeTo(parent);
     }
 
@@ -112,10 +117,10 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
         int minLevel = (Integer) spinnerMinLevel.getValue();
         int maxLevel = (Integer) spinnerMaxLevel.getValue();
         if (layer == null) {
-            layer = new UndergroundPocketsLayer(name, material, terrain, occurrence, minLevel, maxLevel, scale, selectedColour);
+            layer = new UndergroundPocketsLayer(name, material, terrain, occurrence, minLevel, maxLevel, scale, paintPicker1.getPaint());
         } else {
             layer.setName(name);
-            layer.setColour(selectedColour);
+            layer.setPaint(paintPicker1.getPaint());
             layer.setMaterial(material);
             layer.setTerrain(terrain);
             layer.setFrequency(occurrence);
@@ -123,30 +128,18 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
             layer.setMaxLevel(maxLevel);
             layer.setScale(scale);
         }
+        layer.setOpacity(paintPicker1.getOpacity());
         super.ok();
-    }
-    
-    private void pickColour() {
-        Color pick = JColorChooser.showDialog(this, "Select Colour", new Color(selectedColour));
-        if (pick != null) {
-            selectedColour = pick.getRGB();
-            setLabelColour();
-        }
-    }
-    
-    private void setLabelColour() {
-        jLabel5.setBackground(new Color(selectedColour));
     }
     
     private void updateNameAndColour() {
         if (fieldName.isEnabled()) {
             if (radioButtonCustomMaterial.isSelected()) {
-                MixedMaterial material = mixedMaterialChooser.getMaterial();
+                final MixedMaterial material = mixedMaterialChooser.getMaterial();
                 if (material != null) {
                     fieldName.setText(material.toString());
                     if (material.getColour() != null) {
-                        selectedColour = material.getColour();
-                        setLabelColour();
+                        paintPicker1.setPaint(new Color(material.getColour()));
                     }
                 }
             } else {
@@ -187,8 +180,8 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
         int scale = (Integer) spinnerScale.getValue();
         int minLevel = (Integer) spinnerMinLevel.getValue();
         int maxLevel = (Integer) spinnerMaxLevel.getValue();
-        UndergroundPocketsLayer tmpLayer = new UndergroundPocketsLayer("tmp", material, terrain, occurrence, minLevel, maxLevel, scale, 0);
-        labelPreview.setIcon(new ImageIcon(((UndergroundPocketsLayerExporter) tmpLayer.getExporter()).createPreview(labelPreview.getWidth(), labelPreview.getHeight())));
+        UndergroundPocketsLayer tmpLayer = new UndergroundPocketsLayer("tmp", material, terrain, occurrence, minLevel, maxLevel, scale, null);
+        labelPreview.setIcon(new ImageIcon(UndergroundPocketsLayerExporter.createPreview(tmpLayer, labelPreview.getWidth(), labelPreview.getHeight())));
     }
 
     /**
@@ -196,7 +189,7 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
      * WARNING: Do NOT modify this code. The content of this method is always
      * regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "rawtypes", "Convert2Lambda", "Anonymous2MethodRef"}) // Managed by NetBeans
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
@@ -207,8 +200,6 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
         buttonOK = new javax.swing.JButton();
         jLabel6 = new javax.swing.JLabel();
         fieldName = new javax.swing.JTextField();
-        jLabel5 = new javax.swing.JLabel();
-        buttonPickColour = new javax.swing.JButton();
         jLabel7 = new javax.swing.JLabel();
         spinnerOccurrence = new javax.swing.JSpinner();
         jLabel8 = new javax.swing.JLabel();
@@ -225,6 +216,7 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
         jPanel1 = new javax.swing.JPanel();
         labelPreview = new javax.swing.JLabel();
         mixedMaterialChooser = new org.pepsoft.worldpainter.MixedMaterialChooser();
+        paintPicker1 = new org.pepsoft.worldpainter.layers.renderers.PaintPicker();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         setTitle("Configure Underground Pockets Layer");
@@ -236,30 +228,34 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
 
         jLabel1.setText("Select your custom material or terrain type:");
 
-        jLabel4.setText("Colour:");
+        jLabel4.setText("Paint");
 
         buttonCancel.setText("Cancel");
-        buttonCancel.addActionListener(this::buttonCancelActionPerformed);
+        buttonCancel.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonCancelActionPerformed(evt);
+            }
+        });
 
         buttonOK.setText("OK");
-        buttonOK.addActionListener(this::buttonOKActionPerformed);
+        buttonOK.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonOKActionPerformed(evt);
+            }
+        });
 
         jLabel6.setText("Name:");
 
         fieldName.setColumns(10);
 
-        jLabel5.setBackground(java.awt.Color.orange);
-        jLabel5.setText("                 ");
-        jLabel5.setBorder(javax.swing.BorderFactory.createLineBorder(new java.awt.Color(0, 0, 0)));
-        jLabel5.setOpaque(true);
-
-        buttonPickColour.setText("...");
-        buttonPickColour.addActionListener(this::buttonPickColourActionPerformed);
-
         jLabel7.setText("Occurrence:");
 
         spinnerOccurrence.setModel(new javax.swing.SpinnerNumberModel(10, 1, 1000, 1));
-        spinnerOccurrence.addChangeListener(this::spinnerOccurrenceStateChanged);
+        spinnerOccurrence.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                spinnerOccurrenceStateChanged(evt);
+            }
+        });
 
         jLabel8.setText("Scale:");
 
@@ -267,32 +263,56 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
 
         jLabel10.setText("‰");
 
-        spinnerScale.setModel(new javax.swing.SpinnerNumberModel(Integer.valueOf(100), Integer.valueOf(1), null, Integer.valueOf(1)));
-        spinnerScale.addChangeListener(this::spinnerScaleStateChanged);
+        spinnerScale.setModel(new javax.swing.SpinnerNumberModel(100, 1, null, 1));
+        spinnerScale.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                spinnerScaleStateChanged(evt);
+            }
+        });
 
         spinnerMaxLevel.setModel(new javax.swing.SpinnerNumberModel(255, 0, 255, 1));
-        spinnerMaxLevel.addChangeListener(this::spinnerMaxLevelStateChanged);
+        spinnerMaxLevel.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                spinnerMaxLevelStateChanged(evt);
+            }
+        });
 
         jLabel11.setText("%");
 
         spinnerMinLevel.setModel(new javax.swing.SpinnerNumberModel(0, 0, 255, 1));
-        spinnerMinLevel.addChangeListener(this::spinnerMinLevelStateChanged);
+        spinnerMinLevel.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                spinnerMinLevelStateChanged(evt);
+            }
+        });
 
         jLabel12.setText("-");
 
         buttonGroup1.add(radioButtonCustomMaterial);
         radioButtonCustomMaterial.setSelected(true);
         radioButtonCustomMaterial.setText("custom material:");
-        radioButtonCustomMaterial.addActionListener(this::radioButtonCustomMaterialActionPerformed);
+        radioButtonCustomMaterial.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonCustomMaterialActionPerformed(evt);
+            }
+        });
 
         buttonGroup1.add(radioButtonTerrain);
         radioButtonTerrain.setText("terrain:");
-        radioButtonTerrain.addActionListener(this::radioButtonTerrainActionPerformed);
+        radioButtonTerrain.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                radioButtonTerrainActionPerformed(evt);
+            }
+        });
 
         comboBoxTerrain.setModel(new DefaultComboBoxModel(Terrain.VALUES));
         comboBoxTerrain.setEnabled(false);
         comboBoxTerrain.setRenderer(new TerrainListCellRenderer(colourScheme));
-        comboBoxTerrain.addActionListener(this::comboBoxTerrainActionPerformed);
+        comboBoxTerrain.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                comboBoxTerrainActionPerformed(evt);
+            }
+        });
 
         jPanel1.setBorder(javax.swing.BorderFactory.createBevelBorder(javax.swing.border.BevelBorder.LOWERED));
 
@@ -349,10 +369,7 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
                                         .addComponent(spinnerOccurrence, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                                         .addGap(0, 0, 0)
                                         .addComponent(jLabel10))
-                                    .addGroup(layout.createSequentialGroup()
-                                        .addComponent(jLabel5)
-                                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                                        .addComponent(buttonPickColour))))
+                                    .addComponent(paintPicker1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
                             .addGroup(layout.createSequentialGroup()
                                 .addComponent(radioButtonTerrain)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -384,11 +401,10 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel6)
                             .addComponent(fieldName, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                        .addGap(19, 19, 19)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel4)
-                            .addComponent(jLabel5)
-                            .addComponent(buttonPickColour))
+                            .addComponent(paintPicker1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(18, 18, 18)
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                             .addComponent(jLabel7)
@@ -423,10 +439,6 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
     private void buttonOKActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonOKActionPerformed
         ok();
     }//GEN-LAST:event_buttonOKActionPerformed
-
-    private void buttonPickColourActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_buttonPickColourActionPerformed
-        pickColour();
-    }//GEN-LAST:event_buttonPickColourActionPerformed
 
     private void spinnerMinLevelStateChanged(javax.swing.event.ChangeEvent evt) {//GEN-FIRST:event_spinnerMinLevelStateChanged
         int newMinValue = (Integer) spinnerMinLevel.getValue();
@@ -475,7 +487,6 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
     private javax.swing.JButton buttonCancel;
     private javax.swing.ButtonGroup buttonGroup1;
     private javax.swing.JButton buttonOK;
-    private javax.swing.JButton buttonPickColour;
     private javax.swing.JComboBox comboBoxTerrain;
     private javax.swing.JTextField fieldName;
     private javax.swing.JLabel jLabel1;
@@ -483,7 +494,6 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
     private javax.swing.JLabel jLabel11;
     private javax.swing.JLabel jLabel12;
     private javax.swing.JLabel jLabel4;
-    private javax.swing.JLabel jLabel5;
     private javax.swing.JLabel jLabel6;
     private javax.swing.JLabel jLabel7;
     private javax.swing.JLabel jLabel8;
@@ -491,6 +501,7 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
     private javax.swing.JPanel jPanel1;
     private javax.swing.JLabel labelPreview;
     private org.pepsoft.worldpainter.MixedMaterialChooser mixedMaterialChooser;
+    private org.pepsoft.worldpainter.layers.renderers.PaintPicker paintPicker1;
     private javax.swing.JRadioButton radioButtonCustomMaterial;
     private javax.swing.JRadioButton radioButtonTerrain;
     private javax.swing.JSpinner spinnerMaxLevel;
@@ -501,7 +512,6 @@ public class UndergroundPocketsDialog extends AbstractEditLayerDialog<Undergroun
     
     private final ColourScheme colourScheme;
     private UndergroundPocketsLayer layer;
-    private int selectedColour = Color.ORANGE.getRGB();
     private Timer previewUpdateTimer;
 
     private static final long serialVersionUID = 1L;

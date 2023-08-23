@@ -6,39 +6,40 @@
 package org.pepsoft.worldpainter.tools.scripts;
 
 import org.jetbrains.annotations.NotNull;
-import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.undo.UndoManager;
 import org.pepsoft.worldpainter.Configuration;
 import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.World2;
 import org.pepsoft.worldpainter.WorldPainterDialog;
 import org.pepsoft.worldpainter.layers.Layer;
+import org.pepsoft.worldpainter.util.FileFilter;
+import org.pepsoft.worldpainter.util.FileUtils;
 import org.pepsoft.worldpainter.vo.EventVO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.script.Bindings;
-import javax.script.ScriptContext;
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
+import javax.script.*;
 import javax.swing.*;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
-import javax.swing.filechooser.FileFilter;
 import java.awt.*;
 import java.io.*;
+import java.nio.charset.Charset;
 import java.text.NumberFormat;
 import java.text.ParseException;
-import java.util.*;
 import java.util.List;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static java.util.stream.Collectors.joining;
+import static org.pepsoft.util.AwtUtils.doLaterOnEventThread;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowError;
 import static org.pepsoft.worldpainter.Constants.ATTRIBUTE_KEY_SCRIPT_FILENAME;
 import static org.pepsoft.worldpainter.Constants.ATTRIBUTE_KEY_SCRIPT_NAME;
+import static org.pepsoft.worldpainter.ExceptionHandler.doWithoutExceptionReporting;
 
 /**
  *
@@ -67,6 +68,7 @@ public class ScriptRunner extends WorldPainterDialog {
         
         getRootPane().setDefaultButton(jButton2);
         scaleToUI();
+        pack();
         setLocationRelativeTo(parent);
     }
 
@@ -78,7 +80,7 @@ public class ScriptRunner extends WorldPainterDialog {
     
     private void selectFile() {
         Set<String> extensions = new HashSet<>();
-        scriptEngineManager.getEngineFactories().forEach(factory -> extensions.addAll(factory.getExtensions()));
+        SCRIPT_ENGINE_MANAGER.getEngineFactories().forEach(factory -> extensions.addAll(factory.getExtensions()));
         File script = FileUtils.selectFileForOpen(this, "Select Script", (File) jComboBox1.getSelectedItem(), new FileFilter() {
             @Override
             public boolean accept(File f) {
@@ -102,6 +104,11 @@ public class ScriptRunner extends WorldPainterDialog {
                 sb.append(extensions.stream().map(extension -> "*." + extension).collect(joining(", ")));
                 sb.append(')');
                 return sb.toString();
+            }
+
+            @Override
+            public String getExtensions() {
+                return String.join(";", extensions);
             }
         });
         if ((script != null) && script.isFile()) {
@@ -216,7 +223,7 @@ public class ScriptRunner extends WorldPainterDialog {
                 }
             }
         } catch (IOException e) {
-            throw new RuntimeException("I/O error reading script " + script);
+            throw new RuntimeException("I/O error reading script " + script, e);
         }
         if (properties.isEmpty()) {
             return null;
@@ -298,9 +305,10 @@ public class ScriptRunner extends WorldPainterDialog {
         jButton2.setEnabled(false);
         jButton3.setEnabled(false);
         jTextArea2.setText(null);
-        File scriptFile = (File) jComboBox1.getSelectedItem();
-        String scriptFileName = scriptFile.getName(), scriptName;
-        Map<String, Object> params;
+        final File scriptFile = (File) jComboBox1.getSelectedItem();
+        final String scriptFilePath = scriptFile.getParentFile().getAbsolutePath();
+        final String scriptFileName = scriptFile.getName(), scriptName;
+        final Map<String, Object> params;
         if (scriptDescriptor != null) {
             params = scriptDescriptor.getValues();
             if (scriptDescriptor.name != null) {
@@ -316,20 +324,35 @@ public class ScriptRunner extends WorldPainterDialog {
             @Override
             public void run() {
                 try {
-                    Configuration config = Configuration.getInstance();
-                    int p = scriptFileName.lastIndexOf('.');
-                    String extension = scriptFileName.substring(p + 1);
-                    ScriptEngine scriptEngine = scriptEngineManager.getEngineByExtension(extension);
+                    final Configuration config = Configuration.getInstance();
+                    final int p = scriptFileName.lastIndexOf('.');
+                    final String extension = scriptFileName.substring(p + 1);
+                    ScriptEngine scriptEngine;
+                    synchronized (SCRIPT_ENGINES) {
+                        if (SCRIPT_ENGINES.containsKey(extension)) {
+                            scriptEngine = SCRIPT_ENGINES.get(extension);
+                        } else {
+                            scriptEngine = SCRIPT_ENGINE_MANAGER.getEngineByExtension(extension);
+                            if (scriptEngine == null) {
+                                logger.error("No script engine found for extension \"" + extension + "\"");
+                                doLaterOnEventThread(() -> beepAndShowError(ScriptRunner.this, "No script engine installed for extension \"" + extension + "\"", "Error"));
+                                return;
+                            }
+                            SCRIPT_ENGINES.put(extension, scriptEngine);
+                            logger.info("Using script engine {} version {} for scripts of type {}", scriptEngine.getFactory().getEngineName(), scriptEngine.getFactory().getEngineVersion(), extension);
+                        }
+                    }
+
                     scriptEngine.put(ScriptEngine.FILENAME, scriptFileName);
                     config.setRecentScriptFiles(new ArrayList<>(recentScriptFiles));
 
                     // Initialise script context
-                    ScriptingContext context = new ScriptingContext(false);
-                    Bindings bindings = scriptEngine.getBindings(ScriptContext.ENGINE_SCOPE);
+                    final Bindings bindings = scriptEngine.getBindings(ScriptContext.ENGINE_SCOPE);
+                    final ScriptingContext context = new ScriptingContext(false);
                     bindings.put("wp", context);
-                    String[] parameters = jTextArea1.getText().split("\\R");
+                    final String[] parameters = jTextArea1.getText().isEmpty() ? new String[0] : jTextArea1.getText().split("\\R");
                     bindings.put("argc", parameters.length + 1);
-                    String[] argv = new String[parameters.length + 1];
+                    final String[] argv = new String[parameters.length + 1];
                     argv[0] = scriptFileName;
                     System.arraycopy(parameters, 0, argv, 1, parameters.length);
                     bindings.put("argv", argv);
@@ -343,27 +366,28 @@ public class ScriptRunner extends WorldPainterDialog {
                     if (dimension != null) {
                         bindings.put("dimension", dimension);
                     }
-                    Map<String, Layer.DataSize> dataSizes = new HashMap<>();
+                    final Map<String, Layer.DataSize> dataSizes = new HashMap<>();
                     for (Layer.DataSize dataSize: Layer.DataSize.values()) {
                         dataSizes.put(dataSize.name(), dataSize);
                     }
                     bindings.put("DataSize", dataSizes);
+                    bindings.put("scriptDir", scriptFilePath);
 
                     // Capture output
-                    List<String> textQueue = new LinkedList<>();
-                    boolean[] textUpdateScheduled = new boolean[] {false};
+                    final List<String> textQueue = new LinkedList<>();
+                    final boolean[] textUpdateScheduled = new boolean[] {false};
                     Writer writer = new Writer() {
                         @Override
-                        public void write(@NotNull char[] cbuf, int off, int len) throws IOException {
+                        public void write(char @NotNull [] cbuf, int off, int len) {
                             synchronized (textQueue) {
                                 textQueue.add(new String(cbuf, off, len));
                                 if (! textUpdateScheduled[0]) {
-                                    SwingUtilities.invokeLater(() -> {
+                                    doLaterOnEventThread(() -> {
                                         synchronized (textQueue) {
                                             // Join the fragments first so that
                                             // only one string need be appended
                                             // to the text area's document
-                                            jTextArea2.append(textQueue.stream().collect(joining()));
+                                            jTextArea2.append(String.join("", textQueue));
                                             textQueue.clear();
                                             textUpdateScheduled[0] = false;
                                         }
@@ -373,8 +397,8 @@ public class ScriptRunner extends WorldPainterDialog {
                             }
                         }
 
-                        @Override public void flush() throws IOException {}
-                        @Override public void close() throws IOException {}
+                        @Override public void flush() {}
+                        @Override public void close() {}
                     };
                     scriptEngine.getContext().setWriter(writer);
                     scriptEngine.getContext().setErrorWriter(writer);
@@ -383,22 +407,45 @@ public class ScriptRunner extends WorldPainterDialog {
                     config.logEvent(new EventVO("script.execute").addTimestamp()
                             .setAttribute(ATTRIBUTE_KEY_SCRIPT_NAME, scriptName)
                             .setAttribute(ATTRIBUTE_KEY_SCRIPT_FILENAME, scriptFileName));
+                    logger.info("Executing script {} from file {}", scriptName, scriptFileName);
+                    // TODO add an event to the world history (after it has succeeded, and first make that history
+                    //  undoable)
 
                     // Execute script
                     if (dimension != null) {
                         dimension.setEventsInhibited(true);
                     }
                     try {
-                        scriptEngine.eval(new FileReader(scriptFile));
+                        // Load the script
+                        final String script = org.pepsoft.util.FileUtils.load(scriptFile, Charset.defaultCharset());
+
+                        // Compile the script, if the engine supports it, and run it
+                        final long start;
+                        if (scriptEngine instanceof Compilable) {
+                            final CompiledScript compiledScript;
+                            if (COMPILED_SCRIPTS.containsKey(script)) {
+                                compiledScript = COMPILED_SCRIPTS.get(script);
+                            } else {
+                                logger.info("Compiling script {}", scriptName);
+                                compiledScript = ((Compilable) scriptEngine).compile(new FileReader(scriptFile));
+                                COMPILED_SCRIPTS.put(script, compiledScript);
+                            }
+                            start = System.currentTimeMillis();
+                            compiledScript.eval();
+                        } else {
+                            start = System.currentTimeMillis();
+                            scriptEngine.eval(script);
+                        }
+                        logger.debug("Running script {} took {} ms", scriptName, System.currentTimeMillis() - start);
 
                         // Check that go() was invoked on the last operation:
                         context.checkGoCalled(null);
                     } catch (RuntimeException e) {
                         logger.error(e.getClass().getSimpleName() + " occurred while executing " + scriptFileName, e);
-                        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(ScriptRunner.this, e.getClass().getSimpleName() + " occurred (message: " + e.getMessage() + ")", "Error", JOptionPane.ERROR_MESSAGE));
+                        doLaterOnEventThread(() -> beepAndShowError(ScriptRunner.this, e.getClass().getSimpleName() + " occurred (message: " + e.getMessage() + ")", "Error"));
                     } catch (javax.script.ScriptException e) {
                         logger.error("ScriptException occurred while executing " + scriptFileName, e);
-                        StringBuilder sb = new StringBuilder();
+                        final StringBuilder sb = new StringBuilder();
                         sb.append(e.getMessage());
                         if (e.getLineNumber() != -1) {
                             sb.append(" (");
@@ -409,10 +456,10 @@ public class ScriptRunner extends WorldPainterDialog {
                             }
                             sb.append(')');
                         }
-                        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(ScriptRunner.this, sb.toString(), "Error", JOptionPane.ERROR_MESSAGE));
-                    } catch (FileNotFoundException e) {
-                        logger.error("FileNotFoundException occurred while executing " + scriptFileName, e);
-                        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(ScriptRunner.this, "File not found while executing " + scriptFileName, "Error", JOptionPane.ERROR_MESSAGE));
+                        doLaterOnEventThread(() -> beepAndShowError(ScriptRunner.this, sb.toString(), "Error"));
+                    } catch (IOException e) {
+                        logger.error("I/O error occurred while executing " + scriptFileName, e);
+                        doLaterOnEventThread(() -> beepAndShowError(ScriptRunner.this, "I/O error while executing " + scriptFileName, "Error"));
                     } finally {
                         if (dimension != null) {
                             dimension.setEventsInhibited(false);
@@ -422,7 +469,7 @@ public class ScriptRunner extends WorldPainterDialog {
                         }
                     }
                 } finally {
-                    SwingUtilities.invokeLater(() -> {
+                    doLaterOnEventThread(() -> {
                         jComboBox1.setEnabled(true);
                         jButton1.setEnabled(true);
                         jTextArea1.setEnabled(true);
@@ -624,14 +671,16 @@ public class ScriptRunner extends WorldPainterDialog {
     private javax.swing.JPanel panelDescriptor;
     // End of variables declaration//GEN-END:variables
 
-    private final ScriptEngineManager scriptEngineManager = new ScriptEngineManager();
     private final World2 world;
     private final Dimension dimension;
     private final ArrayList<File> recentScriptFiles;
     private final Collection<UndoManager> undoManagers;
     private ScriptDescriptor scriptDescriptor;
 
+    private static final ScriptEngineManager SCRIPT_ENGINE_MANAGER = new ScriptEngineManager();
     private static final Pattern DESCRIPTOR_PATTERN = Pattern.compile("script\\.([.a-zA-Z_0-9]+)=(.+)$");
+    private static final Map<String, ScriptEngine> SCRIPT_ENGINES = new HashMap<>();
+    private static final Map<String, CompiledScript> COMPILED_SCRIPTS = new HashMap<>();
     private static final Logger logger = LoggerFactory.getLogger(ScriptRunner.class);
 
     @SuppressWarnings("Convert2MethodRef") // This is shorter
@@ -892,7 +941,7 @@ public class ScriptRunner extends WorldPainterDialog {
                 if (! field.getText().trim().isEmpty()) {
                     fileChooser.setSelectedFile(new File(field.getText().trim()));
                 }
-                if (fileChooser.showOpenDialog(panel) == JFileChooser.APPROVE_OPTION) {
+                if (doWithoutExceptionReporting(() -> fileChooser.showOpenDialog(panel)) == JFileChooser.APPROVE_OPTION) {
                     field.setText(fileChooser.getSelectedFile().getAbsolutePath());
                 }
             });

@@ -5,6 +5,8 @@
 
 package org.pepsoft.minecraft;
 
+import org.pepsoft.worldpainter.layers.Annotations;
+
 /**
  *
  * @author pepijn
@@ -15,7 +17,7 @@ public final class Constants {
         // Prevent instantiation
     }
 
-    // MC 1.15 block names
+    // MC 1.15+ block names
 
     public static final String MC_ACACIA_BARK = "minecraft:acacia_bark";
     public static final String MC_ACACIA_DOOR = "minecraft:acacia_door";
@@ -505,9 +507,6 @@ public final class Constants {
     public static final String MC_SWEET_BERRY_BUSH = "minecraft:sweet_berry_bush";
     public static final String MC_FLOWING_WATER = "minecraft:flowing_water";
     public static final String MC_FLOWING_LAVA = "minecraft:flowing_lava";
-
-    // MC 1.18 block names
-
     public static final String MC_OAK_SIGN = "minecraft:oak_sign";
     public static final String MC_DEEPSLATE = "minecraft:deepslate";
     public static final String MC_COPPER_ORE = "minecraft:copper_ore";
@@ -525,30 +524,90 @@ public final class Constants {
     public static final String MC_SOUL_SOIL = "minecraft:soul_soil";
     public static final String MC_NETHER_GOLD_ORE = "minecraft:nether_gold_ore";
     public static final String MC_ANCIENT_DEBRIS = "minecraft:ancient_debris";
+    public static final String MC_DIRT_PATH = "minecraft:dirt_path";
+    public static final String MC_ROOTED_DIRT = "minecraft:rooted_dirt";
+    public static final String MC_WARPED_NYLIUM = "minecraft:warped_nylium";
+    public static final String MC_CRIMSON_NYLIUM = "minecraft:crimson_nylium";
+    public static final String MC_POTTED_FERN = "minecraft:potted_fern";
+    public static final String MC_INFESTED_DEEPSLATE = "minecraft:infested_deepslate";
+    public static final String MC_BAMBOO = "minecraft:bamboo";
+    public static final String MC_CRIMSON_FUNGUS = "minecraft:crimson_fungus";
+    public static final String MC_AZALEA = "minecraft:azalea";
+    public static final String MC_FLOWERING_AZALEA = "minecraft:flowering_azalea";
+    public static final String MC_WARPED_FUNGUS = "minecraft:warped_fungus";
+    public static final String MC_CRIMSON_ROOTS = "minecraft:crimson_roots";
+    public static final String MC_WARPED_ROOTS = "minecraft:warped_roots";
+    public static final String MC_NETHER_SPROUTS = "minecraft:nether_sprouts";
+    public static final String MC_TWISTING_VINES_PLANT = "minecraft:twisting_vines_plant";
+    public static final String MC_TWISTING_VINES = "minecraft:twisting_vines";
+    public static final String MC_GLOW_LICHEN = "minecraft:glow_lichen";
+    public static final String MC_MOSS_CARPET = "minecraft:moss_carpet";
+    public static final String MC_BIG_DRIPLEAF_STEM = "minecraft:big_dripleaf_stem";
+    public static final String MC_BIG_DRIPLEAF = "minecraft:big_dripleaf";
+    public static final String MC_POWDER_SNOW = "minecraft:powder_snow";
+    public static final String MC_CALCITE = "minecraft:calcite";
+    public static final String MC_SPORE_BLOSSOM = "minecraft:spore_blossom";
+    public static final String MC_WEEPING_VIVES = "minecraft:weeping_vines";
+    public static final String MC_WEEPING_VIVES_PLANT = "minecraft:weeping_vines_plant";
+    public static final String MC_HANGING_ROOTS = "minecraft:hanging_roots";
+    public static final String MC_CAVE_VINES = "minecraft:cave_vines";
+    public static final String MC_CAVE_VINES_PLANT = "minecraft:cave_vines_plant";
+    public static final String MC_MOSS_BLOCK = "minecraft:moss_block";
+    public static final String MC_SMALL_DRIPLEAF = "minecraft:small_dripleaf";
+    public static final String MC_POINTED_DRIPSTONE = "minecraft:pointed_dripstone";
+    public static final String MC_DRIPSTONE_BLOCK = "minecraft:dripstone_block";
+    public static final String MC_MUD = "minecraft:mud";
+    public static final String MC_MUDDY_MANGROVE_ROOTS = "minecraft:muddy_mangrove_roots";
+    public static final String MC_MANGROVE_PROPAGULE = "minecraft:mangrove_propagule";
+    public static final String MC_OAK_WALL_SIGN = "minecraft:oak_wall_sign";
+    public static final String MC_CRIMSON_HYPHAE = "minecraft:crimson_hyphae";
+    public static final String MC_CRIMSON_STEM = "minecraft:crimson_stem";
+    public static final String MC_WARPED_HYPHAE = "minecraft:warped_hyphae";
+    public static final String MC_WARPED_STEM = "minecraft:warped_stem";
+    public static final String MC_CHERRY_SAPLING = "minecraft:cherry_sapling";
+    public static final String MC_PINK_PETALS = "minecraft:pink_petals";
+    public static final String MC_PITCHER_CROP = "minecraft:pitcher_crop";
+    public static final String MC_PITCHER_PLANT = "minecraft:pitcher_plant";
+    public static final String MC_TORCHFLOWER_CROP = "minecraft:torchflower_crop";
+    public static final String MC_TORCHFLOWER = "minecraft:torchflower";
+    public static final String MC_SUSPICIOUS_SAND = "minecraft:suspicious_sand";
+    public static final String MC_SUSPICIOUS_GRAVEL = "minecraft:suspicious_gravel";
+    public static final String MC_CHERRY_LEAVES = "minecraft:cherry_leaves";
 
-    // MC 1.15 property names
+    // MC 1.18 biome names
 
-    public static final String MC_SNOWY       = "snowy";
-    public static final String MC_NORTH       = "north";
-    public static final String MC_EAST        = "east";
-    public static final String MC_SOUTH       = "south";
-    public static final String MC_WEST        = "west";
-    public static final String MC_UP          = "up";
-    public static final String MC_HALF        = "half";
-    public static final String MC_LAYERS      = "layers";
-    public static final String MC_LEVEL       = "level";
-    public static final String MC_WATERLOGGED = "waterlogged";
-    public static final String MC_AGE         = "age";
-    public static final String MC_STAGE       = "stage";
-    public static final String MC_PERSISTENT  = "persistent";
-    public static final String MC_FACING      = "facing";
-    public static final String MC_TYPE        = "type";
-    public static final String MC_AXIS        = "axis";
-    public static final String MC_PICKLES     = "pickles";
-    public static final String MC_MOISTURE    = "moisture";
-    public static final String MC_ROTATION    = "rotation";
-    public static final String MC_SHAPE       = "shape";
-    public static final String MC_HINGE       = "hinge";
+    public static final String MC_PLAINS = "minecraft:plains";
+
+    // MC 1.15+ property names
+
+    public static final String MC_SNOWY              = "snowy";
+    public static final String MC_NORTH              = "north";
+    public static final String MC_EAST               = "east";
+    public static final String MC_SOUTH              = "south";
+    public static final String MC_WEST               = "west";
+    public static final String MC_UP                 = "up";
+    public static final String MC_HALF               = "half";
+    public static final String MC_LAYERS             = "layers";
+    public static final String MC_LEVEL              = "level";
+    public static final String MC_WATERLOGGED        = "waterlogged";
+    public static final String MC_AGE                = "age";
+    public static final String MC_STAGE              = "stage";
+    public static final String MC_PERSISTENT         = "persistent";
+    public static final String MC_FACING             = "facing";
+    public static final String MC_TYPE               = "type";
+    public static final String MC_AXIS               = "axis";
+    public static final String MC_PICKLES            = "pickles";
+    public static final String MC_MOISTURE           = "moisture";
+    public static final String MC_ROTATION           = "rotation";
+    public static final String MC_SHAPE              = "shape";
+    public static final String MC_HINGE              = "hinge";
+    public static final String MC_LEAVES             = "leaves";
+    public static final String MC_DOWN               = "down";
+    public static final String MC_BERRIES            = "berries";
+    public static final String MC_DISTANCE           = "distance";
+    public static final String MC_VERTICAL_DIRECTION = "vertical_direction";
+    public static final String MC_THICKNESS          = "thickness";
+    public static final String MC_FLOWER_AMOUNT      = "flower_amount";
 
     // Minecraft NBT tag names. An underscore at the end signifies a lower case
     // initial
@@ -676,6 +735,19 @@ public final class Constants {
     public static final String TAG_HEIGHT_                 = "height";
     public static final String TAG_STRUCTURES_             = "structures";
     public static final String TAG_STRONGHOLD_             = "stronghold";
+    public static final String TAG_FLUID_TICKS_            = "fluid_ticks";
+    public static final String TAG_DATA_PACKS              = "DataPacks";
+    public static final String TAG_ENABLED                 = "Enabled";
+    public static final String TAG_DISABLED                = "Disabled";
+    public static final String TAG_BLOCK_ENTITIES_         = "block_entities";
+    public static final String TAG_IS_LIGHT_ON_            = "isLightOn";
+    public static final String TAG_POSITION                = "Position";
+    public static final String TAG_TAG_                    = "tag";
+    public static final String TAG_LARGE_BIOMES_           = "large_biomes";
+    public static final String TAG_SPAWN_FORCED            = "SpawnForced";
+    public static final String TAG_SPAWN_DIMENSION         = "SpawnDimension";
+    public static final String TAG_FACING                  = "Facing";
+    public static final String TAG_FACING_                 = "facing";
 
     /**
      * Possibly unofficial, SpoutCraft-specific
@@ -688,10 +760,13 @@ public final class Constants {
 
     public static final int DATA_VERSION_MC_1_12_2 = 1343;
     public static final int DATA_VERSION_MC_1_14_4 = 1976;
-    public static final int DATA_VERSION_MC_1_15   = 2230;
+    public static final int DATA_VERSION_MC_1_15_2 = 2230;
     public static final int DATA_VERSION_MC_1_16_5 = 2586;
+    public static final int DATA_VERSION_MC_1_17   = 2724;
     public static final int DATA_VERSION_MC_1_17_1 = 2730;
     public static final int DATA_VERSION_MC_1_18_0 = 2860;
+    public static final int DATA_VERSION_MC_1_18_2 = 2975;
+    public static final int DATA_VERSION_MC_1_19_0 = 3105;
 
     // Legacy (pre-MC 1.13) block IDs
 
@@ -1000,6 +1075,7 @@ public final class Constants {
     public static final int DATA_PUMPKIN_WEST_FACE  = 1;
     public static final int DATA_PUMPKIN_NORTH_FACE = 2;
     public static final int DATA_PUMPKIN_EAST_FACE  = 3;
+    @Deprecated // Here to support old plugins
     public static final int DATA_PUMPKIN_NO_FACE    = 4;
 
     public static final int DATA_WHITE      =  0;
@@ -1019,6 +1095,13 @@ public final class Constants {
     public static final int DATA_RED        = 14;
     public static final int DATA_BLACK      = 15;
 
+    /**
+     * The names corresponding to the {@code DATA_*} constants above (which correspond to the legacy data values for the
+     * wool block).
+     *
+     * <p><strong>PLEASE NOTE:</strong> {@link Annotations} layer values do <em>not</em> correspond to indices into this
+     * array!
+     */
     public static final String[] COLOUR_NAMES = {"White", "Orange", "Magenta", "Light Blue", "Yellow", "Lime", "Pink",
         "Grey", "Light Grey", "Cyan", "Purple", "Blue", "Brown", "Green", "Red", "Black"};
 
@@ -1057,10 +1140,33 @@ public final class Constants {
 
     // Tile entity IDs
 
-    public static final String ID_CHEST = "minecraft:chest";
-    public static final String ID_SIGN = "minecraft:sign";
+    public static final String ID_CHEST            = "minecraft:chest";
+    public static final String ID_SIGN             = "minecraft:sign";
+    public static final String ID_DIAMOND_SWORD    = "minecraft:diamond_sword";
+    public static final String ID_DIAMOND_SHOVEL   = "minecraft:diamond_shovel";
+    public static final String ID_DIAMOND_PICKAXE  = "minecraft:diamond_pickaxe";
+    public static final String ID_DIAMOND_AXE      = "minecraft:diamond_axe";
+    public static final String ID_OAK_SAPLING      = "minecraft:oak_sapling";
+    public static final String ID_SPRUCE_SAPLING   = "minecraft:spruce_sapling";
+    public static final String ID_BIRCH_SAPLING    = "minecraft:birch_sapling";
+    public static final String ID_BROWN_MUSHROOM   = "minecraft:brown_mushroom";
+    public static final String ID_RED_MUSHROOM     = "minecraft:red_mushroom";
+    public static final String ID_BONE             = "minecraft:bone";
+    public static final String ID_WATER_BUCKET     = "minecraft:water_bucket";
+    public static final String ID_COAL             = "minecraft:coal";
+    public static final String ID_IRON_INGOT       = "minecraft:iron_ingot";
+    public static final String ID_CACTUS           = "minecraft:cactus";
+    public static final String ID_SUGAR_CANE       = "minecraft:sugar_cane";
+    public static final String ID_TORCH            = "minecraft:torch";
+    public static final String ID_RED_BED          = "minecraft:red_bed";
+    public static final String ID_OBSIDIAN         = "minecraft:obsidian";
+    public static final String ID_FLINT_AND_STEEL  = "minecraft:flint_and_steel";
+    public static final String ID_OAK_LOG          = "minecraft:oak_log";
+    public static final String ID_CRAFTING_TABLE   = "minecraft:crafting_table";
+    public static final String ID_END_PORTAL_FRAME = "minecraft:end_portal_frame";
+    public static final String ID_ENDER_EYE        = "minecraft:ender_eye";
 
-    // Legacy (pre-MC 1.13) tile entity IDs
+    // Legacy (Minecraft 1.1) tile entity IDs
 
     public static final String LEGACY_ID_CHEST        = "Chest";
     public static final String LEGACY_ID_VILLAGER     = "Villager";
@@ -1088,6 +1194,17 @@ public final class Constants {
     public static final String LEGACY_ID_BANNER       = "Banner";
     public static final String LEGACY_ID_STRUCTURE    = "Structure";
     public static final String LEGACY_ID_SHULKER_BOX  = "shulker_box"; // TODO: really?
+
+    // Legacy (Minecraft 1.12) tile entity IDs
+
+    public static final String ID_SAPLING     = "minecraft:sapling";
+    public static final String ID_REEDS       = "minecraft:reeds";
+    public static final String ID_BED         = "minecraft:bed";
+    public static final String ID_LOG         = "minecraft:log";
+    public static final String ID_BANNER      = "minecraft:banner";
+    public static final String ID_SKULL       = "minecraft:skull";
+    public static final String ID_NOTEBLOCK   = "minecraft:noteblock";
+    public static final String ID_MOB_SPAWNER = "minecraft:mob_spawner";
 
     public static final int GAME_TYPE_SURVIVAL  = 0;
     public static final int GAME_TYPE_CREATIVE  = 1;
@@ -1137,9 +1254,14 @@ public final class Constants {
     /** 2x2 paintings */
     public static final String[] LARGE_PAINTINGS = {MOTIVE_MATCH, MOTIVE_BUST, MOTIVE_STAGE, MOTIVE_VOID, MOTIVE_SKULL_AND_ROSES};
 
+    public static final int DEFAULT_MIN_HEIGHT = 0;
+    public static final int DEFAULT_MIN_HEIGHT_1_18 = -64;
     public static final int DEFAULT_MAX_HEIGHT_MCREGION = 128;
     public static final int DEFAULT_MAX_HEIGHT_ANVIL = 256;
     public static final int DEFAULT_MAX_HEIGHT_1_18 = 320;
+    public static final int DEFAULT_MAX_HEIGHT_NETHER = 256;
+    public static final int DEFAULT_MAX_HEIGHT_END = 256;
+    public static final int DEFAULT_WATER_LEVEL = 62;
 
     public static final int DIFFICULTY_PEACEFUL = 0;
     public static final int DIFFICULTY_EASY     = 1;
@@ -1149,6 +1271,7 @@ public final class Constants {
     public static final String STATUS_FULL = "full";
     public static final String STATUS_LIQUID_CARVERS = "liquid_carvers";
     public static final String STATUS_STRUCTURE_STARTS = "structure_starts";
+    public static final String STATUS_BIOMES = "biomes";
 
     // Minecraft 1.18 dimension names
 
@@ -1164,10 +1287,14 @@ public final class Constants {
     // Minecraft 1.18 generator setting names
 
     public static final String MC_LARGE_BIOMES = "minecraft:large_biomes";
+    public static final String MC_NETHER = "minecraft:nether";
+    public static final String MC_END = "minecraft:end";
+    public static final String MC_AMPLIFIED = "minecraft:amplified";
 
-    // Minecraft 1.18 biome source types
+    // Minecraft 1.17 - 1.18 biome source types
 
     public static final String MC_MULTI_NOISE = "minecraft:multi_noise";
+    public static final String MC_VANILLA_LAYERED = "minecraft:vanilla_layered";
 
     // Datapack names
 

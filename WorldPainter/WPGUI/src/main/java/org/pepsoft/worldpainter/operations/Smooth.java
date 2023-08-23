@@ -5,13 +5,13 @@
 
 package org.pepsoft.worldpainter.operations;
 
-import java.util.Arrays;
 import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.MapDragControl;
 import org.pepsoft.worldpainter.RadiusControl;
 import org.pepsoft.worldpainter.WorldPainter;
 
 import javax.swing.*;
+import java.util.Arrays;
 
 /**
  *
@@ -29,6 +29,12 @@ public class Smooth extends RadiusOperation {
 
     @Override
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
+
         int radius = getEffectiveRadius(), diameter = radius * 2 + 1;
         if ((totals == null) || (totals.length < (diameter + 10))) {
             totals = new float[diameter + 10][diameter + 10];
@@ -42,13 +48,12 @@ public class Smooth extends RadiusOperation {
             }
         }
         boolean applyTheme = options.isApplyTheme();
-        Dimension dimension = getDimension();
         dimension.setEventsInhibited(true);
         try {
             for (int x = 0; x < diameter + 10; x++) {
                 for (int y = 0; y < diameter + 10; y++) {
                     float currentHeight = dimension.getHeightAt(centreX - radius + x - 5, centreY - radius + y - 5);
-                    if (currentHeight != Float.MIN_VALUE) {
+                    if (currentHeight != -Float.MAX_VALUE) {
                         currentHeights[x][y] = currentHeight;
                         int dxFrom = Math.max(x - 5, 0);
                         int dxTo = Math.min(x + 5, diameter + 9);
@@ -81,7 +86,7 @@ public class Smooth extends RadiusOperation {
     }
     
     private final TerrainShapingOptions<Smooth> options = new TerrainShapingOptions<>();
-    private final TerrainShapingOptionsPanel optionsPanel = new TerrainShapingOptionsPanel(options);
+    private final TerrainShapingOptionsPanel optionsPanel = new TerrainShapingOptionsPanel("Smooth", "<p>Click to smooth the terrain out", options);
     private float[][] totals, currentHeights;
     private int[][] sampleCounts;
 }

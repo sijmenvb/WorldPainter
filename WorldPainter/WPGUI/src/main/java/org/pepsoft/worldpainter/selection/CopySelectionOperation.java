@@ -6,8 +6,7 @@ import org.pepsoft.worldpainter.WorldPainter;
 import org.pepsoft.worldpainter.WorldPainterView;
 import org.pepsoft.worldpainter.brushes.BrushShape;
 import org.pepsoft.worldpainter.operations.MouseOrTabletOperation;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pepsoft.worldpainter.operations.StandardOptionsPanel;
 
 import javax.swing.*;
 import java.awt.*;
@@ -28,8 +27,12 @@ public class CopySelectionOperation extends MouseOrTabletOperation {
 
     @Override
     protected void activate() throws PropertyVetoException {
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            throw new PropertyVetoException("Dimension not set", null);
+        }
         super.activate();
-        selectionHelper = new SelectionHelper(getDimension());
+        selectionHelper = new SelectionHelper(dimension);
         WorldPainter view = (WorldPainter) getView();
         Rectangle bounds = selectionHelper.getSelectionBounds();
         if (bounds == null) {
@@ -51,7 +54,11 @@ public class CopySelectionOperation extends MouseOrTabletOperation {
     @Override
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
         selectionHelper.setOptions(options);
-        Dimension dimension = getDimension();
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
         dimension.setEventsInhibited(true);
         try {
             // TODO: opening the progress dialog (and presumeably any dialog)
@@ -77,7 +84,10 @@ public class CopySelectionOperation extends MouseOrTabletOperation {
 
     private SelectionHelper selectionHelper;
     private final CopySelectionOperationOptions options = new CopySelectionOperationOptions();
-    private final CopySelectionOperationOptionsPanel optionsPanel = new CopySelectionOperationOptionsPanel(options);
-
-    private static final Logger logger = LoggerFactory.getLogger(CopySelectionOperation.class);
+    private final StandardOptionsPanel optionsPanel = new StandardOptionsPanel("Copy Selection", "<p>Click to copy the selected area to the indicated location. Choose below which aspects of the world to copy:") {
+        @Override
+        protected void addAdditionalComponents(GridBagConstraints constraints) {
+            add(new CopySelectionOperationOptionsPanel(options), constraints);
+        }
+    };
 }

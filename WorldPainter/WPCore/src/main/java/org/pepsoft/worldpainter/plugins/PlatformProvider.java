@@ -4,6 +4,7 @@ import org.pepsoft.worldpainter.Platform;
 import org.pepsoft.worldpainter.World2;
 import org.pepsoft.worldpainter.exporting.ExportSettings;
 import org.pepsoft.worldpainter.exporting.ExportSettingsEditor;
+import org.pepsoft.worldpainter.exporting.WorldExportSettings;
 import org.pepsoft.worldpainter.exporting.WorldExporter;
 import org.pepsoft.worldpainter.mapexplorer.MapRecognizer;
 
@@ -21,10 +22,12 @@ public interface PlatformProvider extends Provider<Platform> {
      * Obtain a {@link WorldExporter} for the platform currently configured in
      * the specified world.
      *
-     * @param world2 The world to export.
-     * @return A world exporter which will export the specified world.
+     * @param world          The world to export.
+     * @param exportSettings The export settings to use for this export. If this is {@code null} then the export
+     *                       settings stored on the {@code world} object will be used, if any.
+     * @return A world exporter which will export the specified world with the specified settings.
      */
-    WorldExporter getExporter(World2 world2);
+    WorldExporter getExporter(World2 world, WorldExportSettings exportSettings);
 
     /**
      * Get the default directory to select on the Export screen for a
@@ -75,43 +78,67 @@ public interface PlatformProvider extends Provider<Platform> {
     }
 
     class MapInfo {
-        public MapInfo(File dir, Platform platform, String name, Icon icon, int maxHeight) {
+        public MapInfo(File dir, Platform platform, String name, Icon icon, int minHeight, int maxHeight) {
             this.dir = dir;
             this.platform = platform;
             this.name = name;
             this.icon = icon;
+            this.minHeight = minHeight;
             this.maxHeight = maxHeight;
+        }
+
+        @Deprecated
+        public MapInfo(File dir, Platform platform, String name, Icon icon, int maxHeight) {
+            this(dir, platform, name, icon, platform.minZ, maxHeight);
         }
 
         public File dir;
         public Platform platform;
         public String name;
         public Icon icon;
-        public int maxHeight;
+        public int minHeight, maxHeight;
     }
     
     /**
-     * Get the default {@link ExportSettings} for this platform, or {@code null} if the platform has no export settings.
+     * Get the default {@link ExportSettings} for a supported platform, or {@code null} if the platform has no export
+     * settings.
      * 
      * <p>The default implementation returns {@code null}.
-     * 
-     * @return The default {@link ExportSettings} for this platform, or {@code null} if the platform has no export
-     * settings.
+     *
+     * @param platform The platform for which to provide the default export settings.
+     * @return The default {@link ExportSettings} for the specified platform, or {@code null} if the platform has no
+     * export settings.
      */
-    default ExportSettings getDefaultExportSettings() {
+    default ExportSettings getDefaultExportSettings(Platform platform) {
         return null;
     }
     
     /**
      * Get an instance of an {@link ExportSettingsEditor} suitable for editing an {@link ExportSettings} object as
-     * returned by {@link #getDefaultExportSettings()}. Will only be invoked if {@link #getDefaultExportSettings()} does
-     * not return {@code null}.
+     * returned by {@link #getDefaultExportSettings(Platform)}. Will only be invoked if
+     * {@link #getDefaultExportSettings(Platform)} does not return {@code null}.
      * 
      * <p>The default implementation throws an {@link UnsupportedOperationException}.
-     * 
+     *
+     * @param platform The platform for which to provide the export settings editor.
      * @return An instance of an {@link ExportSettingsEditor}.
      */
-    default ExportSettingsEditor getExportSettingsEditor() {
+    default ExportSettingsEditor getExportSettingsEditor(Platform platform) {
         throw new UnsupportedOperationException("This platform has no export settings");
+    }
+
+    /**
+     * Determines whether a world could be retargeted to a platform supported by this provider without requiring any
+     * changes or edits.
+     *
+     * <p>The default implementation just returns {@link Platform#isCompatible(World2) platform.isCompatible(world)}.
+     *
+     * @param platform The platform with which to check compatibility.
+     * @param world    The world to check for compatibility.
+     * @return {@code null} if the world could be trivially retargeted to the specified platform, or a short description
+     * of the reason if it cannot.
+     */
+    default String isCompatible(Platform platform, World2 world) {
+        return platform.isCompatible(world);
     }
 }

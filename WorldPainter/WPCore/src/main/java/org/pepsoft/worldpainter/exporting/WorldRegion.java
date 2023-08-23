@@ -18,21 +18,21 @@ import static org.pepsoft.minecraft.Constants.BLK_AIR;
  * @author pepijn
  */
 public class WorldRegion implements MinecraftWorld {
-    public WorldRegion(int regionX, int regionZ, int maxHeight, Platform platform) {
+    public WorldRegion(int regionX, int regionZ, int minHeight, int maxHeight, Platform platform) {
         this.regionX = regionX;
         this.regionZ = regionZ;
+        this.minHeight = minHeight;
         this.maxHeight = maxHeight;
         this.platform = platform;
-        minHeight = platform.minZ;
         platformProvider = (BlockBasedPlatformProvider) PlatformManager.getInstance().getPlatformProvider(platform);
     }
     
-    public WorldRegion(File worldDir, int dimension, int regionX, int regionZ, int maxHeight, Platform platform) {
+    public WorldRegion(File worldDir, int dimension, int regionX, int regionZ, int minHeight, int maxHeight, Platform platform) {
         this.regionX = regionX;
         this.regionZ = regionZ;
+        this.minHeight = minHeight;
         this.maxHeight = maxHeight;
         this.platform = platform;
-        minHeight = platform.minZ;
         platformProvider = (BlockBasedPlatformProvider) PlatformManager.getInstance().getPlatformProvider(platform);
         int lowestX = (regionX << 5) - 1;
         int highestX = lowestX + 33;
@@ -132,15 +132,10 @@ public class WorldRegion implements MinecraftWorld {
     }
 
     @Override
-    public void addEntity(int x, int y, int height, Entity entity) {
-        addEntity(x + 0.5, y + 0.5, height + 1.5, entity);
-    }
-
-    @Override
     public void addEntity(double x, double y, double height, Entity entity) {
-        Chunk chunk = getChunkForEditing(((int) x) >> 4, ((int) y) >> 4);
+        Chunk chunk = getChunkForEditing((int) Math.floor(x) >> 4, (int) Math.floor(y) >> 4);
         if (chunk != null) {
-            Entity clone = (Entity) entity.clone();
+            Entity clone = entity.clone();
             clone.setPos(new double[] {x, height, y});
             chunk.getEntities().add(clone);
         }
@@ -232,16 +227,7 @@ public class WorldRegion implements MinecraftWorld {
 
     @Override
     public Chunk getChunkForEditing(int x, int z) {
-        Chunk chunk = getChunk(x, z);
-        if (chunkCreationMode && (chunk == null)) {
-            int localX = x - (regionX << 5);
-            int localZ = z - (regionZ << 5);
-            if ((localX >= 0) && (localX < CHUNKS_PER_SIDE) && (localZ >= 0) && (localZ < CHUNKS_PER_SIDE)) {
-                chunk = platformProvider.createChunk(platform, x, z, maxHeight);
-                chunks[x + 1][z + 1] = chunk;
-            }
-        }
-        return chunk;
+        return getChunk(x, z);
     }
 
     @Override
@@ -283,20 +269,11 @@ public class WorldRegion implements MinecraftWorld {
         }
     }
 
-    public boolean isChunkCreationMode() {
-        return chunkCreationMode;
-    }
-
-    public void setChunkCreationMode(boolean chunkCreationMode) {
-        this.chunkCreationMode = chunkCreationMode;
-    }
- 
     private final int minHeight, maxHeight;
     private final Platform platform;
     private final Chunk[][] chunks = new Chunk[CHUNKS_PER_SIDE + 2][CHUNKS_PER_SIDE + 2];
     private final int regionX, regionZ;
     private final BlockBasedPlatformProvider platformProvider;
-    private boolean chunkCreationMode;
 
 //    private static final Object DISK_ACCESS_MONITOR = new Object();
     

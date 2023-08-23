@@ -38,6 +38,7 @@ public class WorldPainterDialog extends JDialog {
         super(parent, ModalityType.APPLICATION_MODAL);
 
         if (parent instanceof App) {
+            ((App) parent).reset3DViewAlwaysOnTop();
             ((App) parent).pauseAutosave();
             addWindowListener(new WindowAdapter() {
                 @Override
@@ -61,7 +62,7 @@ public class WorldPainterDialog extends JDialog {
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "cancel");
 
         if (enableHelpKey) {
-            getRootPane().putClientProperty(App.HELP_KEY_KEY, "Dialog/" + getClass().getSimpleName());
+            getRootPane().putClientProperty(App.KEY_HELP_KEY, "Dialog/" + getClass().getSimpleName());
             actionMap.put("help", new AbstractAction("help") {
                 @Override
                 public void actionPerformed(ActionEvent e) {
@@ -107,8 +108,18 @@ public class WorldPainterDialog extends JDialog {
      * <p>Should be called by subclasses <em>after</em> they have added all
      * their components.
      */
-    protected void scaleToUI() {
+    protected final void scaleToUI() {
         GUIUtils.scaleToUI(this);
+    }
+
+    /**
+     * Adjusts the size of the window to the UI scale. The window will not be scaled down, nor be made larger than the
+     * available space on the screen.
+     *
+     * <p>Should be called by subclasses <em>after</em> they have added and scaled all their components.
+     */
+    protected final void scaleWindowToUI() {
+        GUIUtils.scaleWindow(this);
     }
 
     private boolean cancelled = true;

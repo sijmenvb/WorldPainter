@@ -30,7 +30,8 @@ public class TileEntity extends AbstractNBTItem {
     }
 
     public String getId() {
-        return getString(TAG_ID_, getString(TAG_ID));
+        final String id = getString(TAG_ID_);
+        return (id != null) ? id : getString(TAG_ID);
     }
 
     public int getX() {
@@ -67,8 +68,9 @@ public class TileEntity extends AbstractNBTItem {
                 case LEGACY_ID_CHEST:
                 case ID_CHEST:
                     return new Chest(tileEntityTag);
-                case LEGACY_ID_SIGN: // TODO add MC 1.15 support
-                    return new WallSign(tileEntityTag);
+                case LEGACY_ID_SIGN:
+                case ID_SIGN:
+                    return new Sign(tileEntityTag);
             }
         }
         return new TileEntity(tileEntityTag);

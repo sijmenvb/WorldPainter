@@ -8,7 +8,9 @@ import org.pepsoft.worldpainter.WorldPainterView;
 import org.pepsoft.worldpainter.brushes.Brush;
 import org.pepsoft.worldpainter.brushes.RotatedBrush;
 import org.pepsoft.worldpainter.operations.RadiusOperation;
+import org.pepsoft.worldpainter.operations.StandardOptionsPanel;
 
+import javax.swing.*;
 import java.awt.*;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Arc2D;
@@ -24,7 +26,18 @@ public class EditSelectionOperation extends RadiusOperation {
     }
 
     @Override
+    public JPanel getOptionsPanel() {
+        return OPTIONS_PANEL;
+    }
+
+    @Override
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
+
         // Create a geometric shape corresponding to the brush size, shape and
         // rotation
         Shape shape;
@@ -48,7 +61,6 @@ public class EditSelectionOperation extends RadiusOperation {
                 throw new InternalError();
         }
 
-        final Dimension dimension = getDimension();
         dimension.setEventsInhibited(true);
         try {
             SelectionHelper selectionHelper = new SelectionHelper(dimension);
@@ -66,5 +78,6 @@ public class EditSelectionOperation extends RadiusOperation {
 
     private final ObservableBoolean selectionState;
 
+    private static final JPanel OPTIONS_PANEL = new StandardOptionsPanel("Edit Selection", "<ul><li>Left-click to add to the selection<li>Right-click to remove from the selection</ul>");
     private static final double DEGREES_TO_RADIANS = 360 / (Math.PI * 2);
 }

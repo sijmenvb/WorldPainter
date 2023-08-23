@@ -15,9 +15,10 @@ import static org.pepsoft.minecraft.Constants.BLK_AIR;
  * @author Pepijn
  */
 public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
-    public MemoryChunk(int xPos, int zPos, int maxHeight) {
+    public MemoryChunk(int xPos, int zPos, int minHeight, int maxHeight) {
         this.xPos = xPos;
         this.zPos = zPos;
+        this.minHeight = minHeight;
         this.maxHeight = maxHeight;
 
         sections = new Section[maxHeight >> 4];
@@ -38,7 +39,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
 
     @Override
     public int getMinHeight() {
-        throw new UnsupportedOperationException("TODO"); // TODOMC118
+        return minHeight;
     }
 
     @Override
@@ -67,8 +68,8 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         if (section == null) {
             return 0;
         } else {
-        	Material mat = section.blocks[blockOffset(x, y, z)];
-        	return (mat != null) ? mat.blockType : BLK_AIR;
+            Material mat = section.blocks[blockOffset(x, y, z)];
+            return (mat != null) ? mat.blockType : BLK_AIR;
         }
     }
 
@@ -78,8 +79,8 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
             return;
         }
         if (sections[y >> 4] == null && blockType == BLK_AIR) {
-		    return;
-		}
+            return;
+        }
         throw new UnsupportedOperationException("Setting block type no longer supported");
     }
 
@@ -89,8 +90,8 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         if (section == null) {
             return 0;
         } else {
-        	Material mat = section.blocks[blockOffset(x, y, z)];
-        	return (mat != null) ? mat.data : 0;
+            Material mat = section.blocks[blockOffset(x, y, z)];
+            return (mat != null) ? mat.data : 0;
         }
     }
 
@@ -100,8 +101,8 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
             return;
         }
         if (sections[y >> 4] == null && dataValue == 0) {
-		    return;
-		}
+            return;
+        }
         throw new UnsupportedOperationException("Setting block type no longer supported");
     }
 
@@ -109,7 +110,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
     public int getSkyLightLevel(int x, int y, int z) {
         int level = y >> 4;
         if (sections[level] == null) {
-            return 15;
+            return 0;
         } else {
             return getDataByte(sections[level].skyLight, x, y, z);
         }
@@ -123,7 +124,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         int level = y >> 4;
         Section section = sections[level];
         if (section == null) {
-            if (skyLightLevel == 15) {
+            if (skyLightLevel == 0) {
                 return;
             }
             section = new Section((byte) level);
@@ -171,10 +172,20 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         }
         heightMap[x + z * 16] = height;
     }
-    
+
+    @Override
+    public boolean isBiomesSupported() {
+        return true;
+    }
+
     @Override
     public boolean isBiomesAvailable() {
         return biomes != null;
+    }
+
+    @Override
+    public boolean is3DBiomesSupported() {
+        return true;
     }
 
     @Override
@@ -188,7 +199,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
     public int getBiome(int x, int z) {
         return biomes[x + z * 16] & 0xFF;
     }
-    
+
     @Override
     public void setBiome(int x, int z, int biome) {
         if (readOnly) {
@@ -245,8 +256,8 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         if (section == null) {
             return Material.AIR;
         } else {
-        	Material mat = section.blocks[blockOffset(x, y, z)];
-        	return (mat != null) ? mat : Material.AIR;
+            Material mat = section.blocks[blockOffset(x, y, z)];
+            return (mat != null) ? mat : Material.AIR;
         }
     }
 
@@ -366,15 +377,8 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
     }
 
     @Override
-    public void addEntity(int x, int y, int height, Entity entity) {
-        entity = (Entity) entity.clone();
-        entity.setPos(new double[] {x, height, y});
-        getEntities().add(entity);
-    }
-
-    @Override
     public void addEntity(double x, double y, double height, Entity entity) {
-        entity = (Entity) entity.clone();
+        entity = entity.clone();
         entity.setPos(new double[] {x, height, y});
         getEntities().add(entity);
     }
@@ -436,7 +440,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         hash = 37 * hash + this.zPos;
         return hash;
     }
-    
+
     /**
      * @throws UnsupportedOperationException
      */
@@ -444,7 +448,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
     public MCRegionChunk clone() {
         throw new UnsupportedOperationException("ChunkImlp2.clone() not supported");
     }
-    
+
     private int getDataByte(byte[] array, int x, int y, int z) {
         int blockOffset = blockOffset(x, y, z);
         byte dataByte = array[blockOffset / 2];
@@ -486,7 +490,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
     boolean terrainPopulated, lightPopulated;
     final List<Entity> entities;
     final List<TileEntity> tileEntities;
-    final int maxHeight;
+    final int minHeight, maxHeight;
     long inhabitedTime;
 
     private static final long serialVersionUID = 1L;
@@ -503,7 +507,7 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
         /**
          * Indicates whether the section is empty, meaning all block ID's, data
          * values and block light values are 0, and all sky light values are 15.
-         * 
+         *
          * @return {@code true} if the section is empty
          */
         boolean isEmpty() {
@@ -524,12 +528,12 @@ public class MemoryChunk implements Chunk, MinecraftWorld, Serializable {
             }
             return true;
         }
-        
+
         final byte level;
         final Material[] blocks;
         final byte[] skyLight;
         final byte[] blockLight;
-        
+
         private static final long serialVersionUID = 1L;
-    }    
+    }
 }

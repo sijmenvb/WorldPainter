@@ -26,6 +26,7 @@ package org.pepsoft.worldpainter.tools.scripts;
 
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.worldpainter.*;
+import org.pepsoft.worldpainter.heightMaps.BicubicHeightMap;
 import org.pepsoft.worldpainter.heightMaps.BitmapHeightMap;
 import org.pepsoft.worldpainter.heightMaps.TransformingHeightMap;
 import org.pepsoft.worldpainter.importing.HeightMapImporter;
@@ -33,7 +34,8 @@ import org.pepsoft.worldpainter.themes.Theme;
 
 import java.util.Random;
 
-import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_15;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
 
 /**
  *
@@ -87,6 +89,21 @@ public class ImportHeightMapOp extends AbstractOperation<World2> {
         return this;
     }
 
+    public ImportHeightMapOp withMapFormat(Platform platform) {
+        this.platform = platform;
+        return this;
+    }
+
+    public ImportHeightMapOp withLowerBuildLimit(int lowerBuildLimit) {
+        this.lowerBuildLimit = lowerBuildLimit;
+        return this;
+    }
+
+    public ImportHeightMapOp withUpperBuildLimit(int upperBuildLimit) {
+        this.upperBuildLimit = upperBuildLimit;
+        return this;
+    }
+
     @Override
     public World2 go() throws ScriptException {
         goCalled();
@@ -97,13 +114,58 @@ public class ImportHeightMapOp extends AbstractOperation<World2> {
         HeightMap adjustedHeightMap = heightMap;
         if ((scale != 100) || (offsetX != 0) || (offsetY != 0)) {
             if (scale != 100) {
-                heightMap.setSmoothScaling(true);
+                adjustedHeightMap = new BicubicHeightMap(adjustedHeightMap);
             }
-            adjustedHeightMap = new TransformingHeightMap(heightMap.getName() + " transformed", heightMap, scale, scale, offsetX, offsetY, 0);
+            adjustedHeightMap = new TransformingHeightMap(heightMap.getName() + " transformed", adjustedHeightMap, scale / 100.0f, scale / 100.0f, offsetX, offsetY, 0.0f);
         }
         importer.setHeightMap(adjustedHeightMap);
         importer.setImageFile(heightMap.getImageFile());
-        HeightMapTileFactory tileFactory = TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), Terrain.GRASS, JAVA_ANVIL_1_15.minZ, JAVA_ANVIL_1_15.standardMaxHeight, 58, waterLevel, false, true, 20, 1.0);
+
+        // Use the platform's default min- and maxHeight if they suffice, or if not the next larger supported value
+        // which does suffice
+        int minHeight = Integer.MAX_VALUE, maxHeight = Integer.MIN_VALUE;
+        if (lowerBuildLimit != Integer.MIN_VALUE) {
+            minHeight = lowerBuildLimit;
+            if (minHeight < platform.minMinHeight) {
+                throw new ScriptException("Lower build limit " + lowerBuildLimit + " lower than map format minimum lower build limit of " + platform.minMinHeight);
+            } else if (minHeight > platform.maxMinHeight) {
+                throw new ScriptException("Lower build limit " + lowerBuildLimit + " higher than map format maximum lower build limit of " + platform.maxMinHeight);
+            }
+        } else {
+            for (int platformMinHeight: platform.minHeights) {
+                if ((platformMinHeight <= platform.minZ)
+                        && (platformMinHeight <= Math.min(importer.getWorldLowLevel(), importer.getWorldWaterLevel()))) {
+                    minHeight = platformMinHeight;
+                    break;
+                }
+            }
+            if (minHeight == Integer.MAX_VALUE) {
+                throw new ScriptException("Map format " + platform + " not deep enough to accommodate minimum terrain height of " + importer.getWorldLowLevel() + " or water level of " + importer.getWorldWaterLevel());
+            }
+        }
+        if (upperBuildLimit != Integer.MAX_VALUE) {
+            maxHeight = upperBuildLimit;
+            if (maxHeight < platform.minMaxHeight) {
+                throw new ScriptException("Upper build limit " + upperBuildLimit + " lower than map format minimum upper build limit of " + platform.minMaxHeight);
+            } else if (maxHeight > platform.maxMaxHeight) {
+                throw new ScriptException("Upper build limit " + upperBuildLimit + " higher than map format maximum upper build limit of " + platform.maxMaxHeight);
+            }
+        } else {
+            for (int platformMaxHeight: platform.maxHeights) {
+                if ((platformMaxHeight >= platform.standardMaxHeight)
+                        && (platformMaxHeight > Math.max(importer.getWorldHighLevel(), importer.getWorldWaterLevel()))) {
+                    maxHeight = platformMaxHeight;
+                    break;
+                }
+            }
+            if (maxHeight == Integer.MIN_VALUE) {
+                throw new ScriptException("Map format " + platform + " not high enough to accommodate maximum terrain height of " + importer.getWorldHighLevel() + " or water level of " + importer.getWorldWaterLevel());
+            }
+        }
+        importer.setMinHeight(minHeight);
+        importer.setMaxHeight(maxHeight);
+
+        HeightMapTileFactory tileFactory = TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), Terrain.GRASS, minHeight, maxHeight, 58, waterLevel, false, true, 20, 1.0);
         Theme defaults = Configuration.getInstance().getHeightMapDefaultTheme();
         if (defaults != null) {
             tileFactory.setTheme(defaults);
@@ -115,10 +177,9 @@ public class ImportHeightMapOp extends AbstractOperation<World2> {
             name = name.substring(0, p);
         }
         importer.setName(name);
-        // TODO autoselect this and make it configurable:
-        importer.setPlatform(JAVA_ANVIL_1_15);
+        importer.setPlatform(platform);
         try {
-            return importer.importToNewWorld(null);
+            return importer.importToNewWorld(NORMAL_DETAIL, null);
         } catch (ProgressReceiver.OperationCancelled e) {
             // Can never happen since we don't pass a progress receiver in
             throw new InternalError();
@@ -128,5 +189,6 @@ public class ImportHeightMapOp extends AbstractOperation<World2> {
     private final HeightMapImporter importer = new HeightMapImporter();
     private BitmapHeightMap heightMap;
     private boolean fromLevelsSpecified, toLevelsSpecified;
-    private int scale = 100, waterLevel = 62, offsetX, offsetY;
+    private int scale = 100, waterLevel = DEFAULT_WATER_LEVEL, offsetX, offsetY, lowerBuildLimit = Integer.MIN_VALUE, upperBuildLimit = Integer.MAX_VALUE;
+    private Platform platform = Configuration.getInstance().getDefaultPlatform();
 }

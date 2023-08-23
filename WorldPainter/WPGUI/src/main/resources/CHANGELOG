@@ -1,13 +1,707 @@
--- Version 2.8.11, released ...
+-- Version 2.21.1, released 21-8-2023
 
- * Various measures to prevent problems due to lack of disk space were implemented:
+ * Bug fix: make heightmap preview and tile selection work again
+ * Bug fix: make selecting variations of biomes work again
+
+-- Version 2.21.0, released 20-8-2023
+
+ * Support for Minecraft 1.20 has been added, including:
+   + Preview support for the new blocks by upgrading the embedded Dynmap to version 3.6
+   + New plants for the Custom Plants layer: cherry saplings, pink petals, pitcher pods and plants and torchflower seeds and plants
+   + The new Cherry Grove biome
+   + Suspicious sand and gravel are Imported as sand and gravel, and are preserved on Merge
+ * Custom Biomes can now also have custom patterns configured for rendering
+   + To create or edit a pattern, click on the [...] button next to the Paint label on the Configure Custom Biome screen
+   + Note that for Custom Biomes the opacity cannot be changed
+ * Fence blocks and other connecting blocks (such as iron bars and glass panes) from old Custom Objects, from Minecraft versions that automatically managed those connections, will now be automatically connected to their neighbours on Export
+   + This is only done for .bo2, .bo3 and .schematic objects
+ * Structures (.nbt files) now always have their offset guesstimated when loading them as Custom Objects, since they do not store an offset. This will increase the chance that they will be placed correctly by default
+ * Some biomes have received a slightly more distinctive pattern and/or colour
+ * Bug fix: fix an error that occurred when Importing Minecraft 1.12 maps with custom biomes
+ * Bug fix: creating a new Custom Layer from a renamed palette now adds it to the right palette
+
+-- Version 2.20.0, released 13-8-2023
+
+ * All custom layer types can now be rendered with custom patterns in addition to solid colours
+   + To create or edit a pattern, click on the [...] button next to the Paint label on the layer's settings screen
+   + This will open a very simple editor which allows you to choose a solid colour, or a transparent canvas, and then apply a pattern to it using a simple pencil tool and limited colour palette
+   + The pattern will also be shown as the layer's icon on the palette
+   + There is a separate slider to set the opacity of the layer (when it is at 100% intensity)
+ * A new Custom Annotation layer type has been added
+   + It is a very simple layer type that is not Exported and only serves to make custom annotations for display in the editor view, or as markers for scripts or complex operations
+   + The new patterned layer rendering support described above also applies to these new Custom Annotation Layers
+   + Since they are not Exported they are not visible on the Custom Layers tabs of the Export screen
+ * Warnings for Test Exports are now only displayed once as long as they don't change
+   + For regular Exports they are still always displayed
+   + In addition the warnings are now always repeated on the Export Success screen
+
+-- Version 2.19.0, released 5-8-2023
+
+ * The name and layer order of palettes can now be edited by clicking on the cog icon in their top-right corner
+ * The 3D view can now be configured to show: all above-ground layers (the default, and what it previously showed), no layers, or to be synchronised with the visible layers in the editor, using the new radio buttons on the toolbar
+ * If the 3D view is set to be "always on top" when a new window is opened, the "always on top" option is turned off, to prevent the 3D view from blocking or obscuring the new window
+ * Bug fix: fix the Annotations colours and colour names on the Import Mask screen
+
+-- Version 2.18.4, released 27-6-2023
+
+ * Bug fix: restore order of custom layers on palettes
+
+-- Version 2.18.3, released 23-6-2023
+
+ * The custom layer export order can now be reset to the default with the new Reset Order button on the Custom Layers tab on the Export screen
+   + If the button is disabled then the layers are already in their default order
+   + Export order customisation is not a well defined functionality and should be used with caution. The default order might change in the future, and it is currently the case that if you customise the order, all the non-custom layers (such as the default cave layers) are then exported _after_ all the custom layers for each stage
+ * Halves of double high plants such as sunflowers that are missing their opposite halves will now be left in place if you uncheck the "remove from invalid blocks" setting on the Post Processing tab of the Export screen
+ * Bug fix: fix a bug with layer sorting that prevented the Export screen from opening in some cases
+ * Bug fix: properly post-process thin Custom Objects that are placed during the fixup phase
+   + In addition, some more recently added plants, and lily pads, that were not being included in the post-processing are now included
+
+-- Version 2.18.2, released 19-6-2023
+
+ * Bug fix: fix a deserialisation error that occurred when loading some existing worlds
+
+-- Version 2.18.1, released 17-6-2023
+
+ * When importing a height map into the current dimension you can now choose to leave the terrain type alone
+ * You can now drag and drop files onto the WorldPainter window to open them
+   + .world files will be loaded as a WorldPainter world
+   + Image files will allow you to choose to import them as a new world, a height map into the current dimension, or an image mask
+ * Bug fix: fixed a NullPointerException that occurred when loading some older worlds
+ * Bug fix: fixed an error when trying to Export a world that has Combined Layers which contain non-custom layers (e.g. Frost)
+ * Bug fix: fix preview of leaf blocks that have a waterlogged property
+
+-- Version 2.18.0, released 11-6-2023
+
+ * Height map and mask import changes:
+   + Floating point images are now supported for height maps and masks
+   + 32-bit unsigned integer images are now supported for masks (they already were for height maps)
+   + When opening the screen, the file selection dialog is now immediately shown
+ * Custom Layers tab on the Export screen:
+   + It now shows the constituent layers of Combined Layers, instead of the Combined Layers themselves
+   + A "select" button has been added to allow selection of the layer from the map with the eyedropper
+ * It is now possible to add a Nether or End dimension to Imported worlds
+ * Crimson and Warped stems and hyphae are now treated as "logs" for purposes of leaf distance calculations
+ * Some small usability improvements
+ * Bug fix: selecting a paint from the map from the Global Operations screen now works more than once
+ * Bug fix: selecting a paint from the map does not crash inside the selection (or when other system layers are present)
+ * Bug fix: Merging a world that was not Imported will no longer cause it to be considered an Imported world afterwards
+ * Bug fix: fix a crash on the Export screen related to the sorting of Combined Layers
+ * Bug fix: fix a crash when Importing a map with an End dimension
+
+-- Version 2.17.2, released 21-5-2023
+
+ * The Eyedropper is now also available for selecting paints for the operations on the Global Operations screen
+ * Bug fix: the Flatten tool no longer allows you to initiate it outside the bounds of the world
+ * Small usability improvement
+
+-- Version 2.17.1, released 13-5-2023
+
+ * A new Eyedropper tool has been introduced that allows you to select paints directly from the map
+   + It is available on the Tools panel in the shape of an eyedropper
+   + It may also be activated by pressing Alt+y
+   + To cancel without selecting anything, press the Esc key
+   + The "only on" and "except on" brush settings filter menus now also have a "Select on Map" choice which allows you to similarly select the value from the map
+     - This also applies to the filter on the Global Operations screen
+   + In the near future this support will be extended to other places where a paint is selected, such as the terrain, layer and biome drop-downs on the Global Operations screen and other places
+ * Icons and other UI elements are now scaled smoothly according to the UI scale setting, rather than only at integer increments, to make the UI scaling more consistent
+ * Scripting: it is now possible to specify the lower and upper build limits of newly created worlds
+   + This is done with the new withLowerBuildLimit(int) and withUpperBuildLimit(int) modifiers on the createWorld() operation
+   + Both are optional, and default to the default build limit for the map format, or greater if that is necessary to accommodate the configured height mapping
+   + Note that in WorldPainter the lower build limit is inclusive, but the upper build limit is exclusive (e.g for Minecraft 1.19 the default upper build limit is 320, meaning the highest a block may be placed is 319)
+ * Some small usability improvements
+ * Bug fix: custom biomes from pre-1.17 maps are now correctly added to the Biomes panel when Importing a map from Minecraft, with arbitrary colours and named "Biome n" where n is the numerical biome ID
+
+-- Version 2.17.0, released 21-4-2023
+
+ * WorldPainter now supports changing the lower build limit for Minecraft 1.18 and later map formats!
+   + It can be changed when creating a new world, or from the Change Height screen (Edit menu), just like the upper build limit
+   + It uses a data pack to implement the deviating build limit. Maps with deviating build limits may not load in newer versions of Minecraft!
+   + The allowable range is between -2032 and 0, in steps of powers of two, just like the upper build limit
+ * The annotations are no longer displayed in the 3D view if they are not configured to be Exported
+ * You can now change the size of the render distance circle that you can activate with the "eye" toolbar button
+   + Set the radius of the circle in chunks on the Configure View screen (Ctrl+V or View menu)
+   + By default it is set to 12 chunks
+ * Scripting: the full path to the directory containing the script file is now available as the `scriptDir` global variable
+ * Some small bug fixes and error handling improvements
+
+-- Version 2.16.0, released 12-3-2023
+
+ * The material selection control has been simplified. Instead of always showing both legacy (numerical) and modern (name-based) choices it now only shows the appropriate choices for the currently selected map format
+   + If you try to edit a material without a numerical ID with a map format selected that requires numerical IDs, an error message will be shown and you will be required to select a different, compatible material
+ * The scale for importing height maps and masks, as well as the scale for overlay images, can now be specified with up to two decimals precision, for more accurate size control
+ * Plants on the Custom Plants Layer settings screen are now disabled if they are not supported by the current map format
+ * When changing between map formats with different minimum heights, the ceiling height of Ceiling Dimensions is now automatically adjusted to keep it at the same distance from the surface
+ * New inverted icons have been added to make the Dark Metal visual theme look better, contributed by github.com/almic
+ * Bug fix: fixed the crosshatching that shows where the surface and ceiling dimensions intersects, for the Minecraft 1.18 and higher map formats
+ * Bug fix: fixed a bug that made it impossible to select block ID 31 for numerical ID-based map formats such as Minecraft 1.12
+ * Bug fix: make pumpkin and melon stems from Custom Plants Layers export with the correct ages
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.18, released 4-1-2023
+
+ * Many screens that contain previews are now maximisable
+ * Bug fix: make adding Custom Cave/Tunnel layer floor or roof layers work again (and possibly other nested popups)
+ * Various bug fixes
+
+-- Version 2.15.17, released 3-1-2023
+
+ * Data packs can now be specified on the Export screen, which WorldPainter will copy into the datapacks directory of the generated map for you
+   + WorldPainter does no validation of these files. In particular, it does not check whether they support the appropriate Minecraft version. Use at your own risk
+   + The data packs must be .zip files. Extracted data pack directories are not supported
+   + The list of data pack files is stored in the .world file, but the contents of the data packs are not. The data packs must be accessible from the original locations whenever the world is Exported, otherwise a warning will be given and the data pack skipped
+   + As part of this work, the Export screen has been redesigned. The general and Minecraft-specific settings are now on their own tab named General
+ * The default terrain colour ramp should have topped with purple, but it was actually pink. This has been fixed
+ * A setting has been added to the Preferences screen to manually specify the maximum thread count for Export and Merge operations. It is on the Performance tab
+   + You can use this to reduce the number of regions Exported or Merged in parallel, to prevent Out Of Memory conditions, or improve performance
+   + If an Out Of Memory error occurs, WorldPainter suggests a value to lower this setting to, if it is not already on 1
+   + You cannot set the value higher than the number of logical processors (processor cores taking into account hyperthreading etc.) in the system
+   + If the org.pepsoft.worldpainter.threads advanced setting is present it overrides this setting. Remove that advanced setting in order to be able to adjust this value in the Preferences
+ * Dead bushes can now be planted on grass blocks
+ * Bug fix: correct the light levels of the minecraft:light block, and make it insubstantial so that it does not block solid objects
+ * Bug fix: prevent an error when rendering very large text with empty lines
+ * Bug fix: prevent an error when setting the terrain mode to a colour ramp with a very high default water level
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.16, released 9-12-2022
+
+ * Allow plants to be placed on mud
+ * Bug fix: don't delete or corrupt Custom Biomes when switching between dimensions
+ * Bug fix: don't crash when a ceiling dimension has tiles where the surface does no
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.15, released 7-12-2022
+
+ * The Custom Layers tab of the Exporting screen now has Enable and Disable buttons to quickly select or deselect all selected layers for Export
+ * Bug fix: use correct Custom Biome names when exporting Custom Cave/Tunnel Layers with Floor Dimensions
+ * Bug fix: make adding ceiling dimensions to worlds with non-standard build heights work
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.14, released 2-12-2022
+
+ * The Import Mask screen (Edit -> Import -> Mask as terrain or layer...) has been made more powerful and easier to use:
+   + Many more mappings are now possible, for example:
+     - On/off layers (e.g. Frost or Custom Ground Cover layers) can now be mapped from a grey scale image by dithering or applying a threshold
+     - One-bit masks can now be used to set a single terrain type, or an individual value or intensity of any layer
+   + Usability has been improved by allowing selection of all layers and values and then restricting the available mappings, or explaining why no mappings are available, rather than restricting the available selections without explanation
+ * The Add/Remove Tiles screen now has scrollbars, and additionally is initialised to the same location as the current editor view
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.13, released 23-11-2022
+
+ * Multiple overlay images may now be configured
+   + The overlay images are configured from the Configure View screen (View menu, or press Ctrl+V (on Windows) or ⌘+V (on Mac))
+   + They can be disabled and enabled separately
+   + The existing "Enable or disable image overlay(s)" toolbar button now shows or hides all enabled overlays
+     - The exception is if no overlays are enabled. If there is one overlay configured and it is disabled, it will be enabled. In all other cases the Configure View screen will be opened
+ * The brush shape, view distance and walking distance indicators are now painted with a black and white dashed line for better visibility
+ * Bug fix: cancelling a long running process works correctly again, rather than generating an error
+ * Various bug fixes
+
+-- Version 2.15.12, released 20-11-2022
+
+ * A colour and greyscale ramp are now supported for showing the terrain height in the editor, in addition to the existing terrain type and hide terrain options, as an addition or alternative to the contour lines
+   + Select the colour or greyscale ramp using the drop down box at the top of the Layers or Terrain panels
+     - This does not by itself disable the contour lines. Disable those by pressing the toolbar button, or from the Configure View screen (View menu or Ctrl+V)
+   + If you want to see _just_ the colour ramp and no layers, check the Solo checkbox
+   + If you also don't want to see water and lava, uncheck the Show checkbox next to Water/Lava
+   + The colour ramp adjusts to the minimum and the maximum build heights, and the default water level. It has the following ranges:
+     - From -64 to 0: black to blue
+     - From 0 to the water level: blue to cyan
+     - From the water level to 256: dark green to green to yellow to orange to red to white
+     - 256 and up: white to purple
+   + The shadows and specular highlights by default will brighten or darken the ramp colours and distort the apparent shape. If you want to disable shadows, press the "Rotate light anticlockwise" button on the toolbar, or the l key, to change the light direction to straight from above and remove the shadows and specular highlights
+   + The greyscale ramp can only display 256 values, which is too few for the full build height range of -64 to 320 of a Minecraft 1.18+ map. It is therefore not suitable for detailed editing
+   + If there is enough interest more ramps and/or the ability to create custom ramps may be added in the future
+ * The mouse cursor is now white with black drop shadows, instead of black, for better visibility
+ * The brush shape, view distance and walking distance indicators are now painted in XOR mode (dark over bright background; bright over dark background) for better visibility
+ * More diagnostic information has been added to error reports in order to improve debugging of problems
+ * Some small bug fixes and usability improvements
+
+-- Version 2.15.11, released 12-11-2022
+
+ * 3D previews now show full details for two additional zoom levels, allowing you to zoom in further before starting to lose precision
+ * Bug fix: improve the mapping of WorldPainter materials to Dynmap in order to solve problems of some blocks being invisible and others rendering incorrectly
+ * Bug fix: fix the water colour of 3D previews
+ * Bug fix: fix a bug in the Dynmap glue code that was causing an error in 3D previews
+
+-- Version 2.15.10, released 11-11-2022
+
+ * The 3D preview for Custom Objects and Custom Layers has been upgraded to use version 3.4 of Dynmap, which supports Minecraft 1.19.2 so there will be fewer unknown blocks rendered as magenta wool
+   + There are still some known bugs, such as some log blocks being invisible, fence blocks being rendered with the wrong orientation, etc.. These will be solved in time
+   + Dynmap 3.4 includes the vanilla Minecraft textures so the 3D preview no longer needs a Minecraft installation in order to work
+ * Selectable colour schemes are once again supported, since Dynmap has reinstated support for them
+   + Select a colour scheme from the View menu under "Select colour scheme"
+   + The org.pepsoft.worldpainter.colourSchemeFile advanced setting that had been introduced in order to keep being able to load old Dynmap colour schemes is no longer supported and will result in a startup error
+ * When creating a new Custom Material on the Configure Cave/Tunnel Layer screen, the other drop down lists are immediately updated so that the new material can be selected for the other choices as well
+ * Bug fix: make creating new Custom Materials from the Configure Cave/Tunnel Layer screen work again
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.9, released 8-11-2022
+
+ * Added Minecraft 1.19 as a separate map format
+   + For the Minecraft 1.19 format, waterlogged leaf blocks are now supported (in other words leaf blocks on Custom Objects will be placed underwater for Minecraft 1.19 and later)
+   + Custom build heights now work for Minecraft 1.19 (including upgrading Minecraft 1.18 maps to 1.19 in Minecraft)
+ * Some improvements were made to dimension transformations (scaling, shifting or rotating):
+   + The handling of the overlay image, if any, has been fixed and streamlined. It is now adjusted fully automatically, except for rotations (in which case a warning is displayed)
+   + All associated dimensions (such as Ceiling dimensions and Custom Cave/Tunnel Floor dimensions) are now automatically included. There is no longer an option to turn that off, since it never makes sense to do so
+ * Added a warning and a clearer error message for when a map is being Imported or Merged that has unoptimized, older chunks with different build limits
+ * The Preferences screen now enforces that the default theme does not contain Custom Terrains or Custom Layers, as this is suspected to be the cause of errors
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.8, released 3-11-2022
+
+ * Bug fix: fix a crash when Exporting Custom Cave/Tunnel layers with a Floor Dimension
+ * Bug fix: show the correct name when clearing a layer from the Global Operations tool
+ * Various bug fixes
+
+-- Version 2.15.7, released 29-10-2022
+
+ * If the spawn point is not on the selected tiles for a Test Export, it will automatically temporarily be moved to the middle of the selected area
+ * Bug fix: when Merging, don't apply the stored tile selection if "Merge all tiles" is selected
+ * Bug fix: when Importing, don't import unfinished chunks that only have biomes in them as empty chunks
+   + These chunks occur around the edges of Minecraft 1.18+-generated maps
+   + If you have trouble with such incorrect empty chunks around the edges of your imported map, you have two options:
+     - Import the map again now that this bug has been fixed
+     - Manually remove the Void layer from those chunks, and raise them up to terrain height (they will be at bedrock)
+ * Bug fix: schem files with embedded entities no longer result in an error
+ * Bug fix: fix an Import error when encountering region files whose size is not a multiple of 4KB
+ * Various bug fixes and usability improvements
+
+-- Version 2.15.6, released 23-10-2022
+
+ * The Tool Options panel now shows a name and description for the currently selected tool
+ * The Height Map Import screen has received some improvements:
+   + It is now possible to Import a height map as a Master Dimension to make it easier to create large worlds from scratch based on a height map
+   + The preview can now be zoomed in and out by rolling the scroll wheel of the mouse
+   + When importing a height map into the current dimension, the current dimension is displayed in the preview to make it easier to position the height map
+ * Added a new terrain type: Moss
+   + If you have previously Imported maps with moss at the surface, and you want to make changes to those chunks, you need to take action in order that they will Merge correctly:
+     - Either re-Import those maps so that the Moss terrain type is present
+     - Or manually paint the Moss in the areas it should exist, and raise the terrain to the desired level
+ * Andesite, diorite and granite are now Imported as their respective terrain types, rather than the Stone terrain type, so that they are preserved when merging
+ * Ores on the surface are now preserved when Merging stone and deepslate. If you want them to be removed you can use the "Remove all resources/ores" Merge option (of course that will remove them from the entire chunk, not just the surface)
+ * Various bug fixes
+
+-- Version 2.15.5, released 19-10-2022
+
+ * Combined Layers are now supported for Custom Cave/Tunnel Layer Floor Dimensions. However only if they do not contain prohibited layers for cave floor dimensions, such as cave layers, etc.
+ * When editing Floor Dimensions the Floor Dimension is moved into view if it is not currently visible
+ * Changed the logic for buried Custom Objects so that they spawn underneath the (ground) water table even if the "under water" spawn option is not checked
+
+-- Version 2.15.4, released 17-10-2022
+
+ * Custom Objects layers have gained some additional choices for the vertical placement of objects:
+   + They can now be placed at a fixed absolute height, rather than relative to the terrain
+   + They can be offset above or below the terrain by a fixed positive or negative value
+   + A random vertical variation can be added in either case to displace the object randomly below or above the initial position
+   + The spawn settings are still taken into account! If you want the objects to float in the air, make sure that spawn "on air" is selected
+   + Each of these settings can be configured individually per object. To change them for all objects at once, select all the objects and press the Edit button
+ * Bug fix: fix an error caused by Exporting a Custom Cave/Tunnel Layer Floor Dimension with custom terrains and no biomes
+ * Bug fix: make the Stained Terracotta menu work again for Only On and Except On on the Brush Settings panel
+ * Various bug fixes
+
+-- Version 2.15.3, released 16-10-2022
+
+ * Master Dimensions are now also supported for Merging
+ * Bug fix: restore the wall width behaviour of the previous major release for Custom Cave/Tunnel Layers (even though that is in fact wrong)
+ * Bug fix: place the spawn point and goodies chest correctly if they are on a Master Dimension
+
+-- Version 2.15.2, released 15-10-2022
+
+ * Bug fix: make the Custom Layers tab on the Export screen work again
+ * Bug fix: show the Custom Layers from the correct dimension on the Custom Layers tab, not the dimension that is currently being edited
+ * Bug fix: render all Custom Biomes correctly
+ * Bug fix: fix a crash that sometimes occurred when adding Custom Biomes
+
+-- Version 2.15.1, released 14-10-2022
+
+ * Bug fix: fix a crash that occurred when Exporting a Custom Cave/Tunnel Layer with manually painted biomes on the Floor Dimension
+ * Bug fix: prevent an error when changing the map format from the Export screen
+ * Bug fix: fix a crash that occurred when test-Exporting or Merging a world with a tile selection
+
+-- Version 2.15.0, released 14-10-2022
+
+ * Large World Support through Master Dimensions [ALPHA]
+   + This functionality is in Alpha status; it is unfinished and has known and unknown bugs, lacking features, usability problems, etc. Please report these as you find them
+   + This feature is meant to make it faster and easier to create large maps with large featureless areas
+   + Master Dimensions are a new WorldPainter dimension type (comparable to Ceiling Dimensions) that are exported at sixteen times the horizontal size, wherever a regular dimension does not exist. It is a scaled-up "background" dimension
+   + Since it is scaled up sixteen times on Export it does not allow for any detailed work, just crude, large-scale forms and shapes
+   + This makes it ideal for quickly creating large, featureless areas such as oceans, continents, islands, deserts, ice shelves, etc.
+   + It can contain any kind of layer, allowing the quick creation of large forests or other areas of vegetation, cave systems, etc.
+   + Because it is edited at 16:1 scale, it is _much_ faster to create, edit, save and load and takes up much less memory and disk space
+   + Exporting still takes the same amount of time though
+   + A Master Dimension can be created in two ways:
+     - On an existing world you can select Edit -> Dimensions -> Add master dimension...
+     - You can create a new world as a Master Dimension from scratch by checking "create as master dimension" on the Create New World screen
+   + To switch from the Master to the regular dimension to paint the 1:1 details:
+     - If you are currently in the Master dimension, switch to the regular dimension by pressing Ctrl+M
+     - Then press Ctrl+T to add tiles to the regular dimension (this may happen automatically if there are no tiles yet)
+     - The master dimension is displayed in the background as you select new tiles, and the tiles will be created following the shape, terrain and layers of the Master dimension in that location
+   * Most aspects that apply to an entire Minecraft dimension, such as border settings, Minecraft settings, "this layer everywhere" settings, etc. are controlled by the regular dimension and cannot be changed in the settings of the Master dimension
+ * Custom Cave Floor Dimensions [ALPHA]
+   + This functionality is in Alpha status; it is unfinished and has known and unknown bugs, lacking features, usability problems, etc. Please report these as you find them
+   + Custom Cave/Tunnel Layers now have a fourth floor type: Custom Dimension, that allows you to completely customise the floor height, shape and type, and contents of the cave
+   + Custom Cave/Tunnel Floor Dimensions are a new WorldPainter dimension type (comparable to Ceiling Dimensions) that allow you to completely customise the height, shape and terrain type of the cave floor, as well as the biomes and layers in any shapes you wish
+   + The Floor Dimension only controls the vertical shape of the cave floor. The horizontal shape of the cave is still controlled by painting the Custom Cave/Tunnel Layer on the surface dimension
+   + To edit the Floor Dimension, after painting the horizontal shape of the cave on the surface, right-click on the layer button and select "Edit floor dimension"
+     - To stop editing the Floor Dimension, press Esc, or switch to the surface dimension by pressing Ctrl+U (Minecraft Surface), Ctrl+H (Nether) or Ctrl+D (End)
+   + While editing the Floor Dimension, cross hatching indicates where the floor level is higher than the roof level (so that the cave will not exist in those areas)
+   + For now, layers that operate below the cave floor or above its roof are not allowed (such as other cave layers, Custom Underground Pockets laters, etc.). This may be added in the future
+   + For now, only the floor can be customised this way. A similar custom roof dimension may be added in the future. For now you can still use the existing Roof Layers support to add layers randomly on the roof
+ * Custom Cave/Tunnel Layers have also gained a new roof level type: Fixed Height Above Floor
+   + This is now the default roof level type, and it works well with the new Custom Dimension floor type
+ * The Populate layer is now also supported for Merging. When Merging a world on which the Populate layer is painted, those chunks will once again be marked as unpopulated, thereby requesting Minecraft to populate them when first loading them
+   + This may not work, or work properly, with every Minecraft version. Experiment to find out
+   + If there is already vegetation there the results may be unexpected or incorrect. But at your option you can use WorldPainter's Merge settings to remove the existing vegetation in the merged chunks
+   + Consider marking _all_ chunks Read Only and then only removing the Read Only layer from the chunks you want to be affected. This will protect the rest of the map _and_ speed up the Merge
+ * The show and solo state of palettes is now remembered when saving and loading worlds and switching dimensions
+   + This does _not_ extend to the show and solo state of individual layers
+ * The workspace layout is now remembered per dimension rather than per world
+   + This includes the currently active palettes, so that they will still be active when you return to the dimension
+   + All currently stored per-world layouts will be reset; you will have to re-do your workspace layout once per world
+   + You can speed this up by storing your favourite workspace layout as the default using View -> Workspace layout -> Save workspace layout; this will be used as the default for every world you subsequently create or open
+ * Various usability improvements
+
+-- Version 2.14.6, released 10-10-2022
+
+ * The performance and readability of the Text tool screen has been improved. Instead of rendering the names in the Font drop-down in the respective fonts, the font of the text area is changed to the selected font
+   + Note that the selected size is not applied to the text area, to keep it readable when selecting very small or very large sizes
+ * It is no longer possible to delete a Custom Terrain if it is still in use in a Combined Layer
+ * Bug fix: once again allow importing Combined Layers with an embedded Custom Terrain from a file
+ * Bug fix: fix some data corruption issues related to merging with Minecraft 1.15 - 1.16 maps
+ * Bug fix: make merging biomes work again for Minecraft 1.15 - 1.16
+
+-- Version 2.14.5, released 30-9-2022
+
+ * Some improvements have been made to Combined Layers:
+   + By default they now apply the configured terrain and/or biome on Export, rather than when painted
+   + It is now possible to edit the settings of any Custom Layers contained in the Combined Layer directly from the layer's settings screen
+   + The layer preview has been fixed and improved
+ * Various bug fixes
+
+-- Version 2.14.4, released 24-9-2022
+
+ * When selecting tiles (for adding/removing, or for Exporting), dragging will now select all the tiles (rather than invert the selection). To deselect tiles, hold Ctrl or Command while dragging
+ * Some improvements in error handling
+ * Bug fix: scale About screen properly on high-res monitors
+ * Various bug fixes
+
+-- Version 2.14.3, released 17-9-2022
+
+ * Some window sizes have been adjusted in order to make them fit on low resolution screens more often (but still not always)
+ * Bug fix: change grass_block blocks to dirt when they are covered by dirt_path or grass_path blocks
+ * Various other bug fixes
+
+-- Version 2.14.1, released 9-9-2022
+
+ * Bug fix: fix an error when trying to Merge a world that has no export setings set
+
+-- Version 2.14.0, released 9-9-2022
+
+ * Fast test exports have been made easier with the addition of a Test Export button to the Export screen
+   + The tile selection has been moved to the new Test Export screen
+   + The Export button now always exports everything
+   + You don't have to select tiles; you can also export one entire dimension; by default just the Surface dimension is selected for export
+   + In addition, on this new screen you can control some features that are slow to export and are not always necessary, e.g. resources, caves and the lighting pass
+   + By default all those features are turned off, for the fastest test exports
+   + The test settings are remembered between exports
+ * Plants will now be placed on mod blocks by Custom Plants layers, and not be removed from mod blocks during post-processing
+   + This also covers plants placed by Custom Objects layers
+ * In addition, two new settings will allow plants to optionally be placed on ALL blocks:
+   + On the Post Processing tab of the Export screen, removal of plants from invalid blocks can now be turned off
+     - This applies to plants placed with Custom Plants layers (but see below), or with Custom Object layers
+     - Of course this makes it your responsibility to ensure that plants are placed only on the correct blocks!
+   + Custom Plants layers now have an "only on valid blocks" setting which you can turn off
+     - Turning it off will place plants on any block, but water plants will still not be placed on dry land and vice versa
+     - You also need to change the post-processing setting described above, otherwise the post-processing step will remove the plants after all. WorldPainter will remind you of this when you turn the setting off
+
+-- Version 2.13.3, released 27-8-2022
+
+ * Bug fix: make undo work properly again for ceiling dimensions
+
+-- Version 2.13.2, released 25-8-2022
+
+ * Scripting: reintroduce World2.getDimension(int) method (but deprecated) so existing scripts keep working
+ * Plugins: support platforms without export settings
+
+-- Version 2.13.1, released 23-8-2022
+
+ * Bug fix: work around a bug in Java which was causing non-surface dimensions to overwrite the surface dimension upon loading existing .world files
+   + If you have saved such a .world file after loading it with the surface being missing, that change is now permanent! You will have to load a backup of the .world file. Apologies for the inconvenience
+ * Bug fix: export the Large Biomes world type correctly for Minecraft 1.17, preventing an error upon loading such maps in Minecraft
+ * Add a toolbar button for scaling the dimension
+ * Support the Populate layer in the theme settings
+ * Loading the custom block definition files introduced in version 2.11 has been made more forgiving
+   + An error in the file no longer caused the WorldPainter configuration to be reset
+   + All columns but "name" have been made optional. If you leave out the column (or individual values), WorldPainter will make a crude guess
+ * Bug fix: make the Amplified world type work for more Minecraft versions
+ * Various other small bug fixes
+
+-- Version 2.13.0, released 20-8-2022
+
+ * Scaling (resizing) the world is now supported!
+   + The new Scale screen can be reached from the Edit menu or the Global Operations tool
+   + This is new and relatively untested functionality. Please save your work first, carefully examine the results and report any problems you encounter
+   + Each dimension is scaled separately, but ceiling dimensions can automatically be scaled along with their associated surface dimension
+   + Just like rotating and shifting, scaling cannot be undone! In addition, if you are scaling up and do not have enough memory, the operation may fail and result in loss of tiles! Please save your work first
+   + Scaling can result in artefacts, especially at larger scales. This is especially true for terrain type and discrete layers such as Annotations, which are scaled with nearest neighbour interpolation and will become blocky
+   + If the resulting world edges don't fall on chunk boundaries, scaling may result in land being added along the edges
+ * When selecting an endless border it is once again made clear that this changes the world type to Superflat, and thereby makes Populate not work
+ * For new installations on UNIX/Linux systems the location of the configuration directory now follows the XDG specification
+ * Bug fix: fix a number of problems with Exporting entities (this includes mobs, but also things like paintings) from Custom Objects
+   + NOTE: it may be necessary to reload objects from disk from the Custom Object layer's settings screen, before they will behave correctly on Export
+   + Most notably, offsets and random rotation and mirroring should now work correctly for entities. However entity attitudes and poses are stored by Minecraft in extremely varied and inconsistent ways, so it may still not be the case for all of them. Please report entities that are still not Exported correctly when offset, rotated or mirrored
+ * Bug fix: fix an error that occurred when Merging changes in terrain height to maps with 3D biomes
+ * Bug fix: the new Mud terrain type has been added to terrain selection lists
+ * Bug fix: the preview of Custom Object layers is now updated after changing the properties of individual Custom Objects
+ * Bug fix: Exporting a dimension with a ceiling dimension that has missing tiles will no longer result in an error
+
+-- Version 2.12.0, released 2-8-2022
+
+ * Added support for Minecraft 1.19 blocks, plants and biomes
+ * Random mirroring for Custom Objects is now a separate setting from random rotation. They are still both on by default (unless random rotation is turned off in the bo2 or bo3 file). Depending on what properties a block has, mirroring blocks works by rotating them 180 degrees, and for some mod blocks this does not give the desired result because their rotated versions are not mirrors of the original blocks
+ * Unsupported biome IDs from modded maps are now warned about and ignored during Imports, rather than resulting in an error
+ * Merge and Import warnings are now always immediately displayed, rather than asking the user to view them
+ * Bug fix: when Importing a map, finished but empty chunks are no longer skipped. This could cause problems if the world was subsequently Exported, as Minecraft would generate new chunks in those locations
+ * Bug fix: fix a crash that happened when Exporting a world with certain layers on a ceiling dimension
+
+-- Version 2.11.0, released 24-7-2022
+
+ * Added support for custom/mod block definitions:
+   + Have mod blocks be correctly lighted, and behave correctly during Exports and Merges
+   + More easily use mod blocks as custom materials (choose from a list, and have the properties be preconfigured)
+   + Have mod blocks be displayed in the right colour in the editor view
+   + For details, see: https://www.worldpainter.net/trac/wiki/CustomBlocks
+   + If you are a mod author, please create custom block definition files for your mods! If not, ask the authors of your favourite mods to create ones, or create them yourself!
+ * The snowy property of grass blocks is now also set correctly for powder snow
+
+-- Version 2.10.14, released 20-7-2022
+
+ * The Merging screen has been improved:
+   + The layout has been made more clear
+   + It is once again possible to replace the biomes. For formats with 3D biomes this can now be done separately above ground and below ground
+   + Biome replacing is now integrated in the other forms of merging and consequently now conforms to the tile selection and the Read Only layer. It is still faster to _only_ replace biomes though because the post processing and lighting steps are skipped
+   + The merge settings are now remembered per world
+ * Fix a problem in the updater which would cause downloads to fail after first checking the update comments. This will no longer happen starting from the _next_ update
+ * Running JavaScript scripts requires at least Java 11; a popup will now be shown to indicate this, rather than crashing with an error
+ * If rendering a tile in the 3D view fails for some reason, for example because it is too large for very high worlds, it will be rendered as a red outline rather than crashing with an error
+ * Various usability improvements
+ * Various small bug fixes
+
+-- Version 2.10.13, released 14-7-2022
+
+ * Bug fix: don't remove upper halves of tall seagrass during post processing
+
+-- Version 2.10.12, released 11-7-2022
+
+ * Bug fix: set the button states correctly when opening the Tile Selection screen
+ * Bug fix: more thoroughly prevent UI errors on Java 17 or higher
+
+-- Version 2.10.11, released 27-6-2022
+
+ * Support Importing Minecraft 1.19 maps
+ * Replace deepslate ores with deepslate rather than stone when removing resources while Merging
+ * Various small improvements
+ * Bug fix: prevent an error while handling key presses on Java 17 or higher
+
+-- Version 2.10.10, released 2-6-2022
+
+ * Make smooth ground cover layers (see `smoothGroundCover` on https://www.worldpainter.net/trac/wiki/AdvancedSettings for details) work again with Minecraft 1.2 - 1.12
+ * Bug fix: fix a few export errors related to the new cave decoration functionality
+ * Bug fix: fix an export error related to removing incomplete double-high plants during post processing
+
+-- Version 2.10.9, released 31-5-2022
+
+ * Custom Objects marked for placement "on water" now have an additional option to control whether they will be placed if they collide with the floor of the body of water
+ * Cave decoration changes:
+   + Lush cave patches are now larger
+   + Lush cave patches now occur at all heights
+     - NOTE that for existing worlds you may have to turn the lush cave patches decoration setting off and on again to see the change
+   + Dripstone cave patches now place dripstone blocks around the stalagmites and stalactites
+ * Make exporting tile selections for large worlds more efficient
+ * Improve lighting of sea_pickles, slabs and stairs
+ * Remove unsupported water plants during post processing
+ * Bug fix: detect azalea leaves as leaf blocks
+ * Bug fix: fix an export error for chunk sections with a large number of biomes
+ * Bug fix: in scripts, make applyLayer() work without having to specify a heightmap
+ * Bug fix: don't create duplicate start menu/desktop icons for WorldPainter in .deb and .rpm installers
+
+-- Version 2.10.8, released 28-5-2022
+
+ * Warn when loading an old world with invalid Superflat preset, rather than giving an error
+ * Bug fix: covered dirt_path blocks are now turned to dirt during post processing
+ * Bug fix: dirt_path blocks are now correctly lighted
+ * Some bug fixes concerning loading very old worlds
+
+-- Version 2.10.7, released 25-5-2022
+
+ * Bug fix: fixed a bug in the new cave decoration settings that sometimes caused errors or prevented WorldPainter from starting
+
+-- Version 2.10.6, released 25-5-2022
+
+ * A new Decorate option has been added to the Caves, Caverns and Chasms layers, which can add random decorations to the generated caves of the following types:
+   + Brown mushrooms (on by default)
+   + Glow lichen (on by default)
+   + Patches of Lush Cave (off by default; stone will turn to moss, lush cave plants will be planted and the biome will be set to lush_caves)
+   + Patches of Dripstone Cave (off by default; dripstone stalagmites and stalactites will be generated and the biome will be set to dripstone_caves)
+   + These last two are still in beta. Please give feedback
+ * The Import process now skips chunks when their data is corrupted, rather than aborting
+ * Various bug fixes and usability improvements
+ * Bug fix: fix two separate scripting bugs that stopped filters from working in general, and filtering on biomes in particular
+
+-- Version 2.10.5, released 18-5-2022
+
+ * Bug fix: fix some over enthusiastic post processing that removed blocks with a "half: up" or "half: down" property
+ * Bug fix: correct a random number generation problem that was resulting in Custom Object and Custom Plants layers not being rendered with the correct distribution as Custom Cave/Tunnel floor and roof layers
+
+-- Version 2.10.4, released 17-5-2022
+
+ * Water plants are now supported for Custom Cave/Tunnel floor and roof layers
+ * Bug fix: more correct calulation and storage of sky light values
+ * Bug fix: support schem files that don't have metadata
+ * Bug fix: correct the block light emited by glow lichen
+
+-- Version 2.10.3, released 15-5-2022
+
+ * A new Barrier border type has been added, in addition to the previously added Barrier wall type
+ * When the Barrier wall type is used the word type is no longer forced to Superflat and no endless Void is generated beyond the wall. This means the Minecraft-generated land beyond it will be visible; to prevent that the new Barrier border can be used instead, which can be made to be much wider (or endless)
+ * Bug fix: don't treat negative numbers on the wpscript command line as options
+ * Bug fix: fix rare error when clearing blocks from the existing map during a Merge
+
+-- Version 2.10.2, released 14-5-2022
+
+ * In addition to the existing Bedrock wall option it is now also possible to create Barrier block walls
+   + In addition, a "roof" option has been added, that will cover the map with a one block layer of Bedrock or Barrier blocks at the top. Together these options can completely box players in
+   + NOTE that a bedrock roof will make the map dark, but it won't darken the sky or hide the sun
+   + When the Barrier wall is selected, outside the walls will be fixed to endless Void
+ * WorldPainter now tries harder to spawn you at the terrain level, rather than on top of the roof or the ceiling dimension
+   + This does mean that if your spawn location is blocked, you might suffocate
+   + It is not guaranteed to work for multiplayer
+ * Bug fix: fix an export crash when terrain near the build limit contains plants that go over it
+
+-- Version 2.10.1, released 13-5-2022
+
+ * Bug fix: fix an error when opening Cave/Tunnel Layer settings that have a Plant layer as floor or roof layer that was saved with a different version
+ * Bug fix: fix an error during Merging when the height difference between the world and the existing map is large
+
+-- Version 2.10.0, released 13-5-2022
+
+ * WorldPainter now has a merch store! Go to https://www.worldpainter.store/ to support WorldPainter development
+ * Custom Caves/Tunnel layer new functionality:
+   + The Custom Caves/Tunnel layer now supports roof layers in addition to floor layers
+   + Note that the roof layers are inverted. This includes Custom Objects, so you will have to make any objects you want to place on the roof upside-down (unless you _want_ them to be upside-down of course). A future version will make this inversion optional for Custom Object layers
+   + The variation of Custom Caves/Tunnel floor and roof layers can now be configured, so that they are not applied with the same intensity everywhere but can vary randomly
+   + The hanging plants have been added to the Custom Plants layer, for use as Cave/Tunnel roof layers. They will work non-inverted as well, but of course they will be upside-down
+ * All known Minecraft 1.18 materials and material properties have been added the the custom material selector, so they can be more easily used in Custom Terrains, Custom Materials, etc...
+ * Custom Layer palettes now have a "show" and "solo" checkbox for the entire palette, making it a little easier to show or hide entire categories of layers:
+   + Unchecking "show" will hide all the layers from that palette from the editor view. It will be indicated by changing the palette icon to a red cross
+   + Checking "solo" will only show the layers from that palette in the editor view. If will be indicated by changing the palette icon to a green checkmark. Soloing takes precedence over turning off "show". Only one palette can be soloed at a time
+   + Just like with showing or soloing individual layers, all the layers will still be Exported
+   + Soloing a single layer takes precedence over soloing a palette
+   + If you have a paint tool selected, the currently selected paint is always shown, regardless of the show and solo settings
+ * The Grass and Beaches terrain types now also place seagrass seagrass and kelp under water
+ * The Small Dripleaf plant has been added to the Custom Plants layer
+ * The Frost layer now also turns water blocks with plants in them to ice, and removes the remains of the plant above, if any
+ * Importing signed integer height maps is now supported
+ * WorldPainter now calculates the "distance" property of leaf blocks while Exporting. This may help prevent leaf blocks that should not decay from decaying in-game. This can be turned off on the Post Processing tab
+   + WorldPainter can also automatically remove leaf blocks that are too distant (and not persistent) and would decay in Minecraft. This is turned off by default but can be turned on on the Post Processing tab
+   + There is also an option to make all leaf blocks persistent (even those placed by the WorldPainter tree layers or in other ways which are normally not persistent)
+ * Importing maps with custom dimension types or world types now works. Note that you can't edit these settings and WorldPainter will still only Import the vanilla Surface, Nether and End dimensions
+ * The performance of the 3D view has been significantly improved for very large worlds
+ * Various small bug fixes and usability/performance improvements
+ * Bug fix: fixed a visual glitch in the 3D view
+ * Bug fix: fix lighting of blocks that give off light
+
+-- Version 2.9.7, released 9-5-2022
+
+ * Allow Custom Cave/Tunnel floor layer minimum levels to go below zero
+
+-- Version 2.9.6, released 9-5-2022
+
+ * Bug fix: fix a regression in the Minecraft 1.17 support that was generating invalid datapacks for deviating build heights
+
+-- Version 2.9.5, released 6-5-2022
+
+ * The Moss Block material is now considered a solid block, rather than insubstantial vegetation
+ * Bug fix: fix an error that prevented the creation of Custom Underground Pockets layers
+
+-- Version 2.9.4, released 5-5-2022
+
+ * Bug fix: fix a startup problem related to the UI scale setting
+ * Bug fix: make Safe Mode disable UI scaling, as should already have been the case
+ * Bug fix: make importing a height map into an existing dimension work again
+
+-- Version 2.9.3, released 4-5-2022
+
+ * World types are now properly supported for Minecraft 1.17, making endless borders work among other things
+ * A "Resources everywhere" checkbox has been added to the Preferences screen, in order to be able to turn off "Resources everywhere" by default
+ * The GraalVM JavaScript engine has been switched out for Nashorn, which is faster. This does mean that if you want to run scripts you need to run WorldPainter on Java 11 or higher
+ * Various small bug fixes
+
+-- Version 2.9.2, released 3-5-2022
+
+ * The Preferences screen now allows to configure the default map format, and the default post processing settings
+ * The status bar, info panel, brush settings and Global Operations tool now all show the correct biome names according to the map format
+ * Floating point height maps are not yet supported; this is now made clearer with an error message when trying to load one
+ * The view distance for the view distance indicator circle is now set to 12 chunks (the default render distance of Minecraft 1.18.2)
+ * Bug fix: prevent an error while importing height maps if the default theme has previously been saved with values which are now invalid
+ * Bug fix: show only valid build limits for the map format on the Preferences screen to prevent a crash on startup if it is set to an invalid value
+
+-- Version 2.9.1, released 2-5-2022
+
+ * Added Calcite as terrain type
+ * Reinstated Water and Lava terrain types, with clearer tool tips. Don't use these (especially Water); you probably want the Flood or Lava tool
+ * Bug fix: exporting border chunks no longer causes an error about Populate not being supported
+ * Bug fix: calculating the lighting of a Void chunk no longer causes an error
+ * Bug fix: when creating a Custom Terrain Type, properly save the custom name and update the terrain name when pressing Enter or OK without leaving the custom name field
+
+-- Version 2.9.0, released 1-5-2022
+
+ * The Minecraft 1.18 map format is now supported
+   + This includes negative heights down to y=-64
+   + The map format of worlds must now be explicitly set and changed (rather than implicitly on the Export screen). There is a new entry in the Edit menu for this: "Change Map Format...". It allows you to change the map format, and make any required height changes at the same time
+   + The Stone Mix material (the default underground material) now places deep slate and pockets of tuff under y=0
+   + Minecraft 1.18 (and earlier) plants have been added to the Custom Plants layer. Hanging plants are still missing, as it is not clear how WorldPainter would place those
+   + Minecraft 1.18 (and earlier) terrain types and biomes have been added to the various palettes
+   + The Populate layer (and the Allow Minecraft to Populate the Entire Terrain option on the Export screen) are once again supported by Minecraft from version 1.18, so those have been re-enabled. It allows you to tell Minecraft to populate the terrain with trees, vegetation, etc. according to the painted biome
+   + The "chest of goodies" is once again supported for Minecraft 1.18 (and all other Minecraft versions)
+ * Entities (mobs) and tile entities (block entities) from Custom Objects are once again correctly placed on the map
+   + NOTE: for entities (mobs), you may have to remove and re-add the Custom Object to the layer for this to work
+ * When Importing an existing map, or Merging with an existing map, the map directory should now be selected, rather than the level.dat file
+ * Nether and End dimension changes:
+   + The world type can now be configured for Nether and End dimensions
+   + The Nether and End dimensions can now have Endless Borders, which will have Nether and End biomes respectively
+   + The build heights of Nether and End dimensions are constrained to a low of 0 and high of 255, regardless of those of the Surface dimension, since those are the allowed build heights in those dimensions in Minecraft
+ * The Custom Cave/Tunnel layer now supports setting the biome inside the cave/tunnel to a different one than the surface. This works for Minecraft 1.17 and Minecraft 1.18+
+ * 32-bit height maps are now supported for both Import and Export
+   + Note that they *must* be TIFF files; PNG does not support 32-bit grey scale images
+   + The height map import screen has been improved to be easier to use; among other things it now offers presets to quickly set the mapping
+ * Merging biomes now takes the tile selection and the Read-Only layer into account, and the performance has been improved
+ * The default theme no longer uses the Rock terrain type. Rock includes cobblestone, which is not Imported and caused confusion as a result. Instead it uses Stone Mix (the default underground material), which makes more sense
+ * The Flood With Water, Flood With Lava and Bucket Fill tools now work on very large maps
+   + They will take a very long time to fill large areas (up to ten minutes or more)
+   + Undoing or redoing such large operations may also take a very long time and should not be interrupted
+   + There is a maximum size for the area that can be filled: a square with sides of 46340 blocks. The tools will only fill up to the edges of this square and warn you if they were hit
+ * Various improvements to Custom Brushes:
+   +  Custom brushes are now no longer all loaded at startup
+     - This prevents performance problems and WorldPainter hanging at startup due to the use of many and/or large custom brushes taking up too much memory
+     - The brushes are now loaded "lazily" (on-demand). This does mean that selecting a brush, or using one after it has not been used for a while, may take a small performance hit as it (re-)loads the brush from disk
+   + The tab icons by default are now the first letter of the folder the brushes are in
+   + You can override the icon for each folder by putting a file named "icon.png" in it
+ * Various small usability improvements and performance optimisations have been made
+ * Various measures to prevent data corruption and other problems due to lack of disk space were implemented:
    + When Exporting or Merging maps:
-     - If there is less than a configurable amount of free space, WorldPainter will offer to delete backups, oldest first, until the minimum amount of free space is reached
+     - If there is less than a configurable amount of free space (5 GB by default), WorldPainter will offer to delete backups, oldest first, until the minimum amount of free space is reached
      - WorldPainter tries to ensure that at least one backup remains of every map for as long as possible, but if there is not enough space for that it will delete backups of maps for which there is only one backup left
      - This measure can be disabled, or the limit changed from the default of 5 GB, on the Preferences screen. It is also possible to manually trigger a backups clean up from there
    + When Saving .world files:
      - The file is saved to a temporary file first, so that if that fails (e.g. because the disk is full) the existing file, if any, is not corrupted
+ * Colour Schemes for the editor, that allowed for different colours for materials, are no longer supported and have been removed
+ * Scripting changes:
+   + The GraalVM JavaScript engine is now included, so that scripts implemented in JavaScript will always be supported, even on newer Oracle runtimes which lack JavaScript support
+   + When creating new worlds from height maps in scripts the platform (map format) can now be specified
  * Mac OS X binaries are now universal binaries so that they will use the native M1 version of Java on M1 Macs for improved performance
+ * Various bugs have been fixed
 
 -- Version 2.8.10, released 11-12-2021
 

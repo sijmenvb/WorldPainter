@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.*;
 
 import static java.util.stream.Collectors.toSet;
+import static org.pepsoft.util.CollectionUtils.unsignedMax;
 import static org.pepsoft.util.ObjectUtils.copyObject;
 import static org.pepsoft.worldpainter.Constants.*;
 import static org.pepsoft.worldpainter.Tile.TileBuffer.*;
@@ -46,7 +47,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
         if (init) {
             terrain = new byte[TILE_SIZE * TILE_SIZE];
-            if (maxHeight > 256) {
+            if (tall) {
                 tallHeightMap = new int[TILE_SIZE * TILE_SIZE];
                 tallWaterLevel = new short[TILE_SIZE * TILE_SIZE];
             } else {
@@ -67,115 +68,127 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         return y;
     }
 
-    public int getMinHeight() {
+    public synchronized int getMinHeight() {
         return minHeight;
     }
-
-    // TODOMC118: allow changing minHeight?
 
     public synchronized int getMaxHeight() {
         return maxHeight;
     }
     
-    public synchronized void setMaxHeight(int maxHeight, HeightTransform heightTransform) {
-        if (maxHeight != this.maxHeight) {
-            this.maxHeight = maxHeight;
-            maxY = maxHeight - 1;
-            boolean newTall = (maxHeight - minHeight) > 256;
-            if (newTall == tall) {
-                // Tallness is not changing
-                if (! heightTransform.isIdentity()) {
+    public void setMinMaxHeight(int minHeight, int maxHeight, HeightTransform heightTransform) {
+        inhibitEvents();
+        try {
+            synchronized (this) {
+                if ((maxHeight != this.maxHeight) || (minHeight != this.minHeight)) {
+                    final int oldMinHeight = this.minHeight, minHeightDelta = oldMinHeight - minHeight;
+                    this.minHeight = minHeight;
+                    this.maxHeight = maxHeight;
+                    maxY = maxHeight - 1;
+                    boolean newTall = (maxHeight - minHeight) > 256;
+                    if (newTall == tall) {
+                        // Tallness is not changing
+                        if (! heightTransform.isIdentity()) {
+                            for (int x = 0; x < TILE_SIZE; x++) {
+                                for (int y = 0; y < TILE_SIZE; y++) {
+                                    setHeight(x, y, clamp(heightTransform.transformHeight(getHeight(x, y) + minHeightDelta)));
+                                    setWaterLevel(x, y, clamp(heightTransform.transformHeight(getWaterLevel(x, y) + minHeightDelta)));
+                                }
+                            }
+                        } else {
+                            // TODO why would this ever be necessary?
+                            for (int x = 0; x < TILE_SIZE; x++) {
+                                for (int y = 0; y < TILE_SIZE; y++) {
+                                    setHeight(x, y, clamp(getHeight(x, y) + minHeightDelta));
+                                    setWaterLevel(x, y, clamp(getWaterLevel(x, y) + minHeightDelta));
+                                }
+                            }
+                        }
+                    } else if (tall) {
+                        // Going from tall to not tall
+                        heightMap = new short[TILE_SIZE * TILE_SIZE];
+                        waterLevel = new byte[TILE_SIZE * TILE_SIZE];
+                        if (undoManager != null) {
+                            undoManager.addBuffer(HEIGHTMAP_BUFFER_KEY, heightMap, this);
+                            undoManager.addBuffer(WATERLEVEL_BUFFER_KEY, waterLevel, this);
+                            readableBuffers.add(HEIGHTMAP);
+                            readableBuffers.add(WATERLEVEL);
+                            writeableBuffers.add(HEIGHTMAP);
+                            writeableBuffers.add(WATERLEVEL);
+                        }
+                        tall = false;
+                        for (int x = 0; x < TILE_SIZE; x++) {
+                            for (int y = 0; y < TILE_SIZE; y++) {
+                                setHeight(x, y, clamp(heightTransform.transformHeight(tallHeightMap[x | (y << TILE_SIZE_BITS)] / 256f + oldMinHeight)));
+                                setWaterLevel(x, y, clamp(heightTransform.transformHeight(tallWaterLevel[x | (y << TILE_SIZE_BITS)] + oldMinHeight)));
+                            }
+                        }
+                        if (undoManager != null) {
+                            undoManager.removeBuffer(TALL_HEIGHTMAP_BUFFER_KEY);
+                            undoManager.removeBuffer(TALL_WATERLEVEL_BUFFER_KEY);
+                            readableBuffers.remove(TALL_HEIGHTMAP);
+                            readableBuffers.remove(TALL_WATERLEVEL);
+                            writeableBuffers.remove(TALL_HEIGHTMAP);
+                            writeableBuffers.remove(TALL_WATERLEVEL);
+                        }
+                        tallHeightMap = null;
+                        tallWaterLevel = null;
+                    } else {
+                        // Going from not tall to tall
+                        tallHeightMap = new int[TILE_SIZE * TILE_SIZE];
+                        tallWaterLevel = new short[TILE_SIZE * TILE_SIZE];
+                        if (undoManager != null) {
+                            undoManager.addBuffer(TALL_HEIGHTMAP_BUFFER_KEY, tallHeightMap, this);
+                            undoManager.addBuffer(TALL_WATERLEVEL_BUFFER_KEY, tallWaterLevel, this);
+                            readableBuffers.add(TALL_HEIGHTMAP);
+                            readableBuffers.add(TALL_WATERLEVEL);
+                            writeableBuffers.add(TALL_HEIGHTMAP);
+                            writeableBuffers.add(TALL_WATERLEVEL);
+                        }
+                        tall = true;
+                        for (int x = 0; x < TILE_SIZE; x++) {
+                            for (int y = 0; y < TILE_SIZE; y++) {
+                                setHeight(x, y, clamp(heightTransform.transformHeight((heightMap[x | (y << TILE_SIZE_BITS)] & 0xFFFF) / 256f + oldMinHeight)));
+                                setWaterLevel(x, y, clamp(heightTransform.transformHeight((waterLevel[x | (y << TILE_SIZE_BITS)] & 0xFF) + oldMinHeight)));
+                            }
+                        }
+                        if (undoManager != null) {
+                            undoManager.removeBuffer(HEIGHTMAP_BUFFER_KEY);
+                            undoManager.removeBuffer(WATERLEVEL_BUFFER_KEY);
+                            readableBuffers.remove(HEIGHTMAP);
+                            readableBuffers.remove(WATERLEVEL);
+                            writeableBuffers.remove(HEIGHTMAP);
+                            writeableBuffers.remove(WATERLEVEL);
+                        }
+                        heightMap = null;
+                        waterLevel = null;
+                    }
+                } else if (! heightTransform.isIdentity()) {
                     for (int x = 0; x < TILE_SIZE; x++) {
                         for (int y = 0; y < TILE_SIZE; y++) {
                             setHeight(x, y, clamp(heightTransform.transformHeight(getHeight(x, y))));
                             setWaterLevel(x, y, clamp(heightTransform.transformHeight(getWaterLevel(x, y))));
                         }
                     }
-                } else {
-                    for (int x = 0; x < TILE_SIZE; x++) {
-                        for (int y = 0; y < TILE_SIZE; y++) {
-                            setHeight(x, y, clamp(getHeight(x, y)));
-                            setWaterLevel(x, y, clamp(getWaterLevel(x, y)));
-                        }
-                    }
-                }
-            } else if (tall) {
-                // Going from tall to not tall
-                heightMap = new short[TILE_SIZE * TILE_SIZE];
-                waterLevel = new byte[TILE_SIZE * TILE_SIZE];
-                if (undoManager != null) {
-                    undoManager.addBuffer(HEIGHTMAP_BUFFER_KEY, heightMap, this);
-                    undoManager.addBuffer(WATERLEVEL_BUFFER_KEY, waterLevel, this);
-                    readableBuffers.add(HEIGHTMAP);
-                    readableBuffers.add(WATERLEVEL);
-                    writeableBuffers.add(HEIGHTMAP);
-                    writeableBuffers.add(WATERLEVEL);
-                }
-                tall = false;
-                for (int x = 0; x < TILE_SIZE; x++) {
-                    for (int y = 0; y < TILE_SIZE; y++) {
-                        setHeight(x, y, clamp(heightTransform.transformHeight(tallHeightMap[x | (y << TILE_SIZE_BITS)] / 256f + minHeight)));
-                        setWaterLevel(x, y, clamp(heightTransform.transformHeight(tallWaterLevel[x | (y << TILE_SIZE_BITS)] + minHeight)));
-                    }
-                }
-                if (undoManager != null) {
-                    undoManager.removeBuffer(TALL_HEIGHTMAP_BUFFER_KEY);
-                    undoManager.removeBuffer(TALL_WATERLEVEL_BUFFER_KEY);
-                    readableBuffers.remove(TALL_HEIGHTMAP);
-                    readableBuffers.remove(TALL_WATERLEVEL);
-                    writeableBuffers.remove(TALL_HEIGHTMAP);
-                    writeableBuffers.remove(TALL_WATERLEVEL);
-                }
-                tallHeightMap = null;
-                tallWaterLevel = null;
-            } else {
-                // Going from not tall to tall
-                tallHeightMap = new int[TILE_SIZE * TILE_SIZE];
-                tallWaterLevel = new short[TILE_SIZE * TILE_SIZE];
-                if (undoManager != null) {
-                    undoManager.addBuffer(TALL_HEIGHTMAP_BUFFER_KEY, tallHeightMap, this);
-                    undoManager.addBuffer(TALL_WATERLEVEL_BUFFER_KEY, tallWaterLevel, this);
-                    readableBuffers.add(TALL_HEIGHTMAP);
-                    readableBuffers.add(TALL_WATERLEVEL);
-                    writeableBuffers.add(TALL_HEIGHTMAP);
-                    writeableBuffers.add(TALL_WATERLEVEL);
-                }
-                tall = true;
-                for (int x = 0; x < TILE_SIZE; x++) {
-                    for (int y = 0; y < TILE_SIZE; y++) {
-                        setHeight(x, y, clamp(heightTransform.transformHeight((heightMap[x | (y << TILE_SIZE_BITS)] & 0xFFFF) / 256f + minHeight)));
-                        setWaterLevel(x, y, clamp(heightTransform.transformHeight((waterLevel[x | (y << TILE_SIZE_BITS)] & 0xFF) + minHeight)));
-                    }
-                }
-                if (undoManager != null) {
-                    undoManager.removeBuffer(HEIGHTMAP_BUFFER_KEY);
-                    undoManager.removeBuffer(WATERLEVEL_BUFFER_KEY);
-                    readableBuffers.remove(HEIGHTMAP);
-                    readableBuffers.remove(WATERLEVEL);
-                    writeableBuffers.remove(HEIGHTMAP);
-                    writeableBuffers.remove(WATERLEVEL);
-                }
-                heightMap = null;
-                waterLevel = null;
-            }
-            heightMapChanged();
-            waterLevelChanged();
-        } else if (! heightTransform.isIdentity()) {
-            for (int x = 0; x < TILE_SIZE; x++) {
-                for (int y = 0; y < TILE_SIZE; y++) {
-                    setHeight(x, y, clamp(heightTransform.transformHeight(getHeight(x, y))));
-                    setWaterLevel(x, y, clamp(heightTransform.transformHeight(getWaterLevel(x, y))));
                 }
             }
-            heightMapChanged();
-            waterLevelChanged();
+        } finally {
+            releaseEvents();
         }
     }
 
     public int getIntHeight(int x, int y) {
-        return (int) (getHeight(x, y) + 0.5f);
+        return Math.round(getHeight(x, y));
     }
-    
+
+    public int getLowestIntHeight() {
+        return Math.round(getLowestRawHeight() / 256f + minHeight);
+    }
+
+    public int getHighestIntHeight() {
+        return Math.round(getHighestRawHeight() / 256f + minHeight);
+    }
+
     public synchronized float getHeight(int x, int y) {
         if (tall) {
             ensureReadable(TALL_HEIGHTMAP);
@@ -186,13 +199,23 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
     }
 
-    public synchronized void setHeight(int x, int y, float height) {
-        if (tall) {
-            ensureWriteable(TALL_HEIGHTMAP);
-            tallHeightMap[x | (y << TILE_SIZE_BITS)] = (int) ((height - minHeight) * 256);
-        } else {
-            ensureWriteable(HEIGHTMAP);
-            heightMap[x | (y << TILE_SIZE_BITS)] = (short) ((height - minHeight) * 256);
+    public float getLowestHeight() {
+        return getLowestRawHeight() / 256f + minHeight;
+    }
+
+    public float getHighestHeight() {
+        return getHighestRawHeight() / 256f + minHeight;
+    }
+
+    public void setHeight(int x, int y, float height) {
+        synchronized (this) {
+            if (tall) {
+                ensureWriteable(TALL_HEIGHTMAP);
+                tallHeightMap[x | (y << TILE_SIZE_BITS)] = (int) ((height - minHeight) * 256);
+            } else {
+                ensureWriteable(HEIGHTMAP);
+                heightMap[x | (y << TILE_SIZE_BITS)] = (short) ((height - minHeight) * 256);
+            }
         }
         heightMapChanged();
     }
@@ -211,22 +234,115 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
     }
 
+    public synchronized int getLowestRawHeight() {
+        int lowestRawHeight = Integer.MAX_VALUE;
+        if (tall) {
+            ensureReadable(TALL_HEIGHTMAP);
+            for (int height: tallHeightMap) {
+                if (height < lowestRawHeight) {
+                    lowestRawHeight = height;
+                }
+                if (lowestRawHeight <= 0) {
+                    return 0;
+                }
+            }
+        } else {
+            ensureReadable(HEIGHTMAP);
+            for (short height: heightMap) {
+                if ((height & 0xFFFF) < lowestRawHeight) {
+                    lowestRawHeight = (height & 0xFFFF);
+                }
+                if (lowestRawHeight <= 0) {
+                    return 0;
+                }
+            }
+        }
+        return lowestRawHeight;
+    }
+
+    public synchronized int getHighestRawHeight() {
+        int highestRawHeight = Integer.MIN_VALUE;
+        final int maxRawHeight = (maxHeight - 1 - minHeight) * 256;
+        if (tall) {
+            ensureReadable(TALL_HEIGHTMAP);
+            for (int height: tallHeightMap) {
+                if (height > highestRawHeight) {
+                    highestRawHeight = height;
+                    if (highestRawHeight >= maxRawHeight) {
+                        return maxRawHeight;
+                    }
+                }
+            }
+        } else {
+            ensureReadable(HEIGHTMAP);
+            for (short height: heightMap) {
+                if ((height & 0xFFFF) > highestRawHeight) {
+                    highestRawHeight = (height & 0xFFFF);
+                    if (highestRawHeight >= maxRawHeight) {
+                        return maxRawHeight;
+                    }
+                }
+            }
+        }
+        return highestRawHeight;
+    }
+
+    public synchronized int[] getRawHeightRange() {
+        int lowestRawHeight = Integer.MAX_VALUE;
+        int highestRawHeight = Integer.MIN_VALUE;
+        final int maxRawHeight = (maxHeight - 1 - minHeight) * 256;
+        if (tall) {
+            ensureReadable(TALL_HEIGHTMAP);
+            for (int height: tallHeightMap) {
+                if (height < lowestRawHeight) {
+                    lowestRawHeight = height;
+                }
+                if (height > highestRawHeight) {
+                    highestRawHeight = height;
+                }
+                if ((lowestRawHeight <= 0) && (highestRawHeight >= maxRawHeight)) {
+                    return new int[] { 0, maxRawHeight };
+                }
+            }
+        } else {
+            ensureReadable(HEIGHTMAP);
+            for (short height: heightMap) {
+                if ((height & 0xFFFF) < lowestRawHeight) {
+                    lowestRawHeight = (height & 0xFFFF);
+                }
+                if ((height & 0xFFFF) > highestRawHeight) {
+                    highestRawHeight = (height & 0xFFFF);
+                }
+                if ((lowestRawHeight <= 0) && (highestRawHeight >= maxRawHeight)) {
+                    return new int[] { 0, maxRawHeight };
+                }
+            }
+        }
+        return new int[] { lowestRawHeight, highestRawHeight };
+    }
+
     /**
      * Set the raw height value. This is the height times 256 (for added precision) and zero-based rather than adjusted
      * for {@code minHeight}.
      */
-    public synchronized void setRawHeight(int x, int y, int rawHeight) {
-        if (tall) {
-            ensureWriteable(TALL_HEIGHTMAP);
-            tallHeightMap[x | (y << TILE_SIZE_BITS)] = rawHeight;
-        } else {
-            ensureWriteable(HEIGHTMAP);
-            heightMap[x | (y << TILE_SIZE_BITS)] = (short) rawHeight;
+    public void setRawHeight(int x, int y, int rawHeight) {
+        synchronized (this) {
+            if (tall) {
+                ensureWriteable(TALL_HEIGHTMAP);
+                tallHeightMap[x | (y << TILE_SIZE_BITS)] = rawHeight;
+            } else {
+                ensureWriteable(HEIGHTMAP);
+                heightMap[x | (y << TILE_SIZE_BITS)] = (short) rawHeight;
+            }
         }
         heightMapChanged();
     }
-    
-    public synchronized float getSlope(int x, int y) {
+
+    public float getSlope(int x, int y) {
+        return doGetSlope(x, y);
+    }
+
+    protected final synchronized float doGetSlope(int x, int y) {
         return Math.max(Math.max(Math.abs(getHeight(x + 1, y) - getHeight(x - 1, y)) / 2,
             Math.abs(getHeight(x + 1, y + 1) - getHeight(x - 1, y - 1)) / SQRT_OF_EIGHT),
             Math.max(Math.abs(getHeight(x, y + 1) - getHeight(x, y - 1)) / 2,
@@ -238,15 +354,17 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         return TERRAIN_VALUES[terrain[x | (y << TILE_SIZE_BITS)] & 0xFF];
     }
 
-    public synchronized void setTerrain(int x, int y, Terrain terrain) {
-        ensureWriteable(TERRAIN);
-        // Sanity checks because of NPE's observed in the wild from this method
-        if (this.terrain == null) {
-            throw new NullPointerException("setTerrain(" + x + ", " + y + ", " + terrain + "): this.terrain is null for tile @ " + this.x + "," + this.y);
-        } else if (terrain == null) {
-            throw new NullPointerException("setTerrain(" + x + ", " + y + ", null): terrain parameter is null for tile @ " + this.x + "," + this.y);
+    public void setTerrain(int x, int y, Terrain terrain) {
+        synchronized (this) {
+            ensureWriteable(TERRAIN);
+            // Sanity checks because of NPE's observed in the wild from this method
+            if (this.terrain == null) {
+                throw new NullPointerException("setTerrain(" + x + ", " + y + ", " + terrain + "): this.terrain is null for tile @ " + this.x + "," + this.y);
+            } else if (terrain == null) {
+                throw new NullPointerException("setTerrain(" + x + ", " + y + ", null): terrain parameter is null for tile @ " + this.x + "," + this.y);
+            }
+            this.terrain[x | (y << TILE_SIZE_BITS)] = (byte) terrain.ordinal();
         }
-        this.terrain[x | (y << TILE_SIZE_BITS)] = (byte) terrain.ordinal();
         terrainChanged();
     }
 
@@ -262,20 +380,32 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     public synchronized int getWaterLevel(int x, int y) {
         if (tall) {
             ensureReadable(TALL_WATERLEVEL);
-            return tallWaterLevel[x | (y << TILE_SIZE_BITS)] + minHeight;
+            return (tallWaterLevel[x | (y << TILE_SIZE_BITS)] & 0xFFFF) + minHeight;
         } else {
             ensureReadable(WATERLEVEL);
             return (waterLevel[x | (y << TILE_SIZE_BITS)] & 0xFF) + minHeight;
         }
     }
 
-    public synchronized void setWaterLevel(int x, int y, int waterLevel) {
+    public synchronized int getHighestWaterLevel() {
         if (tall) {
-            ensureWriteable(TALL_WATERLEVEL);
-            this.tallWaterLevel[x | (y << TILE_SIZE_BITS)] = (short) (waterLevel - minHeight);
+            ensureReadable(TALL_WATERLEVEL);
+            return unsignedMax(tallWaterLevel) + minHeight;
         } else {
-            ensureWriteable(WATERLEVEL);
-            this.waterLevel[x | (y << TILE_SIZE_BITS)] = (byte) (waterLevel - minHeight);
+            ensureReadable(WATERLEVEL);
+            return unsignedMax(waterLevel) + minHeight;
+        }
+    }
+
+    public void setWaterLevel(int x, int y, int waterLevel) {
+        synchronized (this) {
+            if (tall) {
+                ensureWriteable(TALL_WATERLEVEL);
+                this.tallWaterLevel[x | (y << TILE_SIZE_BITS)] = (short) (waterLevel - minHeight);
+            } else {
+                ensureWriteable(WATERLEVEL);
+                this.waterLevel[x | (y << TILE_SIZE_BITS)] = (byte) (waterLevel - minHeight);
+            }
         }
         waterLevelChanged();
     }
@@ -303,8 +433,8 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
             return layerData.containsKey(layer);
         }
     }
-    
-    public List<Layer> getActiveLayers(int x, int y) {
+
+    public synchronized List<Layer> getActiveLayers(int x, int y) {
         ensureReadable(BIT_LAYER_DATA);
         ensureReadable(LAYER_DATA);
         List<Layer> activeLayers = new ArrayList<>(bitLayerData.size() + layerData.size());
@@ -336,17 +466,21 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     /**
      * Get a list of all layers in use in the tile, as well as the set of
      * additional layers provided, the total sorted by layer priority.
-     * 
+     *
      * @param additionalLayers The additional layers to include in the list.
      * @return The list of all layers provided or in use on the tile, sorted by
      *     layer priority.
      */
     public List<Layer> getLayers(Set<Layer> additionalLayers) {
+        return doGetLayers(additionalLayers);
+    }
+
+    protected final synchronized List<Layer> doGetLayers(Set<Layer> additionalLayers) {
         SortedSet<Layer> layers = new TreeSet<>(additionalLayers);
         layers.addAll(getLayers());
         return new ArrayList<>(layers);
     }
-    
+
     public synchronized boolean getBitLayerValue(Layer layer, int x, int y) {
         if ((layer.getDataSize() != Layer.DataSize.BIT) && (layer.getDataSize() != Layer.DataSize.BIT_PER_CHUNK)) {
             throw new IllegalArgumentException("Layer is not bit sized");
@@ -367,7 +501,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     /**
      * Count the number of blocks where the specified bit layer is set in a
      * square around a particular location
-     * 
+     *
      * @param layer The bit layer to count.
      * @param x The X coordinate (local to the tile) of the location around
      *     which to count the layer.
@@ -408,17 +542,15 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     }
 
     /**
-     * Gets all layers that are set at the specified location, along with their
-     * intensities. For bit valued layers the intensity is zero for off, one for
-     * on.
-     * 
+     * Gets all layers that are set at the specified location, along with their intensities or values. For bit-valued
+     * layers the intensity is zero for off, one for on.
+     *
      * @param x The X location for which to retrieve all layers.
      * @param y The Y location for which to retrieve all layers.
-     * @return A map with all layers set at the specified location, mapped to
-     *     their intensities at that location. May either be {@code null}
-     *     or an empty map if no layers are present.
+     * @return A map with all layers set at the specified location, mapped to their intensities or values at that
+     * location. May either be {@code null} or an empty map if no layers are present.
      */
-    public Map<Layer, Integer> getLayersAt(int x, int y) {
+    public synchronized Map<Layer, Integer> getLayersAt(int x, int y) {
         Map<Layer, Integer> layers = null;
         ensureReadable(LAYER_DATA);
         for (Map.Entry<Layer, byte[]> entry: layerData.entrySet()) {
@@ -466,7 +598,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     /**
      * Count the number of blocks that are flooded in a square around a
      * particular location
-     * 
+     *
      * @param x The X coordinate (local to the tile) of the location around
      *     which to count flooded blocks.
      * @param y The Y coordinate (local to the tile) of the location around
@@ -489,7 +621,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
             for (int dx = -r; dx <= r; dx++) {
                 for (int dy = -r; dy <= r; dy++) {
                     final int xx = x + dx, yy = y + dy;
-                    if (((tallWaterLevel[xx + yy * TILE_SIZE]) > ((int) (tallHeightMap[xx + yy * TILE_SIZE] / 256f + 0.5f)))
+                    if (((tallWaterLevel[xx + yy * TILE_SIZE]) > (Math.round(tallHeightMap[xx + yy * TILE_SIZE] / 256f)))
                             && (lava ? ((floodWithLava != null) && getBitPerBlockLayerValue(floodWithLava, xx, yy))
                                 : ((floodWithLava == null) || (! getBitPerBlockLayerValue(floodWithLava, xx, yy))))) {
                         count++;
@@ -506,7 +638,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
             for (int dx = -r; dx <= r; dx++) {
                 for (int dy = -r; dy <= r; dy++) {
                     final int xx = x + dx, yy = y + dy;
-                    if (((waterLevel[xx + yy * TILE_SIZE] & 0xFF) > ((int) ((heightMap[xx + yy * TILE_SIZE] & 0xFFFF) / 256f + 0.5f)))
+                    if (((waterLevel[xx + yy * TILE_SIZE] & 0xFF) > (Math.round((heightMap[xx + yy * TILE_SIZE] & 0xFFFF) / 256f)))
                             && (lava ? ((floodWithLava != null) && getBitPerBlockLayerValue(floodWithLava, xx, yy))
                                 : ((floodWithLava == null) || (! getBitPerBlockLayerValue(floodWithLava, xx, yy))))) {
                         count++;
@@ -516,7 +648,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
             return count;
         }
     }
-    
+
     public synchronized float getDistanceToEdge(final Layer layer, final int x, final int y, final float maxDistance) {
         if ((layer.getDataSize() != Layer.DataSize.BIT) && (layer.getDataSize() != Layer.DataSize.BIT_PER_CHUNK)) {
             throw new IllegalArgumentException("Layer is not bit sized");
@@ -602,35 +734,37 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
     }
 
-    public synchronized void setBitLayerValue(Layer layer, int x, int y, boolean value) {
+    public void setBitLayerValue(Layer layer, int x, int y, boolean value) {
         if ((layer.getDataSize() != Layer.DataSize.BIT) && (layer.getDataSize() != Layer.DataSize.BIT_PER_CHUNK)) {
             throw new IllegalArgumentException("Layer is not bit sized");
         }
-        ensureWriteable(BIT_LAYER_DATA);
-        BitSet bitSet = bitLayerData.get(layer);
-        if (bitSet == null) {
-            if (value) {
-                cachedLayers = null;
-                if (layer.getDataSize() == Layer.DataSize.BIT) {
-                    bitSet = new BitSet(TILE_SIZE * TILE_SIZE);
+        synchronized (this) {
+            ensureWriteable(BIT_LAYER_DATA);
+            BitSet bitSet = bitLayerData.get(layer);
+            if (bitSet == null) {
+                if (value) {
+                    cachedLayers = null;
+                    if (layer.getDataSize() == Layer.DataSize.BIT) {
+                        bitSet = new BitSet(TILE_SIZE * TILE_SIZE);
+                    } else {
+                        bitSet = new BitSet(TILE_SIZE * TILE_SIZE / 256);
+                    }
+                    bitLayerData.put(layer, bitSet);
                 } else {
-                    bitSet = new BitSet(TILE_SIZE * TILE_SIZE / 256);
+                    // If there is no bitset the default value is false, so if we're
+                    // setting to false anyway there's no point in creating the
+                    // bitset
+                    return;
                 }
-                bitLayerData.put(layer, bitSet);
-            } else {
-                // If there is no bitset the default value is false, so if we're
-                // setting to false anyway there's no point in creating the
-                // bitset
-                return;
             }
+            int bitOffset;
+            if (layer.getDataSize() == Layer.DataSize.BIT) {
+                bitOffset = x | (y << TILE_SIZE_BITS);
+            } else {
+                bitOffset = (x / 16) + (y / 16) * (TILE_SIZE / 16);
+            }
+            bitSet.set(bitOffset, value);
         }
-        int bitOffset;
-        if (layer.getDataSize() == Layer.DataSize.BIT) {
-            bitOffset = x | (y << TILE_SIZE_BITS);
-        } else {
-            bitOffset = (x / 16) + (y / 16) * (TILE_SIZE / 16);
-        }
-        bitSet.set(bitOffset, value);
         layerDataChanged(layer);
     }
 
@@ -661,88 +795,96 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
     }
 
-    public synchronized void setLayerValue(Layer layer, int x, int y, int value) {
-        ensureWriteable(LAYER_DATA);
-        byte[] layerValues = layerData.get(layer);
-        if (layerValues == null) {
-            if (value == layer.getDefaultValue()) {
-                // There is no data buffer and we're setting the value to the
-                // default, so we don't need to create it
-                return;
+    public void setLayerValue(Layer layer, int x, int y, int value) {
+        synchronized (this) {
+            ensureWriteable(LAYER_DATA);
+            byte[] layerValues = layerData.get(layer);
+            if (layerValues == null) {
+                if (value == layer.getDefaultValue()) {
+                    // There is no data buffer and we're setting the value to the
+                    // default, so we don't need to create it
+                    return;
+                }
+                cachedLayers = null;
+                switch (layer.getDataSize()) {
+                    case BIT:
+                    case BIT_PER_CHUNK:
+                        throw new IllegalArgumentException("Can't set bits using this method");
+                    case NIBBLE:
+                        layerValues = new byte[TILE_SIZE * TILE_SIZE / 2];
+                        if (layer.getDefaultValue() != 0) {
+                            byte defaultValue = (byte) (layer.getDefaultValue() << 4 | layer.getDefaultValue());
+                            Arrays.fill(layerValues, defaultValue);
+                        }
+                        break;
+                    case BYTE:
+                        layerValues = new byte[TILE_SIZE * TILE_SIZE];
+                        if (layer.getDefaultValue() != 0) {
+                            byte defaultValue = (byte) layer.getDefaultValue();
+                            Arrays.fill(layerValues, defaultValue);
+                        }
+                        break;
+                    default:
+                        throw new InternalError();
+                }
+                layerData.put(layer, layerValues);
             }
-            cachedLayers = null;
             switch (layer.getDataSize()) {
                 case BIT:
                 case BIT_PER_CHUNK:
                     throw new IllegalArgumentException("Can't set bits using this method");
                 case NIBBLE:
-                    layerValues = new byte[TILE_SIZE * TILE_SIZE / 2];
-                    if (layer.getDefaultValue() != 0) {
-                        byte defaultValue = (byte) (layer.getDefaultValue() << 4 | layer.getDefaultValue());
-                        Arrays.fill(layerValues, defaultValue);
+                    if ((value < 0) || (value > 15)) {
+                        throw new IllegalArgumentException("Illegal value " + value + " for nibble sized layer " + layer);
                     }
+                    int byteOffset = x | (y << TILE_SIZE_BITS);
+                    byte _byte = layerValues[byteOffset / 2];
+                    if (byteOffset % 2 == 0) {
+                        _byte &= 0xF0;
+                        _byte |= value;
+                    } else {
+                        _byte &= 0x0F;
+                        _byte |= (value << 4);
+                    }
+                    layerValues[byteOffset / 2] = _byte;
                     break;
                 case BYTE:
-                    layerValues = new byte[TILE_SIZE * TILE_SIZE];
-                    if (layer.getDefaultValue() != 0) {
-                        byte defaultValue = (byte) layer.getDefaultValue();
-                        Arrays.fill(layerValues, defaultValue);
+                    if ((value < 0) || (value > 255)) {
+                        throw new IllegalArgumentException("Illegal value " + value + " for byte sized layer " + layer);
                     }
+                    byteOffset = x | (y << TILE_SIZE_BITS);
+                    layerValues[byteOffset] = (byte) value;
                     break;
                 default:
                     throw new InternalError();
             }
-            layerData.put(layer, layerValues);
-        }
-        switch (layer.getDataSize()) {
-            case BIT:
-            case BIT_PER_CHUNK:
-                throw new IllegalArgumentException("Can't set bits using this method");
-            case NIBBLE:
-                if ((value < 0) || (value > 15)) {
-                    throw new IllegalArgumentException("Illegal value for nibble sized layer: " + value);
-                }
-                int byteOffset = x | (y << TILE_SIZE_BITS);
-                byte _byte = layerValues[byteOffset / 2];
-                if (byteOffset % 2 == 0) {
-                    _byte &= 0xF0;
-                    _byte |= value;
-                } else {
-                    _byte &= 0x0F;
-                    _byte |= (value << 4);
-                }
-                layerValues[byteOffset / 2] = _byte;
-                break;
-            case BYTE:
-                if ((value < 0) || (value > 255)) {
-                    throw new IllegalArgumentException("Illegal value for byte sized layer: " + value);
-                }
-                byteOffset = x | (y << TILE_SIZE_BITS);
-                layerValues[byteOffset] = (byte) value;
-                break;
-            default:
-                throw new InternalError();
         }
         layerDataChanged(layer);
     }
 
-    public synchronized void clearLayerData(Layer layer) {
-        if ((layer.getDataSize() == Layer.DataSize.BIT) || (layer.getDataSize() == Layer.DataSize.BIT_PER_CHUNK)) {
-            ensureReadable(BIT_LAYER_DATA);
-            if (bitLayerData.containsKey(layer)) {
-                ensureWriteable(BIT_LAYER_DATA);
-                bitLayerData.remove(layer);
-                layerDataChanged(layer);
-                cachedLayers = null;
+    public void clearLayerData(Layer layer) {
+        final Set<Layer> changedLayers = new HashSet<>();
+        synchronized (this) {
+            if ((layer.getDataSize() == Layer.DataSize.BIT) || (layer.getDataSize() == Layer.DataSize.BIT_PER_CHUNK)) {
+                ensureReadable(BIT_LAYER_DATA);
+                if (bitLayerData.containsKey(layer)) {
+                    ensureWriteable(BIT_LAYER_DATA);
+                    bitLayerData.remove(layer);
+                    changedLayers.add(layer);
+                    cachedLayers = null;
+                }
+            } else {
+                ensureReadable(LAYER_DATA);
+                if (layerData.containsKey(layer)) {
+                    ensureWriteable(LAYER_DATA);
+                    layerData.remove(layer);
+                    changedLayers.add(layer);
+                    cachedLayers = null;
+                }
             }
-        } else {
-            ensureReadable(LAYER_DATA);
-            if (layerData.containsKey(layer)) {
-                ensureWriteable(LAYER_DATA);
-                layerData.remove(layer);
-                layerDataChanged(layer);
-                cachedLayers = null;
-            }
+        }
+        if (! changedLayers.isEmpty()) {
+            changedLayers.forEach(this::layerDataChanged);
         }
     }
 
@@ -756,49 +898,55 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
      *                       {@code null}.
      */
     public void clearLayerData(int x, int y, Set<Layer> excludedLayers) {
-        ensureWriteable(BIT_LAYER_DATA);
-        for (Map.Entry<Layer, BitSet> entry: bitLayerData.entrySet()) {
-            Layer layer = entry.getKey();
-            if ((excludedLayers != null) && excludedLayers.contains(layer)) {
-                continue;
+        final Set<Layer> changedLayers = new HashSet<>();
+        synchronized (this) {
+            ensureWriteable(BIT_LAYER_DATA);
+            for (Map.Entry<Layer, BitSet> entry: bitLayerData.entrySet()) {
+                Layer layer = entry.getKey();
+                if ((excludedLayers != null) && excludedLayers.contains(layer)) {
+                    continue;
+                }
+                int bitOffset;
+                if (layer.getDataSize() == Layer.DataSize.BIT) {
+                    bitOffset = x | (y << TILE_SIZE_BITS);
+                } else {
+                    bitOffset = (x / 16) + (y / 16) * (TILE_SIZE / 16);
+                }
+                entry.getValue().set(bitOffset, layer.getDefaultValue() != 0);
+                changedLayers.add(layer);
             }
-            int bitOffset;
-            if (layer.getDataSize() == Layer.DataSize.BIT) {
-                bitOffset = x | (y << TILE_SIZE_BITS);
-            } else {
-                bitOffset = (x / 16) + (y / 16) * (TILE_SIZE / 16);
+            ensureWriteable(LAYER_DATA);
+            for (Map.Entry<Layer, byte[]> entry: layerData.entrySet()) {
+                Layer layer = entry.getKey();
+                if ((excludedLayers != null) && excludedLayers.contains(layer)) {
+                    continue;
+                }
+                byte[] layerValues = entry.getValue();
+                switch (layer.getDataSize()) {
+                    case NIBBLE:
+                        int byteOffset = x | (y << TILE_SIZE_BITS);
+                        byte _byte = layerValues[byteOffset / 2];
+                        if (byteOffset % 2 == 0) {
+                            _byte &= 0xF0;
+                            _byte |= layer.getDefaultValue();
+                        } else {
+                            _byte &= 0x0F;
+                            _byte |= (layer.getDefaultValue() << 4);
+                        }
+                        layerValues[byteOffset / 2] = _byte;
+                        break;
+                    case BYTE:
+                        byteOffset = x | (y << TILE_SIZE_BITS);
+                        layerValues[byteOffset] = (byte) layer.getDefaultValue();
+                        break;
+                    default:
+                        throw new InternalError();
+                }
+                changedLayers.add(layer);
             }
-            entry.getValue().set(bitOffset, layer.getDefaultValue() != 0);
-            layerDataChanged(layer);
         }
-        ensureWriteable(LAYER_DATA);
-        for (Map.Entry<Layer, byte[]> entry: layerData.entrySet()) {
-            Layer layer = entry.getKey();
-            if ((excludedLayers != null) && excludedLayers.contains(layer)) {
-                continue;
-            }
-            byte[] layerValues = entry.getValue();
-            switch (layer.getDataSize()) {
-                case NIBBLE:
-                    int byteOffset = x | (y << TILE_SIZE_BITS);
-                    byte _byte = layerValues[byteOffset / 2];
-                    if (byteOffset % 2 == 0) {
-                        _byte &= 0xF0;
-                        _byte |= layer.getDefaultValue();
-                    } else {
-                        _byte &= 0x0F;
-                        _byte |= (layer.getDefaultValue() << 4);
-                    }
-                    layerValues[byteOffset / 2] = _byte;
-                    break;
-                case BYTE:
-                    byteOffset = x | (y << TILE_SIZE_BITS);
-                    layerValues[byteOffset] = (byte) layer.getDefaultValue();
-                    break;
-                default:
-                    throw new InternalError();
-            }
-            layerDataChanged(layer);
+        if (! changedLayers.isEmpty()) {
+            changedLayers.forEach(this::layerDataChanged);
         }
     }
 
@@ -811,34 +959,38 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
     }
 
-    public synchronized boolean plantSeed(Seed seed) {
-        if (seeds == null) {
-            seeds = new HashSet<>();
-            if (undoManager != null) {
-                undoManager.addBuffer(SEEDS_BUFFER_KEY, seeds, this);
-                readableBuffers.add(SEEDS);
-                writeableBuffers.add(SEEDS);
+    public boolean plantSeed(Seed seed) {
+        synchronized (this) {
+            if (seeds == null) {
+                seeds = new HashSet<>();
+                if (undoManager != null) {
+                    undoManager.addBuffer(SEEDS_BUFFER_KEY, seeds, this);
+                    readableBuffers.add(SEEDS);
+                    writeableBuffers.add(SEEDS);
+                }
+            } else {
+                ensureWriteable(SEEDS);
             }
-        } else {
-            ensureWriteable(SEEDS);
+            seeds.add(seed);
         }
-        seeds.add(seed);
         seedsChanged();
         return true;
     }
 
-    public synchronized void removeSeed(Seed seed) {
-        if (seeds == null) {
-            seeds = new HashSet<>();
-            if (undoManager != null) {
-                undoManager.addBuffer(SEEDS_BUFFER_KEY, seeds, this);
-                readableBuffers.add(SEEDS);
-                writeableBuffers.add(SEEDS);
+    public void removeSeed(Seed seed) {
+        synchronized (this) {
+            if (seeds == null) {
+                seeds = new HashSet<>();
+                if (undoManager != null) {
+                    undoManager.addBuffer(SEEDS_BUFFER_KEY, seeds, this);
+                    readableBuffers.add(SEEDS);
+                    writeableBuffers.add(SEEDS);
+                }
+            } else {
+                ensureWriteable(SEEDS);
             }
-        } else {
-            ensureWriteable(SEEDS);
+            seeds.remove(seed);
         }
-        seeds.remove(seed);
         seedsChanged();
     }
 
@@ -850,7 +1002,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         listeners.remove(listener);
     }
 
-    public synchronized boolean isEventsInhibited() {
+    public boolean isEventsInhibited() {
         return eventInhibitionCounter != 0;
     }
 
@@ -868,7 +1020,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
      * <p><strong>Note</strong> that calls to these methods may be nested, and if so, events will only be released after
      * the final invocation of {@code releaseEvents()}.
      */
-    public synchronized void inhibitEvents() {
+    public void inhibitEvents() {
         eventInhibitionCounter++;
     }
 
@@ -877,7 +1029,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
      * since the first invocation of {@link #inhibitEvents()}, but only if this is the last invocation of
      * {@code releaseEvents()} in a nested set.
      */
-    public synchronized void releaseEvents() {
+    public void releaseEvents() {
         if (eventInhibitionCounter > 0) {
             eventInhibitionCounter--;
             if (eventInhibitionCounter == 0) {
@@ -1020,8 +1172,8 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         }
         return transformedTile;
     }
-    
-    public boolean repair(int minHeight, int maxHeight, PrintStream out) {
+
+    public synchronized boolean repair(int minHeight, int maxHeight, PrintStream out) {
         // Repair as much as possible if the tile was not read in completely
         this.minHeight = minHeight;
         this.maxHeight = maxHeight;
@@ -1067,7 +1219,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         return true;
     }
 
-    public boolean containsOneOf(Layer... layers) {
+    public synchronized boolean containsOneOf(Layer... layers) {
         boolean bitLayersAvailable = false, nonBitLayersAvailable = false;
         for (Layer layer: layers) {
             switch (layer.getDataSize()) {
@@ -1127,52 +1279,68 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     }
 
     @Override
-    public synchronized void bufferChanged(BufferKey<?> key) {
+    public void bufferChanged(BufferKey<?> key) {
         TileUndoBufferKey<?> tileKey = (TileUndoBufferKey<?>) key;
         if (logger.isTraceEnabled()) {
             logger.trace("Buffer " + key + " changed; clearing buffer cache for type " + tileKey.buffer + " and notifying listeners");
         }
+        synchronized (this) {
+            switch (tileKey.buffer) {
+                case BIT_LAYER_DATA:
+                    readableBuffers.remove(BIT_LAYER_DATA);
+                    writeableBuffers.remove(BIT_LAYER_DATA);
+                    cachedLayers = null;
+                    break;
+                case HEIGHTMAP:
+                    readableBuffers.remove(HEIGHTMAP);
+                    writeableBuffers.remove(HEIGHTMAP);
+                    break;
+                case TALL_HEIGHTMAP:
+                    readableBuffers.remove(TALL_HEIGHTMAP);
+                    writeableBuffers.remove(TALL_HEIGHTMAP);
+                    break;
+                case LAYER_DATA:
+                    readableBuffers.remove(LAYER_DATA);
+                    writeableBuffers.remove(LAYER_DATA);
+                    cachedLayers = null;
+                    break;
+                case TERRAIN:
+                    readableBuffers.remove(TERRAIN);
+                    writeableBuffers.remove(TERRAIN);
+                    break;
+                case WATERLEVEL:
+                    readableBuffers.remove(WATERLEVEL);
+                    writeableBuffers.remove(WATERLEVEL);
+                    break;
+                case TALL_WATERLEVEL:
+                    readableBuffers.remove(TALL_WATERLEVEL);
+                    writeableBuffers.remove(TALL_WATERLEVEL);
+                    break;
+                case SEEDS:
+                    readableBuffers.remove(SEEDS);
+                    writeableBuffers.remove(SEEDS);
+                    break;
+            }
+        }
         switch (tileKey.buffer) {
             case BIT_LAYER_DATA:
-                readableBuffers.remove(BIT_LAYER_DATA);
-                writeableBuffers.remove(BIT_LAYER_DATA);
                 allBitLayerDataChanged();
-                cachedLayers = null;
                 break;
             case HEIGHTMAP:
-                readableBuffers.remove(HEIGHTMAP);
-                writeableBuffers.remove(HEIGHTMAP);
-                heightMapChanged();
-                break;
             case TALL_HEIGHTMAP:
-                readableBuffers.remove(TALL_HEIGHTMAP);
-                writeableBuffers.remove(TALL_HEIGHTMAP);
                 heightMapChanged();
                 break;
             case LAYER_DATA:
-                readableBuffers.remove(LAYER_DATA);
-                writeableBuffers.remove(LAYER_DATA);
                 allNonBitLayerDataChanged();
-                cachedLayers = null;
                 break;
             case TERRAIN:
-                readableBuffers.remove(TERRAIN);
-                writeableBuffers.remove(TERRAIN);
                 terrainChanged();
                 break;
             case WATERLEVEL:
-                readableBuffers.remove(WATERLEVEL);
-                writeableBuffers.remove(WATERLEVEL);
-                waterLevelChanged();
-                break;
             case TALL_WATERLEVEL:
-                readableBuffers.remove(TALL_WATERLEVEL);
-                writeableBuffers.remove(TALL_WATERLEVEL);
                 waterLevelChanged();
                 break;
             case SEEDS:
-                readableBuffers.remove(SEEDS);
-                writeableBuffers.remove(SEEDS);
                 seedsChanged();
                 break;
         }
@@ -1225,14 +1393,60 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
         ensureReadable(SEEDS);
     }
 
-    void convertBiomeData() {
+    synchronized void convertBiomeData() {
         byte[] biomeData = layerData.remove(Biome.INSTANCE);
-        byte[] newBiomeData = new byte[biomeData.length * 2];
-        for (int i = 0; i < biomeData.length; i++) {
-            newBiomeData[i * 2] = (byte) (biomeData[i] & 0x0f);
-            newBiomeData[i * 2 + 1] = (byte) ((biomeData[i] & 0xf0) >> 4);
+        if (biomeData != null) {
+            byte[] newBiomeData = new byte[biomeData.length * 2];
+            for (int i = 0; i < biomeData.length; i++) {
+                newBiomeData[i * 2] = (byte) (biomeData[i] & 0x0f);
+                newBiomeData[i * 2 + 1] = (byte) ((biomeData[i] & 0xf0) >> 4);
+            }
+            layerData.put(Biome.INSTANCE, newBiomeData);
         }
-        layerData.put(Biome.INSTANCE, newBiomeData);
+    }
+
+    synchronized void prepareForSaving() {
+        // Make sure all buffers are current, otherwise we may save out of date
+        // data to disk
+        ensureAllReadable();
+
+        // Take the opportunity to save memory and disk space by throwing away "empty" layer buffers. Since this is
+        // functionally a null operation there is no need to notify listeners, make the buffer writable or otherwise
+        // notify the undo manager
+        for (Iterator<Map.Entry<Layer, BitSet>> i = bitLayerData.entrySet().iterator(); i.hasNext(); ) {
+            final Map.Entry<Layer, BitSet> entry = i.next();
+            if (entry.getValue().isEmpty()) {
+                i.remove();
+                cachedLayers = null;
+            }
+        }
+        layerLoop:
+        for (Iterator<Map.Entry<Layer, byte[]>> i = layerData.entrySet().iterator(); i.hasNext(); ) {
+            Map.Entry<Layer, byte[]> entry = i.next();
+            final Layer layer = entry.getKey();
+            final byte[] buffer = entry.getValue();
+            if (layer.getDataSize() == NIBBLE) {
+                final byte defaultByte = (byte) (layer.getDefaultValue() << 4 | layer.getDefaultValue());
+                for (byte bufferByte: buffer) {
+                    if (bufferByte != defaultByte) {
+                        continue layerLoop;
+                    }
+                }
+                // If we reach here all bytes were default bytes
+                i.remove();
+                cachedLayers = null;
+            } else if (layer.getDataSize() == BYTE) {
+                final byte defaultByte = (byte) layer.getDefaultValue();
+                for (byte bufferByte: buffer) {
+                    if (bufferByte != defaultByte) {
+                        continue layerLoop;
+                    }
+                }
+                // If we reach here all bytes were default bytes
+                i.remove();
+                cachedLayers = null;
+            }
+        }
     }
 
     private boolean getBitPerBlockLayerValue(BitSet bitSet, int x, int y) {
@@ -1454,48 +1668,7 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     }
     
     private synchronized void writeObject(ObjectOutputStream out) throws IOException {
-        // Make sure all buffers are current, otherwise we may save out of date
-        // data to disk
-        ensureAllReadable();
-
-        // Take the opportunity to save memory and disk space by throwing away "empty" layer buffers. Since this is
-        // functionally a null operation there is no need to notify listeners, make the buffer writable or otherwise
-        // notify the undo manager
-        for (Iterator<Map.Entry<Layer, BitSet>> i = bitLayerData.entrySet().iterator(); i.hasNext(); ) {
-            final Map.Entry<Layer, BitSet> entry = i.next();
-            if (entry.getValue().isEmpty()) {
-                i.remove();
-                cachedLayers = null;
-            }
-        }
-        layerLoop:
-        for (Iterator<Map.Entry<Layer, byte[]>> i = layerData.entrySet().iterator(); i.hasNext(); ) {
-            Map.Entry<Layer, byte[]> entry = i.next();
-            final Layer layer = entry.getKey();
-            final byte[] buffer = entry.getValue();
-            if (layer.getDataSize() == NIBBLE) {
-                final byte defaultByte = (byte) (layer.getDefaultValue() << 4 | layer.getDefaultValue());
-                for (byte bufferByte: buffer) {
-                    if (bufferByte != defaultByte) {
-                        continue layerLoop;
-                    }
-                }
-                // If we reach here all bytes were default bytes
-                i.remove();
-                cachedLayers = null;
-            } else if (layer.getDataSize() == BYTE) {
-                final byte defaultByte = (byte) layer.getDefaultValue();
-                for (byte bufferByte: buffer) {
-                    if (bufferByte != defaultByte) {
-                        continue layerLoop;
-                    }
-                }
-                // If we reach here all bytes were default bytes
-                i.remove();
-                cachedLayers = null;
-            }
-        }
-
+        prepareForSaving();
         out.defaultWriteObject();
     }
 
@@ -1529,18 +1702,19 @@ public class Tile extends InstanceKeeper implements Serializable, UndoListener, 
     protected int[] tallHeightMap;
     protected byte[] terrain;
     protected byte[] waterLevel;
-    protected short[] tallWaterLevel;
+    protected short[] tallWaterLevel; // TODO this is too small, no?
     protected Map<Layer, byte[]> layerData;
     protected Map<Layer, BitSet> bitLayerData;
     private HashSet<Seed> seeds;
     private transient List<Listener> listeners;
-    private transient boolean heightMapDirty, terrainDirty, waterLevelDirty, seedsDirty, bitLayersDirty, nonBitLayersDirty;
+    private transient volatile boolean heightMapDirty, terrainDirty, waterLevelDirty, seedsDirty, bitLayersDirty, nonBitLayersDirty;
     private transient Set<TileBuffer> readableBuffers;
     private transient Set<TileBuffer> writeableBuffers;
     private transient UndoManager undoManager;
     private transient List<Layer> cachedLayers;
-    private transient Set<Layer> dirtyLayers;
-    private transient int maxY, eventInhibitionCounter;
+    private transient volatile Set<Layer> dirtyLayers;
+    private transient int maxY;
+    private transient volatile int eventInhibitionCounter;
 
     private transient BufferKey<short[]>            HEIGHTMAP_BUFFER_KEY;
     private transient BufferKey<int[]>              TALL_HEIGHTMAP_BUFFER_KEY;

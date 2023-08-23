@@ -5,11 +5,10 @@
  */
 package org.pepsoft.worldpainter.panels;
 
+import com.google.common.collect.ImmutableSet;
 import org.pepsoft.util.IconUtils;
 import org.pepsoft.worldpainter.Dimension;
-import org.pepsoft.worldpainter.Terrain;
-import org.pepsoft.worldpainter.Tile;
-import org.pepsoft.worldpainter.WorldPainter;
+import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.biomeschemes.BiomeHelper;
 import org.pepsoft.worldpainter.biomeschemes.CustomBiomeManager;
 import org.pepsoft.worldpainter.layers.*;
@@ -30,6 +29,7 @@ import java.text.NumberFormat;
 import java.util.List;
 import java.util.*;
 
+import static org.pepsoft.worldpainter.App.INT_NUMBER_FORMAT;
 import static org.pepsoft.worldpainter.Constants.*;
 import static org.pepsoft.worldpainter.biomeschemes.Minecraft1_7Biomes.BIOME_PLAINS;
 
@@ -43,8 +43,8 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
      */
     public InfoPanel(WorldPainter view, CustomBiomeManager customBiomeManager) {
         this.view = view;
+        this.customBiomeManager = customBiomeManager;
         tableModel = new LayerTableModel();
-        biomeHelper = new BiomeHelper(view.getColourScheme(), customBiomeManager);
         heightFormatter = NumberFormat.getInstance();
         heightFormatter.setMaximumFractionDigits(3);
 
@@ -64,27 +64,36 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
         });
     }
 
+    public void setPlatform(Platform platform) {
+        biomeHelper = new BiomeHelper(view.getColourScheme(), customBiomeManager, platform);
+        updateInfo();
+    }
+
     void updateInfo() {
-        setTextIfDifferent(labelCoords, worldCoords.x + "," + worldCoords.y);
+        if (worldCoords == null) {
+            return;
+        }
         Dimension dim = view.getDimension();
         if (dim == null) {
             clearFields();
             return;
         }
+        final float scale = dim.getScale();
+        setTextIfDifferent(labelCoords, INT_NUMBER_FORMAT.format(Math.round(worldCoords.x * scale)) + ", " + INT_NUMBER_FORMAT.format(Math.round(worldCoords.y * scale)));
         Tile tile = dim.getTile(worldCoords.x >> TILE_SIZE_BITS, worldCoords.y >> TILE_SIZE_BITS);
         if (tile == null) {
             clearFields();
             return;
         }
         final int x = worldCoords.x & TILE_SIZE_MASK, y = worldCoords.y & TILE_SIZE_MASK;
-        if (tile.getBitLayerValue(NotPresent.INSTANCE, x, y)) {
+        if (tile.getBitLayerValue(NotPresent.INSTANCE, x, y) || tile.getBitLayerValue(NotPresentBlock.INSTANCE, x, y)) {
             clearFields();
             return;
         }
         fieldsClear = false;
         float height = tile.getHeight(x, y);
         setTextIfDifferent(labelHeight, heightFormatter.format(height));
-        int intHeight = (int) (height + 0.5f);
+        int intHeight = Math.round(height);
         int waterLevel = tile.getWaterLevel(x, y);
         setTextIfDifferent(labelWaterLevel, Integer.toString(waterLevel));
         if (waterLevel > intHeight) {
@@ -98,7 +107,7 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
         } else {
             slope = dim.getSlope(worldCoords.x, worldCoords.y);
         }
-        setTextIfDifferent(labelSlope, ((int) (Math.atan(slope) * 180 / Math.PI + 0.5)) + "°");
+        setTextIfDifferent(labelSlope, (int) Math.round(Math.atan(slope) * 180 / Math.PI) + "°");
         Terrain terrain = tile.getTerrain(x, y);
         if (terrain != currentTerrain) {
             labelTerrain.setText(terrain.getName());
@@ -115,8 +124,10 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
             biome = BIOME_PLAINS;
         }
         if ((automaticBiome != currentAutomaticBiome) || (biome != currentBiome)) {
-            labelBiome.setText(biomeHelper.getBiomeName(biome) + " (" + biome + ")");
-            labelBiome.setIcon(biomeHelper.getBiomeIcon(biome));
+            if (biomeHelper != null) {
+                labelBiome.setText(biomeHelper.getBiomeName(biome));
+                labelBiome.setIcon(biomeHelper.getBiomeIcon(biome));
+            }
             checkBoxAutomaticBiome.setSelected(automaticBiome);
             currentAutomaticBiome = automaticBiome;
             currentBiome = biome;
@@ -348,7 +359,7 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
                                 .addComponent(jLabel17))))
                     .addComponent(jLabel2)
                     .addGroup(layout.createSequentialGroup()
-                        .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, 39, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addComponent(jLabel6)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(jLabel9))
                     .addGroup(layout.createSequentialGroup()
@@ -397,7 +408,7 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.TRAILING)
                     .addComponent(jLabel9)
-                    .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, 16, javax.swing.GroupLayout.PREFERRED_SIZE))
+                    .addComponent(jLabel6))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(labelBiome)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -446,17 +457,17 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
     // End of variables declaration//GEN-END:variables
 
     private final WorldPainter view;
+    private final CustomBiomeManager customBiomeManager;
     private final LayerTableModel tableModel;
 //    private final Timer updateTimer;
-    private final BiomeHelper biomeHelper;
     private final NumberFormat heightFormatter;
+    private BiomeHelper biomeHelper;
     private Point worldCoords;
     private boolean fieldsClear = true, currentAutomaticBiome, active;
     private Terrain currentTerrain;
     private int currentBiome;
 
-    private static final Set<Layer> HIDDEN_LAYERS = new HashSet<>(Arrays.asList(Biome.INSTANCE, SelectionChunk.INSTANCE,
-            SelectionBlock.INSTANCE, FloodWithLava.INSTANCE, NotPresent.INSTANCE));
+    private static final Set<Layer> HIDDEN_LAYERS = ImmutableSet.<Layer>builder().addAll(SYSTEM_LAYERS).add(Biome.INSTANCE).build();
     private static final Icon ICON_BLANK = IconUtils.loadScaledIcon("org/pepsoft/worldpainter/icons/transparent.png");
     private static final Logger logger = LoggerFactory.getLogger(InfoPanel.class);
 
@@ -634,27 +645,11 @@ public class InfoPanel extends javax.swing.JPanel implements MouseMotionListener
             if (layer instanceof Biome) {
                 return biomeHelper.getBiomeName(intensity);
             } else if (layer instanceof Annotations) {
-                return org.pepsoft.minecraft.Constants.COLOUR_NAMES[intensity - ((intensity < 8) ? 1 : 0)];
+                return Annotations.getColourName(intensity);
             } else if (layer instanceof GardenCategory) {
                 return GardenCategory.getLabel(strings, intensity);
             } else {
-                switch (layer.getDataSize()) {
-                    case BIT:
-                    case BIT_PER_CHUNK:
-                        return intensity == 0 ? "off" : "on";
-                    case NIBBLE:
-                        int strength = (intensity > 0) ? ((intensity - 1) * 100  / 14 + 1): 0;
-                        if ((strength == 51) || (strength == 101)) {
-                            strength--;
-                        }
-                        return strength + "%";
-                    case BYTE:
-                        return (intensity * 100 / 255) + "%";
-                    case NONE:
-                        return "N/A";
-                    default:
-                        throw new UnsupportedOperationException();
-                }
+                return layer.getDataSize().toString(intensity);
             }
         }
 

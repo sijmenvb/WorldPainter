@@ -1,30 +1,101 @@
 package org.pepsoft.worldpainter;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
+import org.pepsoft.util.AttributeKey;
 
 import java.io.ObjectStreamException;
 import java.io.Serializable;
 import java.util.*;
 
+import static org.pepsoft.minecraft.Constants.MC_GRASS_BLOCK;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.Platform.Capability.*;
+
 /**
- * A descriptor for a WorldPainter-supported map storage format. Implements the
- * Enumeration pattern, meaning there is only ever one instance of each unique
- * platform, allowing the {@code ==} operator to be used with it.
+ * A descriptor for a WorldPainter-supported map storage format. Implements the Enumeration pattern, meaning there is
+ * only ever one instance of each unique platform, allowing the {@code ==} operator to be used with it.
  *
  * <p>Created by Pepijn on 11-12-2016.
  */
 public final class Platform implements Serializable {
-    public Platform(String id, String displayName, int minMaxHeight, int standardMaxHeight, int maxMaxHeight, int minX,
-                    int maxX, int minY, int maxY, List<GameType> supportedGameTypes,
-                    List<Generator> supportedGenerators, List<Integer> supportedDimensions,
-                    Set<Capability> capabilities) {
-        this(id, displayName, defaultMaxHeightsFromTo(minMaxHeight, maxMaxHeight), standardMaxHeight, minX, maxX, minY, maxY, 0, supportedGameTypes, supportedGenerators, supportedDimensions, capabilities);
+    /**
+     * Define a new platform which only supports a {@code minHeight} of zero. This version of the constructor
+     * auto-generates the list of {@code maxHeights} from the {@code minMaxHeight} and {@code maxMaxHeight}, instead of
+     * having to specify the list explicitly. The list will contain every power of two between {@code minMaxHeight} and
+     * {@code maxMaxHeight}.
+     *
+     * @param id                      The globally unique identifier, preferably in Java package/reverse domain name style, of the platform. This must never change.
+     * @param displayName             The name of the platform to display to the user.
+     * @param minMaxHeight            The minimum {@code maxHeight} supported by the platform.
+     * @param standardMaxHeight       The default {@code maxHeight} of the platform. The {@code maxHeight} is <em>exclusive</em>.
+     * @param maxMaxHeight            The maximum {@code maxHeight} supported by the platform.
+     * @param minX                    The lowest possible x (east-west) coordinate supported by the platform.
+     * @param maxX                    The highest possible x (east-west) coordinate supported by the platform.
+     * @param minY                    The lowest possible y (north-south) coordinate supported by the platform.
+     * @param maxY                    The highest possible y (north-south) coordinate supported by the platform.
+     * @param supportedGameTypes      The {@link GameType game types} supported by the platform.
+     * @param supportedGeneratorTypes The {@link Generator generator types} supported by the platform.
+     * @param supportedDimensions     The dimensions supported by the platform as expressed by the constants {@link Constants#DIM_NORMAL}, {@link Constants#DIM_NETHER} and {@link Constants#DIM_END}.
+     * @param capabilities            The {@link Capability capabilities} of the platform.
+     * @param attributes              Optional custom attributes of the platform. If specified there must be an even number of values, which form key-value pairs. The keys must be {@link String}s and the values must be {@link Serializable}.
+     */
+    public Platform(String id, String displayName, int minMaxHeight, int standardMaxHeight, int maxMaxHeight, int minX, int maxX,
+                    int minY, int maxY, List<GameType> supportedGameTypes,
+                    List<Generator> supportedGeneratorTypes, List<Integer> supportedDimensions,
+                    Set<Capability> capabilities, Object... attributes) {
+        this(id, displayName, defaultMaxHeightsFromTo(minMaxHeight, maxMaxHeight), standardMaxHeight, minX, maxX, minY, maxY, new int[] { 0 }, 0, supportedGameTypes, supportedGeneratorTypes, supportedDimensions, capabilities, attributes);
     }
 
+    /**
+     * Define a new platform which has a fixed {@code minHeight} other than zero.
+     *
+     * @param id                      The globally unique identifier, preferably in Java package/reverse domain name style, of the platform. This must never change.
+     * @param displayName             The name of the platform to display to the user.
+     * @param maxHeights              The list of {@code maxHeight}s to present to the user. The platform <em>may</em> support {@code maxHeight}s not in this list. The list must be in ascending order.
+     * @param standardMaxHeight       The default {@code maxHeight} of the platform. The {@code maxHeight} is <em>exclusive</em>.
+     * @param minX                    The lowest possible x (east-west) coordinate supported by the platform.
+     * @param maxX                    The highest possible x (east-west) coordinate supported by the platform.
+     * @param minY                    The lowest possible y (north-south) coordinate supported by the platform.
+     * @param maxY                    The highest possible y (north-south) coordinate supported by the platform.
+     * @param standardMinHeight       The default {@code minHeight} of the platform. The {@code minHeight} is <em>inclusive</em>.
+     * @param supportedGameTypes      The {@link GameType game types} supported by the platform.
+     * @param supportedGeneratorTypes The {@link Generator generator types} supported by the platform.
+     * @param supportedDimensions     The dimensions supported by the platform as expressed by the constants {@link Constants#DIM_NORMAL}, {@link Constants#DIM_NETHER} and {@link Constants#DIM_END}.
+     * @param capabilities            The {@link Capability capabilities} of the platform.
+     * @param attributes              Optional custom attributes of the platform. If specified there must be an even number of values, which form key-value pairs. The keys must be {@link String}s and the values must be {@link Serializable}.
+     */
     public Platform(String id, String displayName, int[] maxHeights, int standardMaxHeight, int minX, int maxX,
-                    int minY, int maxY, int minZ, List<GameType> supportedGameTypes, List<Generator> supportedGeneratorTypes,
-                    List<Integer> supportedDimensions, Set<Capability> capabilities) {
+                    int minY, int maxY, int standardMinHeight, List<GameType> supportedGameTypes,
+                    List<Generator> supportedGeneratorTypes, List<Integer> supportedDimensions,
+                    Set<Capability> capabilities, Object... attributes) {
+        this(id, displayName, maxHeights, standardMaxHeight, minX, maxX, minY, maxY, new int[] { standardMinHeight }, standardMinHeight, supportedGameTypes, supportedGeneratorTypes, supportedDimensions, capabilities, attributes);
+    }
+
+    /**
+     * Define a new platform which has variable {@code minHeight}s.
+     *
+     * @param id                      The globally unique identifier, preferably in Java package/reverse domain name style, of the platform. This must never change.
+     * @param displayName             The name of the platform to display to the user.
+     * @param maxHeights              The list of {@code maxHeight}s to present to the user. The platform <em>may</em> support {@code maxHeight}s not in this list. The list must be in ascending order.
+     * @param standardMaxHeight       The default {@code maxHeight} of the platform. The {@code maxHeight} is <em>exclusive</em>.
+     * @param minX                    The lowest possible x (east-west) coordinate supported by the platform.
+     * @param maxX                    The highest possible x (east-west) coordinate supported by the platform.
+     * @param minY                    The lowest possible y (north-south) coordinate supported by the platform.
+     * @param maxY                    The highest possible y (north-south) coordinate supported by the platform.
+     * @param minHeights              The {@code minHeight}s supported by the platform. The list must be in descending order.
+     * @param standardMinHeight       The default {@code minHeight} of the platform. The {@code minHeight} is <em>inclusive</em>.
+     * @param supportedGameTypes      The {@link GameType game types} supported by the platform.
+     * @param supportedGeneratorTypes The {@link Generator generator types} supported by the platform.
+     * @param supportedDimensions     The dimensions supported by the platform as expressed by the constants {@link Constants#DIM_NORMAL}, {@link Constants#DIM_NETHER} and {@link Constants#DIM_END}.
+     * @param capabilities            The {@link Capability capabilities} of the platform.
+     * @param attributes              Optional custom attributes of the platform. If specified there must be an even number of values, which form key-value pairs. The keys must be {@link String}s and the values must be {@link Serializable}.
+     */
+    public Platform(String id, String displayName, int[] maxHeights, int standardMaxHeight, int minX, int maxX,
+                    int minY, int maxY, int[] minHeights, int standardMinHeight, List<GameType> supportedGameTypes,
+                    List<Generator> supportedGeneratorTypes, List<Integer> supportedDimensions,
+                    Set<Capability> capabilities, Object... attributes) {
         synchronized (ALL_PLATFORMS) {
             if (ALL_PLATFORMS.containsKey(id)) {
                 throw new IllegalStateException("There is already a platform with ID " + id);
@@ -39,39 +110,96 @@ public final class Platform implements Serializable {
             this.maxX = maxX;
             this.minY = minY;
             this.maxY = maxY;
-            this.minZ = minZ;
+            this.minMinHeight = minHeights[minHeights.length - 1];
+            this.minHeights = minHeights;
+            this.minZ = standardMinHeight;
+            this.maxMinHeight = minHeights[0];
             this.supportedGameTypes = ImmutableList.copyOf(supportedGameTypes);
             this.supportedGenerators = ImmutableList.copyOf(supportedGeneratorTypes);
             this.supportedDimensions = ImmutableList.copyOf(supportedDimensions);
             this.capabilities = Sets.immutableEnumSet(capabilities);
+            if ((attributes != null) && (attributes.length > 0)) {
+                if (attributes.length % 2 != 0) {
+                    throw new IllegalArgumentException("attributes array must have even length");
+                }
+                final ImmutableMap.Builder<String, Serializable> mapBuilder = ImmutableMap.builder();
+                for (int i = 0; i < attributes.length; i += 2) {
+                    if (attributes[i] == null) {
+                        throw new NullPointerException("attributes[" + i + "]");
+                    } else if (attributes[i + 1] == null) {
+                        throw new NullPointerException("attributes[" + (i + 1) + "]");
+                    }
+                    mapBuilder.put(((AttributeKey<?>) attributes[i]).key, (Serializable) attributes[i + 1]);
+                }
+                this.attributes = mapBuilder.build();
+            } else {
+                this.attributes = null;
+            }
             ALL_PLATFORMS.put(id, this);
         }
     }
 
+    // Kept for backwards compatibility with existing plugins
+    @Deprecated
+    public Platform(String id, String displayName, int minMaxHeight, int standardMaxHeight, int maxMaxHeight, int minX,
+                    int maxX, int minY, int maxY, List<GameType> supportedGameTypes,
+                    List<Generator> supportedGenerators, List<Integer> supportedDimensions,
+                    Set<Capability> capabilities) {
+        this(id, displayName, defaultMaxHeightsFromTo(minMaxHeight, maxMaxHeight), standardMaxHeight, minX, maxX, minY, maxY, new int[] { 0 }, 0, supportedGameTypes, supportedGenerators, supportedDimensions, capabilities, (Object[]) null);
+    }
+
+    // Kept for backwards compatibility with existing plugins
+    @Deprecated
+    public Platform(String id, String displayName, int[] maxHeights, int standardMaxHeight, int minX, int maxX,
+                    int minY, int maxY, int standardMinHeight, List<GameType> supportedGameTypes, List<Generator> supportedGeneratorTypes,
+                    List<Integer> supportedDimensions, Set<Capability> capabilities) {
+        this(id, displayName, maxHeights, standardMaxHeight, minX, maxX, minY, maxY, new int[] { standardMinHeight }, standardMinHeight, supportedGameTypes, supportedGeneratorTypes, supportedDimensions, capabilities, (Object[]) null);
+    }
+
     /**
-     * Determines whether a world could be retargeted to this platform without
-     * requiring any changes or edits.
+     * Determines whether a world could be retargeted to this platform without requiring any changes or edits.
      * 
      * @param world The world to check for compatibility.
-     * @return {@code true} if the world could be trivially retargeted to
-     * this platform.
+     * @return {@code null} if the world could be trivially retargeted to this platform, or a short description of the
+     * reason if it cannot.
      */
-    public boolean isCompatible(World2 world) {
-        if (world.getPlatform().minZ < minZ) {
-            return false;
+    public String isCompatible(World2 world) {
+        if (world.getMinHeight() < minMinHeight) {
+            return "World lower build limit (" + world.getMinHeight() + ") is lower than the minimum lower build limit supported by map format (" + minMinHeight + ")";
+        } else if (world.getMinHeight() > maxMinHeight) {
+            return "World lower build limit (" + world.getMinHeight() + ") is higher than the maximum lower build limit supported by map format (" + maxMinHeight + ")";
         }
-        if ((world.getMaxHeight() < minMaxHeight)
-                || (world.getMaxHeight() > maxMaxHeight)) {
-            return false;
+        if (world.getMaxHeight() < minMaxHeight) {
+            return "World upper build limit (" + world.getMaxHeight() + ") is lower than the minimum upper build limit supported by map format (" + minMaxHeight + ")";
+        } else if (world.getMaxHeight() > maxMaxHeight) {
+            return "World upper build limit (" + world.getMaxHeight() + ") is higher than the maximum upper build limit supported by map format (" + maxMaxHeight + ")";
         }
         for (Dimension dimension: world.getDimensions()) {
-            if ((dimension.getDim() >= 0) && (! supportedDimensions.contains(dimension.getDim()))) {
-                return false;
+            final Dimension.Anchor anchor = dimension.getAnchor();
+            if ((anchor.role == DETAIL) && (! anchor.invert) && (! supportedDimensions.contains(anchor.dim))) {
+                return "Map format does not support dimension " + anchor.getDefaultName();
             }
         }
-        return true;
+        return null;
     }
-    
+
+    /**
+     * Convenience method for determining whether the platform supports <em>any</em> type of biomes
+     * ({@link #capabilities} contains {@link Capability#BIOMES}, {@link Capability#BIOMES_3D} or
+     * {@link Capability#NAMED_BIOMES}).
+     */
+    public boolean supportsBiomes() {
+        return capabilities.contains(BIOMES) || capabilities.contains(BIOMES_3D) || capabilities.contains(NAMED_BIOMES);
+    }
+
+    /**
+     * Convenience method for getting an attribute value. If the attribute is not set then {@code key.defaultValue} is
+     * returned.
+     */
+    public <T extends Serializable> T getAttribute(AttributeKey<T> key) {
+        return (attributes != null) ? key.get(attributes) : key.defaultValue;
+    }
+
     // Object
 
     @Override
@@ -115,23 +243,17 @@ public final class Platform implements Serializable {
     public final String displayName;
 
     /**
-     * Get the lowest map height supported by this platform.
-     *
-     * @return The lowest map height supported by this platform.
+     * The lowest upper build limit supported by this platform.
      */
     public final int minMaxHeight;
 
     /**
-     * Get the default height of maps for this platform.
-     *
-     * @return The default height of maps for this platform.
+     * The default upper build limit of maps for this platform.
      */
     public final int standardMaxHeight;
 
     /**
-     * Get the highest map height supported by this platform.
-     *
-     * @return The highest map height supported by this platform.
+     * The highest upper build limit supported by this platform.
      */
     public final int maxMaxHeight;
 
@@ -182,9 +304,41 @@ public final class Platform implements Serializable {
     public final int[] maxHeights;
 
     /**
-     * The lowest possible Z coordinate (height; in blocks) for this platform.
+     * The default lower build limit of maps for this platform.
      */
     public final int minZ;
+
+    /**
+     * Additional custom defined attributes that do not apply to all platforms. May be {@code null}.
+     */
+    public final Map<String, Serializable> attributes;
+
+    /**
+     * The lowest lower build limit of maps for this platform.
+     */
+    public final int minMinHeight;
+
+    /**
+     * The highest lower build limit of maps for this platform.
+     */
+    public final int maxMinHeight;
+
+    /**
+     * The list of minHeights to present to the user. The plugin <em>may</em> support other minHeights, or may not, but
+     * if it is in this list it must be supported. The list must be in descending order.
+     */
+    public final int[] minHeights;
+
+    /**
+     * The name of the "grass block" block type for the platform. Default value: {@code minecraft:grass_block}.
+     */
+    public static final AttributeKey<String> ATTRIBUTE_GRASS_BLOCK_NAME = new AttributeKey<>("blocks.grass_block.name", MC_GRASS_BLOCK);
+
+    /**
+     * The opacity of a water block. Default value: 1. A value of 1 also implies that the top layer of water has full
+     * daylight lighting.
+     */
+    public static final AttributeKey<Integer> ATTRIBUTE_WATER_OPACITY = new AttributeKey<>("blocks.water.opacity", 1);
 
     private static final Map<String, Platform> ALL_PLATFORMS = new HashMap<>();
 
@@ -200,10 +354,13 @@ public final class Platform implements Serializable {
         return maxHeights.stream().mapToInt(Integer::intValue).toArray();
     }
 
+    // TODO capabilities can be seen as attributes of type boolean; should we just migrate them to that?
     public enum Capability {
         /**
          * Has the concept of a 2D, per-column biome, identified by a number. This is mutually exclusive with
-         * {@link #BIOMES_3D} and {@link #NAMED_BIOMES}.
+         * {@link #BIOMES_3D} and {@link #NAMED_BIOMES}. Note that the biomes may still be stored as 4x4x4 3D biomes (as
+         * Minecraft 1.15 does). This will be determined per chunk based on the chunk capabilities (and can therefore
+         * vary by chunk). But in-game the biome will still be the same throughout every vertical column.
          */
         BIOMES,
 
@@ -251,6 +408,28 @@ public final class Platform implements Serializable {
          * Has the concept of named, namespaced biomes, stored per 4x4x4 cube of blocks (like {@link #BIOMES_3D},
          * identified by a string. This is mutually exclusive with {@link #BIOMES} and {@link #BIOMES_3D}.
          */
-        NAMED_BIOMES
+        NAMED_BIOMES,
+
+        /**
+         * Supports generator settings per dimension. Platforms without this capability only support generator settings
+         * for {@link Constants#DIM_NORMAL DIM_NORMAL}.
+         */
+        GENERATOR_PER_DIMENSION,
+
+        /**
+         * {@code *_leaves} blocks have a {@code distance} property from 1 to 7, indicating the distance from the tree
+         * trunk, where 7 means it is too far away and will decay.
+         */
+        LEAF_DISTANCES,
+
+        /**
+         * Leaf blocks have a {@code waterlogged} property and can therefore be placed in water.
+         */
+        WATERLOGGED_LEAVES,
+
+        /**
+         * Supports Minecraft-style data packs.
+         */
+        DATA_PACKS
     }
 }

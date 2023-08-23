@@ -21,11 +21,15 @@ import javax.vecmath.Point3i;
 import java.awt.*;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 
-import static org.pepsoft.minecraft.Constants.*;
+import static java.util.Collections.singleton;
+import static org.pepsoft.minecraft.Constants.MC_FARMLAND;
+import static org.pepsoft.minecraft.Constants.MC_LAVA;
 import static org.pepsoft.minecraft.Material.*;
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE;
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE_BITS;
+import static org.pepsoft.worldpainter.exporting.SecondPassLayerExporter.Stage.ADD_FEATURES;
 import static org.pepsoft.worldpainter.layers.plants.Category.*;
 
 /**
@@ -33,18 +37,36 @@ import static org.pepsoft.worldpainter.layers.plants.Category.*;
  * @author pepijn
  */
 public class PlantLayerExporter extends WPObjectExporter<PlantLayer> implements SecondPassLayerExporter, IncidentalLayerExporter {
-    public PlantLayerExporter(PlantLayer layer) {
-        super(layer);
+    public PlantLayerExporter(Dimension dimension, Platform platform, PlantLayer layer) {
+        super(dimension, platform, null, layer);
+        final long total = layer.getConfiguredPlants().values().stream().mapToLong(setting -> setting.occurrence).sum();
+        if (total <= 0L) {
+            // Needs to be supported for layer previews
+            empty = true;
+        } else if (total > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Total occurrence of plants configured on PlantLayer \"" + layer + "\" higher than " + Integer.MAX_VALUE);
+        } else {
+            empty = false;
+        }
     }
 
     @Override
-    public List<Fixup> render(Dimension dimension, Rectangle area, Rectangle exportedArea, MinecraftWorld minecraftWorld, Platform platform) {
+    public Set<Stage> getStages() {
+        return singleton(ADD_FEATURES);
+    }
+
+    @Override
+    public List<Fixup> addFeatures(Rectangle area, Rectangle exportedArea, MinecraftWorld minecraftWorld) {
+        if (empty) {
+            return null;
+        }
         final long seed = dimension.getSeed();
         final int tileX1 = exportedArea.x >> TILE_SIZE_BITS, tileX2 = (exportedArea.x + exportedArea.width - 1) >> TILE_SIZE_BITS;
         final int tileY1 = exportedArea.y >> TILE_SIZE_BITS, tileY2 = (exportedArea.y + exportedArea.height - 1) >> TILE_SIZE_BITS;
-        final int maxY = minecraftWorld.getMaxHeight() - 1;
+        final int minHeight = minecraftWorld.getMinHeight(), maxY = minecraftWorld.getMaxHeight() - 1;
         final boolean generateTilledDirt = layer.isGenerateFarmland();
         final boolean blockRulesEnforced = ! "false".equalsIgnoreCase(System.getProperty("org.pepsoft.worldpainter.enforceBlockRules"));
+        final boolean onlyOnValidBlocks = layer.isOnlyOnValidBlocks();
         final Bo2ObjectProvider objectProvider = layer.getObjectProvider(platform);
         for (int tileX = tileX1; tileX <= tileX2; tileX++) {
             for (int tileY = tileY1; tileY <= tileY2; tileY++) {
@@ -60,16 +82,35 @@ public class PlantLayerExporter extends WPObjectExporter<PlantLayer> implements 
                         if (tile.getBitLayerValue(layer, x, y)) {
                             // Possibly place a plant
                             final int height = tile.getIntHeight(x, y);
-                            if (height < maxY) {
+                            if ((height >= minHeight) && (height < maxY)) {
                                 final int worldX = (tileX << TILE_SIZE_BITS) | x, worldY = (tileY << TILE_SIZE_BITS) | y;
                                 Plant plant = (Plant) objectProvider.getObject();
-                                Category category = plant.getCategory();
-                                if (category == FLOATING_PLANTS) {
-                                    if ((! blockRulesEnforced) || plant.isValidFoundation(minecraftWorld, worldX, worldY, height)) {
-                                        possiblyRenderFloatingPlant(minecraftWorld, dimension, plant, worldX, worldY, height + 1);
+                                Category category = plant.isValidFoundation(minecraftWorld, worldX, worldY, height, onlyOnValidBlocks);
+                                if (category == null) {
+                                    // The plant disagrees that it can be planted here
+                                    if (! blockRulesEnforced) {
+                                        renderObject(minecraftWorld, dimension, platform, plant, worldX, worldY, height + 1, false);
                                     }
-                                } else if (category == WATER_PLANTS) {
-                                    if ((! blockRulesEnforced) || plant.isValidFoundation(minecraftWorld, worldX, worldY, height)) {
+                                    continue;
+                                } else if (category != FLOATING_PLANTS) {
+                                    // There might already be a plant here, placed by a Terrain or Bo2Layer. Assume the
+                                    // PlantLayer should take priority and remove the existing plant
+                                    for (int dz = height + 1; dz <= minecraftWorld.getHighestNonAirBlock(worldX, worldY); dz++) {
+                                        if (minecraftWorld.getMaterialAt(worldX, worldY, dz).vegetation) {
+                                            clearBlock(minecraftWorld, worldX, worldY, dz);
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (category == FLOATING_PLANTS) {
+                                    possiblyRenderFloatingPlant(minecraftWorld, dimension, plant, worldX, worldY, height + 1);
+                                } else if ((category == WATER_PLANTS) || (category == HANGING_WATER_PLANTS) || (category == DRIPLEAF)) {
+                                    if (plant.getMaterial(0, 0, 0).hasProperty(WATERLOGGED)) {
+                                        // Take this as a signal that the plant can stick out of the water and does not
+                                        // have to be constrained to the water surface
+                                        renderObject(minecraftWorld, dimension, platform, plant, worldX, worldY, height + 1, false);
+                                    } else {
                                         int waterLevel = tile.getWaterLevel(x, y);
                                         if (waterLevel > height) {
                                             // Constrain the height to ensure the plant does not stick out of the water:
@@ -85,29 +126,19 @@ public class PlantLayerExporter extends WPObjectExporter<PlantLayer> implements 
                                                     }
                                                 }
                                             }
-                                            renderObject(minecraftWorld, dimension, plant, worldX, worldY, height + 1, false);
+                                            renderObject(minecraftWorld, dimension, platform, plant, worldX, worldY, height + 1, false);
                                         }
+                                    }
+                                } else if (category == CROPS) {
+                                    if (minecraftWorld.getMaterialAt(worldX, worldY, height).isNamed(MC_FARMLAND)) {
+                                        renderObject(minecraftWorld, dimension, platform, plant, worldX, worldY, height + 1, false);
+                                    } else if (generateTilledDirt) {
+                                        minecraftWorld.setMaterialAt(worldX, worldY, height, TILLED_DIRT);
+                                        renderObject(minecraftWorld, dimension, platform, plant, worldX, worldY, height + 1, false);
                                     }
                                 } else {
-                                    if (tile.getIntHeight(x, y) >= tile.getWaterLevel(x, y)) {
-                                        if (! blockRulesEnforced) {
-                                            renderObject(minecraftWorld, dimension, plant, worldX, worldY, height + 1, false);
-                                            if (generateTilledDirt && (category == CROPS)) {
-                                                if (minecraftWorld.getMaterialAt(worldX, worldY, height).isNamedOneOf(MC_GRASS_BLOCK, MC_DIRT, MC_COARSE_DIRT, MC_PODZOL)) {
-                                                    minecraftWorld.setMaterialAt(worldX, worldY, height, TILLED_DIRT);
-                                                }
-                                            }
-                                        } else {
-                                            if (plant.isValidFoundation(minecraftWorld, worldX, worldY, height)) {
-                                                renderObject(minecraftWorld, dimension, plant, worldX, worldY, height + 1, false);
-                                            } else if (generateTilledDirt && (category == CROPS)) {
-                                                if (minecraftWorld.getMaterialAt(worldX, worldY, height).isNamedOneOf(MC_GRASS_BLOCK, MC_DIRT, MC_COARSE_DIRT, MC_PODZOL)) {
-                                                    minecraftWorld.setMaterialAt(worldX, worldY, height, TILLED_DIRT);
-                                                    renderObject(minecraftWorld, dimension, plant, worldX, worldY, height + 1, false);
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // TODO shrink the plant to fit if necessary
+                                    renderObject(minecraftWorld, dimension, platform, plant, worldX, worldY, height + 1, false);
                                 }
                             }
                         }
@@ -119,33 +150,33 @@ public class PlantLayerExporter extends WPObjectExporter<PlantLayer> implements 
     }
 
     @Override
-    public Fixup apply(Dimension dimension, Point3i location, int intensity, Rectangle exportedArea, MinecraftWorld minecraftWorld, Platform platform) {
+    public Fixup apply(Point3i location, int intensity, Rectangle exportedArea, MinecraftWorld minecraftWorld) {
+        if (empty) {
+            return null;
+        }
         final Random random = incidentalRandomRef.get();
-        final long seed = dimension.getSeed() ^ ((long) location.x << 40) ^ ((long) location.y << 20) ^ (location.z);
+        final long seed = dimension.getSeed() + location.x + location.y * 4099L + location.z * 65537L + layer.hashCode();
         random.setSeed(seed);
         if ((intensity >= 100) || ((intensity > 0) && (random.nextInt(100) < intensity))) {
             // Place plant
             final Bo2ObjectProvider objectProvider = layer.getObjectProvider(platform);
-            objectProvider.setSeed(seed);
+            objectProvider.setSeed(seed + 1);
             final Plant plant = (Plant) objectProvider.getObject();
-            final Material existingMaterial = minecraftWorld.getMaterialAt(location.x, location.y, location.z);
-            Category category = plant.getCategory();
-            if ((location.z < (minecraftWorld.getMaxHeight() - 1))
-                    && ((category == FLOATING_PLANTS)
-                        ? existingMaterial.isNamed(MC_WATER)
-                        : (existingMaterial == AIR))) {
-                // TODOMC13 support water plants
-                if (plant.isValidFoundation(minecraftWorld, location.x, location.y, location.z - 1)) {
-                    if (category == FLOATING_PLANTS) {
-                        possiblyRenderFloatingPlant(minecraftWorld, dimension, plant, location.x, location.y, location.z + 1);
-                    } else {
-                        renderObject(minecraftWorld, dimension, plant, location.x, location.y, location.z, false);
+            Category category = plant.isValidFoundation(minecraftWorld, location.x, location.y, location.z - 1, layer.isOnlyOnValidBlocks());
+            if ((category != null)
+                    && (location.z < (minecraftWorld.getMaxHeight() - 1))) {
+                if (category == FLOATING_PLANTS) {
+                    possiblyRenderFloatingPlant(minecraftWorld, dimension, plant, location.x, location.y, location.z + 1);
+                } else if (category == CROPS) {
+                    if (minecraftWorld.getMaterialAt(location.x, location.y, location.z - 1).isNamed(MC_FARMLAND)) {
+                        renderObject(minecraftWorld, dimension, platform, plant, location.x, location.y, location.z, false);
+                    } else if (layer.isGenerateFarmland()) {
+                        minecraftWorld.setMaterialAt(location.x, location.y, location.z - 1, TILLED_DIRT);
+                        renderObject(minecraftWorld, dimension, platform, plant, location.x, location.y, location.z, false);
                     }
-                } else if (layer.isGenerateFarmland()
-                        && (category == CROPS)
-                        && minecraftWorld.getMaterialAt(location.x, location.y, location.z - 1).isNamedOneOf(MC_GRASS_BLOCK, MC_DIRT, MC_COARSE_DIRT, MC_PODZOL)) {
-                    minecraftWorld.setMaterialAt(location.x, location.y, location.z - 1, TILLED_DIRT);
-                    renderObject(minecraftWorld, dimension, plant, location.x, location.y, location.z, false);
+                } else {
+                    // TODO shrink the plant to fit if necessary
+                    renderObject(minecraftWorld, dimension, platform, plant, location.x, location.y, location.z, false);
                 }
             }
         }
@@ -158,11 +189,19 @@ public class PlantLayerExporter extends WPObjectExporter<PlantLayer> implements 
         do {
             z++;
             existingMaterial = world.getMaterialAt(x, y, z);
-        } while ((z < maxHeight) && existingMaterial.isNamed(MC_WATER));
+        } while ((z < maxHeight) && existingMaterial.containsWater());
         if ((z < maxHeight)
                 && existingMaterial.veryInsubstantial
                 && (! existingMaterial.isNamed(MC_LAVA))) {
-            renderObject(world, dimension, plant, x, y, z, false);
+            renderObject(world, dimension, platform, plant, x, y, z, false);
+        }
+    }
+
+    private static void clearBlock(MinecraftWorld minecraftWorld, int x, int y, int z) {
+        if (minecraftWorld.getMaterialAt(x, y, z).containsWater()) {
+            minecraftWorld.setMaterialAt(x, y, z, STATIONARY_WATER);
+        } else {
+            minecraftWorld.setMaterialAt(x, y, z, AIR);
         }
     }
 
@@ -172,6 +211,7 @@ public class PlantLayerExporter extends WPObjectExporter<PlantLayer> implements 
             return new Random();
         }
     };
+    private final boolean empty;
 
     private static final Material TILLED_DIRT = FARMLAND.withProperty(MOISTURE, 4);
 }

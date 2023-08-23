@@ -25,7 +25,7 @@ public class RaiseMountain extends RadiusOperation {
         super("Raise Mountain", "Raises a mountain out of the ground", view, radiusControl, mapDragControl, 100, "operation.raiseMountain", "mountain");
         options = new TerrainShapingOptions<>();
         options.setApplyTheme(true); // This has historically been the default for this operation
-        optionsPanel = new TerrainShapingOptionsPanel(options);
+        optionsPanel = new TerrainShapingOptionsPanel("Mountain", "<ul><li>Left-click to raise a mountain in the shape of the brush and its base at bedrock<li>Right-click to dig a hole in the shape of the brush and its base at build height</ul>", options);
     }
 
     @Override
@@ -35,24 +35,27 @@ public class RaiseMountain extends RadiusOperation {
 
     @Override
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
-        Dimension dimension = getDimension();
-        float adjustment = (float) Math.pow(getLevel() * dynamicLevel * 2, 2.0);
-        float peakHeight = dimension.getHeightAt(centreX + peakDX, centreY + peakDY) + (inverse ? -adjustment : adjustment);
-        if (peakHeight < 0.0f) {
-            peakHeight = 0.0f;
-        } else if (peakHeight > (dimension.getMaxHeight() - 1)) {
-            peakHeight = dimension.getMaxHeight() - 1;
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
+        final float adjustment = (float) Math.pow(getLevel() * dynamicLevel * 2, 2.0);
+        final int minZ = dimension.getMinHeight(), maxRange = dimension.getMaxHeight() - 1 - minZ;
+        float peakHeight = dimension.getHeightAt(centreX + peakDX, centreY + peakDY) - minZ + (inverse ? -adjustment : adjustment);
+        if (peakHeight < 0) {
+            peakHeight = 0;
+        } else if (peakHeight > maxRange) {
+            peakHeight = maxRange;
         }
         dimension.setEventsInhibited(true);
         try {
-            int maxZ = dimension.getMaxHeight() - 1;
-            int radius = getEffectiveRadius();
-            long seed = dimension.getSeed();
-            boolean applyTheme = options.isApplyTheme();
+            final int radius = getEffectiveRadius();
+            final boolean applyTheme = options.isApplyTheme();
             for (int x = centreX - radius; x <= centreX + radius; x++) {
                 for (int y = centreY - radius; y <= centreY + radius; y++) {
-                    float currentHeight = dimension.getHeightAt(x, y);
-                    float targetHeight = getTargetHeight(seed, maxZ, centreX, centreY, x, y, peakHeight, inverse);
+                    final float currentHeight = dimension.getHeightAt(x, y);
+                    final float targetHeight = getTargetHeight(minZ, maxRange, centreX, centreY, x, y, peakHeight, inverse);
                     if (inverse ? (targetHeight < currentHeight) : (targetHeight > currentHeight)) {
 //                        float strength = calcStrength(centerX, centerY, x, y);
 //                        float newHeight = strength * targetHeight  + (1f - strength) * currentHeight;
@@ -137,11 +140,15 @@ public class RaiseMountain extends RadiusOperation {
         }
 //        System.out.println("Peak: " + highestStrength + " @ " + peakDX + ", " + peakDY);
     }
-    
-    private float getTargetHeight(long seed, int maxZ, int centerX, int centerY, int x, int y, float peakHeight, boolean undo) {
-        return undo
-            ? Math.max(maxZ - (maxZ - peakHeight) * peakFactor * getNoisyStrength(x, y, getBrush().getFullStrength(x - centerX, y - centerY)), 0)
-            : Math.min(peakHeight * peakFactor * getNoisyStrength(x, y, getBrush().getFullStrength(x - centerX, y - centerY)), maxZ);
+
+    /**
+     * Calculate the target height for the mountain at a particular location. Note that {@code peakHeight} is the
+     * absolute height above bedrock (not above z == 0) of the peak.
+     */
+    private float getTargetHeight(int minZ, int maxRange, int centerX, int centerY, int x, int y, float peakHeight, boolean undo) {
+        return (undo
+            ? Math.max(maxRange - (maxRange - peakHeight) * peakFactor * getNoisyStrength(x, y, getBrush().getFullStrength(x - centerX, y - centerY)), 0)
+            : Math.min(peakHeight * peakFactor * getNoisyStrength(x, y, getBrush().getFullStrength(x - centerX, y - centerY)), maxRange)) + minZ;
     }
     
     private float getNoisyStrength(int x, int y, float strength) {

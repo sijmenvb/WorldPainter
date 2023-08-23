@@ -14,9 +14,15 @@ import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 
 import java.awt.*;
 import java.beans.PropertyChangeListener;
-import java.io.File;
+import java.io.NotSerializableException;
+import java.io.ObjectOutputStream;
+import java.lang.ref.Reference;
+import java.lang.ref.SoftReference;
 import java.util.List;
 import java.util.*;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * A read-only implementation of {@link Dimension} which wraps another
@@ -31,9 +37,9 @@ import java.util.*;
  *
  * @author pepijn
  */
-public abstract class RODelegatingDimension extends Dimension {
+public abstract class RODelegatingDimension<T extends Tile> extends Dimension {
     public RODelegatingDimension(Dimension dimension) {
-        super(dimension.getWorld(), dimension.getMinecraftSeed(), dimension.getTileFactory(), dimension.getDim(), dimension.getMinHeight(), dimension.getMaxHeight());
+        super(dimension.getWorld(), dimension.getName(), dimension.getMinecraftSeed(), dimension.getTileFactory(), dimension.getAnchor());
         this.dimension = dimension;
     }
 
@@ -43,8 +49,8 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public int getDim() {
-        return dimension.getDim();
+    public Anchor getAnchor() {
+        return dimension.getAnchor();
     }
 
     @Override
@@ -88,18 +94,13 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public boolean isDarkLevel() {
-        return dimension.isDarkLevel();
-    }
-
-    @Override
-    public boolean isBedrockWall() {
-        return dimension.isBedrockWall();
-    }
-
-    @Override
     public TileFactory getTileFactory() {
         return dimension.getTileFactory();
+    }
+
+    @Override
+    public boolean isTilePresent(int x, int y) {
+        return getTile(x, y) != null;
     }
 
     @Override
@@ -119,7 +120,7 @@ public abstract class RODelegatingDimension extends Dimension {
 
     @Override
     public int getIntHeightAt(int x, int y) {
-        return getIntHeightAt(x, y, -1);
+        return getIntHeightAt(x, y, Integer.MIN_VALUE);
     }
 
     @Override
@@ -129,7 +130,7 @@ public abstract class RODelegatingDimension extends Dimension {
     
     @Override
     public int getIntHeightAt(Point coords) {
-        return getIntHeightAt(coords.x, coords.y, -1);
+        return getIntHeightAt(coords.x, coords.y, Integer.MIN_VALUE);
     }
 
     @Override
@@ -153,12 +154,12 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setRawHeightAt(int x, int y, int rawHeight) {
+    public final void setRawHeightAt(int x, int y, int rawHeight) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setRawHeightAt(Point coords, int rawHeight) {
+    public final void setRawHeightAt(Point coords, int rawHeight) {
         throw new UnsupportedOperationException();
     }
 
@@ -179,7 +180,7 @@ public abstract class RODelegatingDimension extends Dimension {
 
     @Override
     public int getWaterLevelAt(Point coords) {
-        return dimension.getWaterLevelAt(coords);
+        return getWaterLevelAt(coords.x, coords.y);
     }
 
     @Override
@@ -198,17 +199,12 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public int getBitLayerCount(Layer layer, int x, int y, int r) {
-        return dimension.getBitLayerCount(layer, x, y, r);
-    }
-
-    @Override
     public float getDistanceToEdge(Layer layer, int x, int y, float maxDistance) {
         return dimension.getDistanceToEdge(layer, x, y, maxDistance);
     }
 
     @Override
-    public void clearLayerData(Layer layer) {
+    public final void clearLayerData(Layer layer) {
         throw new UnsupportedOperationException();
     }
 
@@ -218,52 +214,17 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public File getOverlay() {
-        return dimension.getOverlay();
+    public List<Overlay> getOverlays() {
+        return dimension.getOverlays();
     }
 
     @Override
-    public void setOverlay(File overlay) {
+    public int addOverlay(Overlay overlay) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public int getOverlayOffsetX() {
-        return dimension.getOverlayOffsetX();
-    }
-
-    @Override
-    public void setOverlayOffsetX(int overlayOffsetX) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public int getOverlayOffsetY() {
-        return dimension.getOverlayOffsetY();
-    }
-
-    @Override
-    public void setOverlayOffsetY(int overlayOffsetY) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public float getOverlayScale() {
-        return dimension.getOverlayScale();
-    }
-
-    @Override
-    public void setOverlayScale(float overlayScale) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public float getOverlayTransparency() {
-        return dimension.getOverlayTransparency();
-    }
-
-    @Override
-    public void setOverlayTransparency(float overlayTransparency) {
+    public void removeOverlay(int index) {
         throw new UnsupportedOperationException();
     }
 
@@ -273,7 +234,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setGridEnabled(boolean gridEnabled) {
+    public final void setGridEnabled(boolean gridEnabled) {
         throw new UnsupportedOperationException();
     }
 
@@ -283,17 +244,17 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setGridSize(int gridSize) {
+    public final void setGridSize(int gridSize) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public boolean isOverlayEnabled() {
-        return dimension.isOverlayEnabled();
+    public boolean isOverlaysEnabled() {
+        return dimension.isOverlaysEnabled();
     }
 
     @Override
-    public void setOverlayEnabled(boolean overlayEnabled) {
+    public final void setOverlaysEnabled(boolean overlaysEnabled) {
         throw new UnsupportedOperationException();
     }
 
@@ -303,7 +264,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setMaxHeight(int maxHeight) {
+    public final void setMaxHeight(int maxHeight) {
         throw new UnsupportedOperationException();
     }
 
@@ -313,7 +274,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setContourSeparation(int contourSeparation) {
+    public final void setContourSeparation(int contourSeparation) {
         throw new UnsupportedOperationException();
     }
 
@@ -323,7 +284,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setContoursEnabled(boolean contoursEnabled) {
+    public final void setContoursEnabled(boolean contoursEnabled) {
         throw new UnsupportedOperationException();
     }
 
@@ -333,7 +294,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setTopLayerMinDepth(int topLayerMinDepth) {
+    public final void setTopLayerMinDepth(int topLayerMinDepth) {
         throw new UnsupportedOperationException();
     }
 
@@ -343,7 +304,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setTopLayerVariation(int topLayerVariation) {
+    public final void setTopLayerVariation(int topLayerVariation) {
         throw new UnsupportedOperationException();
     }
 
@@ -353,7 +314,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setBottomless(boolean bottomless) {
+    public final void setBottomless(boolean bottomless) {
         throw new UnsupportedOperationException();
     }
 
@@ -363,7 +324,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setLastViewPosition(Point lastViewPosition) {
+    public final void setLastViewPosition(Point lastViewPosition) {
         throw new UnsupportedOperationException();
     }
 
@@ -373,7 +334,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void setCustomBiomes(List<CustomBiome> customBiomes) {
+    public final void setCustomBiomes(List<CustomBiome> customBiomes) {
         throw new UnsupportedOperationException();
     }
 
@@ -398,17 +359,37 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public boolean undoChanges() {
+    public WallType getWallType() {
+        return dimension.getWallType();
+    }
+
+    @Override
+    public final void setWallType(WallType wallType) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void clearUndo() {
+    public WallType getRoofType() {
+        return dimension.getRoofType();
+    }
+
+    @Override
+    public final void setRoofType(WallType roofType) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void clearRedo() {
+    public final boolean undoChanges() {
+        return false;
+    }
+
+    @Override
+    public final void clearUndo() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public final void clearRedo() {
         throw new UnsupportedOperationException();
     }
 
@@ -423,7 +404,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    void ensureAllReadable() {
+    final void ensureAllReadable() {
         throw new UnsupportedOperationException();
     }
 
@@ -443,8 +424,8 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void transform(CoordinateTransform transform, ProgressReceiver progressReceiver) throws OperationCancelled {
-        super.transform(transform, progressReceiver);
+    public final void transform(CoordinateTransform transform, ProgressReceiver progressReceiver) throws OperationCancelled {
+        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -498,22 +479,22 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void addTile(Tile tile) {
+    public final void addTile(Tile tile) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void applyTheme(int x, int y) {
+    public final void applyTheme(int x, int y) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void applyTheme(Point coords) {
+    public final void applyTheme(Point coords) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void unregister() {
+    public void unregisterUndoManager() {
         // Do nothing
     }
 
@@ -523,7 +504,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void register(UndoManager undoManager) {
+    public void registerUndoManager(UndoManager undoManager) {
         // Do nothing
     }
 
@@ -549,12 +530,12 @@ public abstract class RODelegatingDimension extends Dimension {
 
     @Override
     public ExporterSettings getLayerSettings(Layer layer) {
-        throw new UnsupportedOperationException();
+        return dimension.getLayerSettings(layer);
     }
 
     @Override
     public Map<Layer, ExporterSettings> getAllLayerSettings() {
-        throw new UnsupportedOperationException();
+        return dimension.getAllLayerSettings();
     }
 
     @Override
@@ -568,7 +549,7 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public synchronized int getFloodedCount(int x, int y, int r, boolean lava) {
+    public int getFloodedCount(int x, int y, int r, boolean lava) {
         return dimension.getFloodedCount(x, y, r, lava);
     }
 
@@ -578,39 +559,81 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public Tile getTile(int x, int y) {
+    public final T getTile(int x, int y) {
         return getTile(new Point(x, y));
     }
 
+    /**
+     * If any transformations (scaling and/or translating) needs to be applied to the underlying tiles, this method
+     * and {@link #getTiles} must be overridden. These implementations assume a 1:1 coordinate mapping.
+     */
     @Override
-    public Tile getTile(Point coords) {
-        // In theory this is not correct, since the dimension might have gained
-        // or lost tiles in the mean time. However the expected usage pattern
-        // of the functionality is such that that should not happen in practice,
-        // and creating tile snapshots of all tiles when the dimension snapshot
-        // is created would be a performance hit
-        RODelegatingTile cachedTile = tileCache.get(coords);
-        if (cachedTile == null) {
-            Tile tile = dimension.getTile(coords);
-            if (tile != null) {
-                cachedTile = new RODelegatingTile(tile);
-                tileCache.put(coords, cachedTile);
+    public T getTile(Point coords) {
+        readLock.lock();
+        try {
+            // In theory this is not correct, since the dimension might have gained or lost tiles in the meantime. However,
+            // the expected usage pattern of the functionality is such that that should not happen in practice, and creating
+            // tile snapshots of all tiles when the dimension snapshot is created would be a performance hit
+            final Reference<T> cachedTileRef = tileCache.get(coords);
+            if (cachedTileRef == NO_TILE_PRESENT) {
+                return null;
             }
+            T cachedTile = (cachedTileRef != null) ? cachedTileRef.get() : null;
+            if (cachedTile == null) {
+                readLock.unlock();
+                writeLock.lock();
+                try {
+                    final Tile tile = doGetTile(coords);
+                    if (tile != null) {
+                        cachedTile = wrapTile(tile);
+                        tileCache.put(coords, new SoftReference<>(cachedTile));
+                    }
+                    readLock.lock();
+                } finally {
+                    writeLock.unlock();
+                }
+            }
+            return cachedTile;
+        } finally {
+            readLock.unlock();
         }
-        return cachedTile;
     }
 
+    /**
+     * If any transformations (scaling and/or translating) needs to be applied to the underlying tiles, this method
+     * and {@link #getTile(Point)} must be overridden. These implementations assume a 1:1 coordinate mapping.
+     */
     @Override
-    public Collection<? extends Tile> getTiles() {
-        Collection<? extends Tile> tiles = dimension.getTiles();
-        for (Tile tile: tiles) {
-            Point coords = new Point(tile.getX(), tile.getY());
-            if (! tileCache.containsKey(coords)) {
-                RODelegatingTile cachedTile = new RODelegatingTile(tile);
-                tileCache.put(coords, cachedTile);
+    public Collection<T> getTiles() {
+        readLock.lock();
+        try {
+            if (allTiles == null) {
+                readLock.unlock();
+                writeLock.lock();
+                try {
+                    final Collection<? extends Tile> tiles = dimension.getTiles();
+                    allTiles = new HashSet<>();
+                    for (Tile tile: tiles) {
+                        final Reference<T> cachedTileRef = tileCache.get(new Point(tile.getX(), tile.getY()));
+                        if (cachedTileRef == NO_TILE_PRESENT) {
+                            continue;
+                        }
+                        final T cachedTile = (cachedTileRef != null) ? cachedTileRef.get() : null;
+                        if (cachedTile != null) {
+                            allTiles.add(cachedTile);
+                        } else {
+                            allTiles.add(wrapTile(tile));
+                        }
+                    }
+                    readLock.lock();
+                } finally {
+                    writeLock.unlock();
+                }
             }
+            return allTiles;
+        } finally {
+            readLock.unlock();
         }
-        return Collections.unmodifiableCollection(tileCache.values());
     }
 
     @Override
@@ -629,102 +652,110 @@ public abstract class RODelegatingDimension extends Dimension {
     }
 
     @Override
-    public void removeTile(Tile tile) {
+    public final void removeTile(Tile tile) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setBedrockWall(boolean bedrockWall) {
+    public final void setBitLayerValueAt(Layer layer, int x, int y, boolean value) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setBitLayerValueAt(Layer layer, int x, int y, boolean value) {
+    public final void setBorder(Border border) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setBorder(Border border) {
+    public final void setBorderLevel(int borderLevel) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setBorderLevel(int borderLevel) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setBorderSize(int borderSize) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setDarkLevel(boolean darkLevel) {
+    public final void setBorderSize(int borderSize) {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public void changed() {
-        throw new UnsupportedOperationException();
+        // Do nothing
     }
 
     @Override
     public void setEventsInhibited(boolean eventsInhibited) {
+        // Do nothing
+    }
+
+    @Override
+    public final void setHeightAt(int x, int y, float height) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setHeightAt(int x, int y, float height) {
+    public final void setHeightAt(Point coords, float height) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setHeightAt(Point coords, float height) {
+    public final void setLayerSettings(Layer layer, ExporterSettings settings) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setLayerSettings(Layer layer, ExporterSettings settings) {
+    public final void setLayerValueAt(Layer layer, int x, int y, int value) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setLayerValueAt(Layer layer, int x, int y, int value) {
+    public final void setMinecraftSeed(long minecraftSeed) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setMinecraftSeed(long minecraftSeed) {
+    public final void setPopulate(boolean populate) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setPopulate(boolean populate) {
+    public final void setSubsurfaceMaterial(Terrain subsurfaceMaterial) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setSubsurfaceMaterial(Terrain subsurfaceMaterial) {
+    public final void setTerrainAt(int x, int y, Terrain terrain) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setTerrainAt(int x, int y, Terrain terrain) {
+    public final void setTerrainAt(Point coords, Terrain terrain) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void setTerrainAt(Point coords, Terrain terrain) {
+    public final void setWaterLevelAt(int x, int y, int waterLevel) {
         throw new UnsupportedOperationException();
     }
 
-    @Override
-    public void setWaterLevelAt(int x, int y, int waterLevel) {
-        throw new UnsupportedOperationException();
+    protected Tile doGetTile(Point coords) {
+        return dimension.getTile(coords);
+    }
+
+    @SuppressWarnings("unchecked") // Responsibility of implementor
+    protected T wrapTile(Tile tile) {
+        return (T) tile;
+    }
+
+    private void writeObject(ObjectOutputStream out) throws NotSerializableException {
+        throw new NotSerializableException("Serialization of " + getClass().getSimpleName() + " not supported");
     }
 
     protected final Dimension dimension;
-    private final Map<Point, RODelegatingTile> tileCache = new HashMap<>();
-    
+    protected final Map<Point, Reference<T>> tileCache = new HashMap<>();
+
+    private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    private final Lock readLock = lock.readLock(), writeLock = lock.writeLock();
+    private Set<T> allTiles;
+
+    private static final Reference<? extends Tile> NO_TILE_PRESENT = new SoftReference<>(null);
     private static final long serialVersionUID = 1L;
 }

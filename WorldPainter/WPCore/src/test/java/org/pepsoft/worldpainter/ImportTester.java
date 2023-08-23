@@ -15,9 +15,10 @@ import java.util.HashSet;
 import java.util.Random;
 
 import static com.google.common.primitives.Ints.asList;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.worldpainter.Terrain.GRASS;
 
-public class ImportTester extends AbstractMain {
+public class ImportTester extends AbstractTool {
     public static void main(String[] args) throws IOException, ProgressReceiver.OperationCancelled {
         initialisePlatform();
 
@@ -25,9 +26,9 @@ public class ImportTester extends AbstractMain {
         for (File mapDir: savesDir.listFiles()) {
             if (mapDir.isDirectory()) {
                 Platform platform = PlatformManager.getInstance().identifyPlatform(mapDir);
-                TileFactory tileFactory = TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), GRASS, platform.minZ, platform.standardMaxHeight, 58, 62, false, true, 20, 1.0);
+                TileFactory tileFactory = TileFactoryFactory.createNoiseTileFactory(new Random().nextLong(), GRASS, platform.minZ, platform.standardMaxHeight, 58, DEFAULT_WATER_LEVEL, false, true, 20, 1.0);
                 JavaMapImporter importer = new JavaMapImporter(platform, tileFactory, new File(mapDir, "level.dat"),
-                        false, null, MapImporter.ReadOnlyOption.NONE,
+                        null, MapImporter.ReadOnlyOption.NONE,
                         new HashSet<>(asList(((BlockBasedPlatformProvider) PlatformManager.getInstance().getPlatformProvider(platform)).getDimensions(platform, mapDir))));
                 System.out.println("+---------+---------+---------+---------+---------+");
                 World2 world = importer.doImport(new TextProgressReceiver());

@@ -34,6 +34,11 @@ public class Text extends AbstractBrushOperation implements PaintOperation {
     }
 
     @Override
+    public JPanel getOptionsPanel() {
+        return OPTIONS_PANEL;
+    }
+
+    @Override
     protected void brushChanged(Brush newBrush) {
         if (painter.getPaint() != null) {
             painter.getPaint().setBrush(newBrush);
@@ -42,6 +47,11 @@ public class Text extends AbstractBrushOperation implements PaintOperation {
 
     @Override
     protected void tick(int centreX, int centreY, boolean inverse, boolean first, float dynamicLevel) {
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
         if (painter.getPaint() instanceof PaintFactory.NullPaint) {
             // No paint set yet; do nothing
             return;
@@ -56,20 +66,23 @@ public class Text extends AbstractBrushOperation implements PaintOperation {
             Font font = dialog.getSelectedFont();
             settings.setDefaultFont(font.getFamily());
             settings.setDefaultSize(font.getSize());
-            Dimension dimension = getDimension();
             dimension.setLayerSettings(Annotations.INSTANCE, settings);
-            painter.setFont(font);
-            painter.setTextAngle(dialog.getSelectedAngle());
             savedText = dialog.getText();
-            dimension.setEventsInhibited(true);
-            try {
-                painter.drawText(dimension, centreX, centreY, savedText);
-            } finally {
-                dimension.setEventsInhibited(false);
+            if (! savedText.trim().isEmpty()) {
+                painter.setFont(font);
+                painter.setTextAngle(dialog.getSelectedAngle());
+                dimension.setEventsInhibited(true);
+                try {
+                    painter.drawText(dimension, centreX, centreY, savedText);
+                } finally {
+                    dimension.setEventsInhibited(false);
+                }
             }
         }
     }
 
     private final DimensionPainter painter = new DimensionPainter();
     private String savedText;
+
+    private static final JPanel OPTIONS_PANEL = new StandardOptionsPanel("Text", "<p>Click to form text with the currently selected paint with its top left corner at the indicated location");
 }

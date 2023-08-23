@@ -127,7 +127,7 @@ enum HorizontalOrientationScheme {
     },
 
     /**
-     * {code rotation} property containing an integer from 0 to 15 (inclusive) where 0 is south, 4 is west, etc.
+     * {@code rotation} property containing an integer from 0 to 15 (inclusive) where 0 is south, 4 is west, etc.
      */
     ROTATION {
         @Override
@@ -194,7 +194,7 @@ enum HorizontalOrientationScheme {
                         case "south_west":
                             return material.withProperty(Material.SHAPE, "south_east");
                         case "north_west":
-                            return material.withProperty(Material.SHAPE, "northeast");
+                            return material.withProperty(Material.SHAPE, "north_east");
                         case "north_east":
                             return material.withProperty(Material.SHAPE, "north_west");
                         case "south_east":

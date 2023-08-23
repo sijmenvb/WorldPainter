@@ -1,11 +1,9 @@
 package org.pepsoft.worldpainter.tools;
 
-import org.pepsoft.util.plugins.PluginManager;
 import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.layers.Bo2Layer;
 import org.pepsoft.worldpainter.objects.WPObject;
 import org.pepsoft.worldpainter.plugins.CustomObjectManager;
-import org.pepsoft.worldpainter.plugins.WPPluginManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,49 +12,18 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
-import java.security.cert.CertificateException;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
 import java.util.zip.GZIPInputStream;
 
-import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_15;
-import static org.pepsoft.worldpainter.plugins.WPPluginManager.DESCRIPTOR_PATH;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
 
 /**
  * Created by Pepijn Schmitz on 02-09-15.
  */
-public class DumpObject {
+public class DumpObject extends AbstractTool {
     public static void main(String[] args) throws IOException, ClassNotFoundException {
-        // Load or initialise configuration
-        Configuration config = Configuration.load(); // This will migrate the configuration directory if necessary
-        if (config == null) {
-            if (! logger.isDebugEnabled()) {
-                // If debug logging is on, the Configuration constructor will
-                // already log this
-                logger.info("Creating new configuration");
-            }
-            config = new Configuration();
-        }
-        Configuration.setInstance(config);
-        logger.info("Installation ID: " + config.getUuid());
-
-        // Load and install trusted WorldPainter root certificate
-        X509Certificate trustedCert = null;
-        try {
-            CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
-            trustedCert = (X509Certificate) certificateFactory.generateCertificate(DumpObject.class.getResourceAsStream("/wproot.pem"));
-        } catch (CertificateException e) {
-            logger.error("Certificate exception while loading trusted root certificate", e);
-        }
-
-        // Load the plugins
-        if (trustedCert != null) {
-            PluginManager.loadPlugins(new File(Configuration.getConfigDir(), "plugins"), trustedCert.getPublicKey(), DESCRIPTOR_PATH);
-        } else {
-            logger.error("Trusted root certificate not available; not loading plugins");
-        }
-        WPPluginManager.initialise(config.getUuid());
+        initialisePlatform();
 
         String filename = args[0];
         File file = new File(filename);
@@ -122,8 +89,8 @@ public class DumpObject {
     private static final Dimension FAKE_DIMENSION;
 
     static {
-        TileFactory tileFactory = TileFactoryFactory.createNoiseTileFactory(0L, Terrain.GRASS, JAVA_ANVIL_1_15.minZ, JAVA_ANVIL_1_15.standardMaxHeight, 58, 62, false, true, 20.0f, 1.0);
-        FAKE_DIMENSION = new World2(JAVA_ANVIL_1_15, 0L, tileFactory, JAVA_ANVIL_1_15.standardMaxHeight).getDimension(DIM_NORMAL);
+        TileFactory tileFactory = TileFactoryFactory.createNoiseTileFactory(0L, Terrain.GRASS, JAVA_ANVIL_1_15.minZ, JAVA_ANVIL_1_15.standardMaxHeight, 58, DEFAULT_WATER_LEVEL, false, true, 20.0f, 1.0);
+        FAKE_DIMENSION = new World2(JAVA_ANVIL_1_15, 0L, tileFactory).getDimension(NORMAL_DETAIL);
     }
 
     private static final Logger logger = LoggerFactory.getLogger(DumpObject.class);

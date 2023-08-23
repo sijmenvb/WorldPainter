@@ -5,17 +5,27 @@ package org.pepsoft.minecraft;
  */
 enum VerticalOrientationScheme {
     /**
-     * {@code half} property containing {@code top} or {@code bottom}
+     * {@code half} property containing {@code top} or {@code bottom}.
      */
     HALF,
 
     /**
-     * {@code up} property containing {@code true} or {@code false}
+     * {@code up} property containing {@code true} or {@code false}.
      */
     UP,
 
     /**
-     * {@code type} property containing {@code top} or {@code bottom}
+     * {@code type} property containing {@code top} or {@code bottom}.
      */
-    TYPE
+    TYPE,
+
+    /**
+     * {@code up} <em>and</em> {@code down} property containing {@code true} or {@code false}.
+     */
+    UP_DOWN,
+
+    /**
+     * {@code vertical_direction} property containing {@code up} or {@code down}.
+     */
+    VERTICAL_DIRECTION
 }

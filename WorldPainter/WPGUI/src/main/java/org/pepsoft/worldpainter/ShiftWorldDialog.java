@@ -12,88 +12,78 @@ package org.pepsoft.worldpainter;
 
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.util.SubProgressReceiver;
+import org.pepsoft.worldpainter.Dimension.Anchor;
 import org.pepsoft.worldpainter.history.HistoryEntry;
 
 import java.awt.*;
+import java.util.List;
 
+import static java.util.stream.Collectors.toList;
 import static org.pepsoft.util.AwtUtils.doOnEventThread;
-import static org.pepsoft.worldpainter.Constants.*;
+import static org.pepsoft.util.mdc.MDCUtils.decorateWithMdcContext;
+import static org.pepsoft.util.swing.MessageUtils.beepAndShowWarning;
+import static org.pepsoft.worldpainter.Dimension.Role.DETAIL;
+import static org.pepsoft.worldpainter.ExceptionHandler.handleException;
 
 /**
  *
  * @author pepijn
  */
+@SuppressWarnings({"unused", "FieldCanBeLocal"}) // Managed by NetBeans
 public class ShiftWorldDialog extends WorldPainterDialog implements ProgressReceiver {
     /** Creates new form RotateWorldDialog */
-    public ShiftWorldDialog(Window parent, World2 world, int dim) {
+    public ShiftWorldDialog(Window parent, World2 world, Anchor anchor) {
         super(parent);
         this.world = world;
-        this.dim = dim;
-        Dimension opposite = null;
-        switch (dim) {
-            case DIM_NORMAL:
-                opposite = world.getDimension(DIM_NORMAL_CEILING);
-                break;
-            case DIM_NORMAL_CEILING:
-                opposite = world.getDimension(DIM_NORMAL);
-                break;
-            case DIM_END:
-                opposite = world.getDimension(DIM_END_CEILING);
-                break;
-            case DIM_END_CEILING:
-                opposite = world.getDimension(DIM_END);
-                break;
-            case DIM_NETHER:
-                opposite = world.getDimension(DIM_NETHER_CEILING);
-                break;
-            case DIM_NETHER_CEILING:
-                opposite = world.getDimension(DIM_NETHER);
-                break;
-        }
-        if (opposite != null) {
-            oppositeDim = opposite.getDim();
-        } else {
-            oppositeDim = Integer.MIN_VALUE;
-        }
+        this.anchor = anchor;
+        affectedDimensions = world.getDimensions().stream()
+                .filter(dimension -> dimension.getAnchor().dim == anchor.dim)
+                .collect(toList());
 
         initComponents();
-        jCheckBox1.setEnabled(oppositeDim != Integer.MIN_VALUE);
+        setTitle("Shift " + new Anchor(anchor.dim, DETAIL, false, 0).getDefaultName() + " Dimension");
 
         getRootPane().setDefaultButton(buttonShift);
 
         scaleToUI();
+        pack();
         setLocationRelativeTo(parent);
     }
 
     // ProgressReceiver
     
     @Override
-    public synchronized void setProgress(final float progress) throws OperationCancelled {
+    public synchronized void setProgress(final float progress) {
         doOnEventThread(() -> jProgressBar1.setValue((int) (progress * 100)));
     }
 
     @Override
     public synchronized void exceptionThrown(final Throwable exception) {
+        // Make sure to capture the MDC context from the current thread
+        final Throwable exceptionWithContext = decorateWithMdcContext(exception);
         doOnEventThread(() -> {
-            ErrorDialog errorDialog = new ErrorDialog(ShiftWorldDialog.this);
-            errorDialog.setException(exception);
-            errorDialog.setVisible(true);
+            handleException(exceptionWithContext, ShiftWorldDialog.this);
             cancel();
         });
     }
 
     @Override
     public synchronized void done() {
-        doOnEventThread(this::ok);
+        doOnEventThread(() -> {
+            if (affectedDimensions.stream().flatMap(dimension -> dimension.getOverlays().stream()).anyMatch(overlay -> ! overlay.getFile().canRead())) {
+                beepAndShowWarning(this, "One or more overlay image files could not be read,\nand have therefore not been shifted.\nYou will need to shift these manually.", "Not All Overlays Shifted");
+            }
+            ok();
+        });
     }
 
     @Override
-    public synchronized void setMessage(final String message) throws OperationCancelled {
+    public synchronized void setMessage(final String message) {
         doOnEventThread(() -> labelProgressMessage.setText(message));
     }
 
     @Override
-    public synchronized void checkForCancellation() throws OperationCancelled {
+    public synchronized void checkForCancellation() {
         // Do nothing
     }
 
@@ -103,7 +93,7 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
     }
 
     @Override
-    public void subProgressStarted(SubProgressReceiver subProgressReceiver) throws OperationCancelled {
+    public void subProgressStarted(SubProgressReceiver subProgressReceiver) {
         // Do nothing
     }
 
@@ -116,14 +106,10 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
             @Override
             public void run() {
                 try {
-                    if ((oppositeDim == Integer.MIN_VALUE) || (! jCheckBox1.isSelected())) {
-                        world.transform(dim, transform, ShiftWorldDialog.this);
-                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_SHIFTED_HORIZONTALLY, world.getDimension(dim).getName(), east, south);
-                    } else {
-                        world.transform(dim, transform, new SubProgressReceiver(ShiftWorldDialog.this, 0.0f, 0.5f));
-                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_SHIFTED_HORIZONTALLY, world.getDimension(dim).getName(), east, south);
-                        world.transform(oppositeDim, transform, new SubProgressReceiver(ShiftWorldDialog.this, 0.5f, 0.5f));
-                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_SHIFTED_HORIZONTALLY, world.getDimension(oppositeDim).getName(), east, south);
+                    for (int i = 0; i < affectedDimensions.size(); i++) {
+                        final Dimension dimension = affectedDimensions.get(i);
+                        world.transform(dimension.getAnchor(), transform, new SubProgressReceiver(ShiftWorldDialog.this, (float) i / affectedDimensions.size(), 1.0f / affectedDimensions.size()));
+                        world.addHistoryEntry(HistoryEntry.WORLD_DIMENSION_SHIFTED_HORIZONTALLY, dimension.getName(), east, south);
                     }
                     done();
                 } catch (Throwable t) {
@@ -142,7 +128,7 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
      * WARNING: Do NOT modify this code. The content of this method is
      * always regenerated by the Form Editor.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"Convert2Lambda", "Anonymous2MethodRef"}) // Managed by NetBeans
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
@@ -159,32 +145,48 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
         jLabel4 = new javax.swing.JLabel();
         jLabel5 = new javax.swing.JLabel();
         jLabel6 = new javax.swing.JLabel();
-        jCheckBox1 = new javax.swing.JCheckBox();
+        jLabel7 = new javax.swing.JLabel();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DO_NOTHING_ON_CLOSE);
         setTitle("Shift World");
         setResizable(false);
 
-        jLabel1.setText("Choose a shift amount and press the Shift button to shift the world horizontally (by whole tiles):");
+        jLabel1.setText("Choose a shift amount and press the Shift button to shift the dimension horizontally (by whole tiles):");
 
         buttonCancel.setText("Cancel");
-        buttonCancel.addActionListener(this::buttonCancelActionPerformed);
+        buttonCancel.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonCancelActionPerformed(evt);
+            }
+        });
 
         buttonShift.setText("Shift");
         buttonShift.setEnabled(false);
-        buttonShift.addActionListener(this::buttonShiftActionPerformed);
+        buttonShift.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                buttonShiftActionPerformed(evt);
+            }
+        });
 
         labelProgressMessage.setText(" ");
 
         jLabel2.setText("X axis:");
 
         jSpinner1.setModel(new javax.swing.SpinnerNumberModel(0, -2147483648, 2147483647, 128));
-        jSpinner1.addChangeListener(this::jSpinner1StateChanged);
+        jSpinner1.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                jSpinner1StateChanged(evt);
+            }
+        });
 
         jLabel3.setText("Z axis:");
 
         jSpinner2.setModel(new javax.swing.SpinnerNumberModel(0, -2147483648, 2147483647, 128));
-        jSpinner2.addChangeListener(this::jSpinner2StateChanged);
+        jSpinner2.addChangeListener(new javax.swing.event.ChangeListener() {
+            public void stateChanged(javax.swing.event.ChangeEvent evt) {
+                jSpinner2StateChanged(evt);
+            }
+        });
 
         jLabel4.setText("(negative values shift west; positive values shift east)");
 
@@ -192,8 +194,7 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
 
         jLabel6.setText("<html><em>This operation cannot be undone!</em>   </html>");
 
-        jCheckBox1.setSelected(true);
-        jCheckBox1.setText("also shift corresponding ceiling or surface");
+        jLabel7.setText("<html><i>All associated dimension such as Ceiling Dimensions and<br>\nCustom Cave/Tunnel Floor Dimensions will be shifted together.</i></html>");
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -227,7 +228,7 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
                                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                         .addComponent(jLabel4))))
                             .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(jCheckBox1))
+                            .addComponent(jLabel7, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addGap(0, 0, Short.MAX_VALUE)))
                 .addContainerGap())
         );
@@ -238,6 +239,8 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
                 .addComponent(jLabel1)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jLabel6, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(jLabel7, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addGap(18, 18, 18)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel2)
@@ -248,8 +251,6 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
                     .addComponent(jLabel3)
                     .addComponent(jSpinner2, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel5))
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(jCheckBox1)
                 .addGap(18, 18, 18)
                 .addComponent(labelProgressMessage)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
@@ -292,13 +293,13 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
     private javax.swing.JButton buttonCancel;
     private javax.swing.ButtonGroup buttonGroup1;
     private javax.swing.JButton buttonShift;
-    private javax.swing.JCheckBox jCheckBox1;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
     private javax.swing.JLabel jLabel5;
     private javax.swing.JLabel jLabel6;
+    private javax.swing.JLabel jLabel7;
     private javax.swing.JProgressBar jProgressBar1;
     private javax.swing.JSpinner jSpinner1;
     private javax.swing.JSpinner jSpinner2;
@@ -306,7 +307,8 @@ public class ShiftWorldDialog extends WorldPainterDialog implements ProgressRece
     // End of variables declaration//GEN-END:variables
 
     private final World2 world;
-    private final int dim, oppositeDim;
+    private final Anchor anchor;
+    private final List<Dimension> affectedDimensions;
 
     private static final long serialVersionUID = 1L;
 }

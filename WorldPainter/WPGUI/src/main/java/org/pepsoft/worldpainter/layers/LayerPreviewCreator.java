@@ -6,13 +6,13 @@
 
 package org.pepsoft.worldpainter.layers;
 
-import org.pepsoft.minecraft.Chunk;
+import org.pepsoft.minecraft.ChunkFactory;
 import org.pepsoft.util.Box;
 import org.pepsoft.util.MathUtils;
 import org.pepsoft.util.ProgressReceiver;
 import org.pepsoft.worldpainter.Dimension;
 import org.pepsoft.worldpainter.*;
-import org.pepsoft.worldpainter.dynmap.DynMapPreviewer;
+import org.pepsoft.worldpainter.dynmap.DynmapPreviewer;
 import org.pepsoft.worldpainter.exporting.*;
 import org.pepsoft.worldpainter.layers.exporters.ExporterSettings;
 import org.pepsoft.worldpainter.layers.groundcover.GroundCoverLayer;
@@ -32,14 +32,15 @@ import java.io.IOException;
 import java.util.List;
 import java.util.*;
 
-import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
+import static org.pepsoft.minecraft.Constants.DEFAULT_WATER_LEVEL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_17;
+import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
 
 /**
  * A utility class for generating previews of layers. It renders a layer to a
  * small temporary world and generates a {@link MinecraftWorldObject} (an object
  * which implements both {@link MinecraftWorld} and {@link WPObject}) which can
- * be used to display it, for instance with {@link DynMapPreviewer}.
+ * be used to display it, for instance with {@link DynmapPreviewer}.
  *
  * @author SchmitzP
  */
@@ -47,21 +48,21 @@ public class LayerPreviewCreator {
     public MinecraftWorldObject renderPreview() {
         // Phase one: setup
         long timestamp = System.currentTimeMillis();
-        long seed = 0L;
-        TileFactory tileFactory = subterranean
-                ? TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, JAVA_ANVIL_1_17.minZ, previewHeight, 56, 62, false, true, 20f, 0.5)
+        final long seed = 0L;
+        final HeightMapTileFactory tileFactory = subterranean
+                ? TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, JAVA_ANVIL_1_17.minZ, previewHeight, 56, DEFAULT_WATER_LEVEL, false, true, 20f, 0.5)
                 : TileFactoryFactory.createNoiseTileFactory(seed, Terrain.BARE_GRASS, JAVA_ANVIL_1_17.minZ, previewHeight, 8, 14, false, true, 20f, 0.5);
-        Dimension dimension = new World2(DefaultPlugin.JAVA_MCREGION, seed, tileFactory, previewHeight).getDimension(DIM_NORMAL);
+        final Dimension dimension = new World2(DefaultPlugin.JAVA_MCREGION, seed, tileFactory).getDimension(NORMAL_DETAIL);
         dimension.setSubsurfaceMaterial(Terrain.STONE);
-        MinecraftWorldObject minecraftWorldObject = new MinecraftWorldObject(layer.getName() + " Preview", new Box(-8, 136, -8, 136, 0, previewHeight), previewHeight, null, new Point3i(-64, -64, 0));
+        final MinecraftWorldObject minecraftWorldObject = new MinecraftWorldObject(layer.getName() + " Preview", new Box(-8, 136, -8, 136, 0, previewHeight), previewHeight, tileFactory.getWaterHeight(), null, new Point3i(-64, -64, 0));
         long now = System.currentTimeMillis();
         if (logger.isDebugEnabled()) {
             logger.debug("Creating data structures took " + (now - timestamp) + " ms");
         }
 
-        // Phase two: apply layer to dimension
+        // Phase two: create tiles and apply layer to dimension
         timestamp = now;
-        Tile tile = tileFactory.createTile(0, 0);
+        final Tile tile = tileFactory.createTile(0, 0);
         switch (layer.getDataSize()) {
             case BIT:
                 Random random = new Random(seed);
@@ -91,27 +92,19 @@ public class LayerPreviewCreator {
                 }
                 break;
             case NIBBLE:
-                // If it's a CombinedLayer, also apply the terrain and biome, if
-                // any
-                if (layer instanceof CombinedLayer) {
+                // If it's a CombinedLayer, also apply the terrain, if any
+                if ((layer instanceof CombinedLayer)
+                        && (((CombinedLayer) layer).getTerrain() != null)
+                        && (! ((CombinedLayer) layer).isApplyTerrainAndBiomeOnExport())) {
                     final Terrain terrain = ((CombinedLayer) layer).getTerrain();
-                    final int biome = ((CombinedLayer) layer).getBiome();
-                    final boolean terrainConfigured = terrain != null;
-                    final boolean biomeConfigured = biome != -1;
                     for (int x = 0; x < 128; x++) {
                         for (int y = 0; y < 128; y++) {
                             float strength = pattern.getStrength(x, y);
                             tile.setLayerValue(layer, x, y, Math.min((int) (strength * 16), 15));
-                            // Double the strength so that 50% intensity results
-                            // in full coverage for terrain and biome, which is
-                            // inaccurate but probably more closely resembles
-                            // practical usage
+                            // Double the strength so that 50% intensity results in full coverage for terrain
                             strength = Math.min(strength * 2, 1.0f);
-                            if (terrainConfigured && ((strength > 0.95f) || (Math.random() < strength))) {
+                            if (((strength > 0.95f) || (Math.random() < strength))) {
                                 tile.setTerrain(x, y, terrain);
-                            }
-                            if (biomeConfigured && ((strength > 0.95f) || (Math.random() < strength))) {
-                                tile.setLayerValue(Biome.INSTANCE, x, y, biome);
                             }
                         }
                     }
@@ -126,16 +119,15 @@ public class LayerPreviewCreator {
             default:
                 throw new IllegalArgumentException("Unsupported data size " + layer.getDataSize() + " encountered");
         }
-        // If the layer is a combined layer, apply it recursively and collect
-        // the added layers
-        List<Layer> layers;
+        // If the layer is a combined layer, apply it recursively and collect the added layers
+        final List<Layer> layers;
         if (layer instanceof CombinedLayer) {
             layers = new ArrayList<>();
             layers.add(layer);
             while (true) {
-                List<Layer> addedLayers = new ArrayList<>();
+                final List<Layer> addedLayers = new ArrayList<>();
                 for (Iterator<Layer> i = layers.iterator(); i.hasNext(); ) {
-                    Layer tmpLayer = i.next();
+                    final Layer tmpLayer = i.next();
                     if (tmpLayer instanceof CombinedLayer) {
                         i.remove();
                         addedLayers.addAll(((CombinedLayer) tmpLayer).apply(tile));
@@ -156,30 +148,30 @@ public class LayerPreviewCreator {
             logger.debug("Applying layer(s) took " + (now - timestamp) + " ms");
         }
 
-        // Collect the exporters (could be multiple if the layer was a combined
-        // layer)
-        Map<Layer, LayerExporter> pass1Exporters = new HashMap<>();
-        Map<Layer, SecondPassLayerExporter> pass2Exporters = new HashMap<>();
+        // Collect the exporters (could be multiple if the layer was a combined layer)
+        final Map<Layer, LayerExporter> pass1Exporters = new HashMap<>();
+        final Map<Layer, SecondPassLayerExporter> pass2Exporters = new HashMap<>();
         for (Layer tmpLayer: layers) {
-            LayerExporter exporter = tmpLayer.getExporter();
-            if (tmpLayer.equals(layer)) {
-                exporter.setSettings(settings);
-            }
+            final LayerExporter exporter = tmpLayer.getExporter(dimension, JAVA_ANVIL_1_17, tmpLayer.equals(layer) ? settings : null);
             if (exporter instanceof FirstPassLayerExporter) {
-                pass1Exporters.put(layer, exporter);
+                pass1Exporters.put(tmpLayer, exporter);
             }
             if (exporter instanceof SecondPassLayerExporter) {
-                pass2Exporters.put(layer, (SecondPassLayerExporter) exporter);
+                pass2Exporters.put(tmpLayer, (SecondPassLayerExporter) exporter);
             }
         }
 
         // Phase three: generate terrain and render first pass layers, if any
         timestamp = now;
-        WorldPainterChunkFactory chunkFactory = new WorldPainterChunkFactory(dimension, pass1Exporters, JAVA_ANVIL_1_17, previewHeight);
+        final WorldPainterChunkFactory chunkFactory = new WorldPainterChunkFactory(dimension, pass1Exporters, JAVA_ANVIL_1_17, previewHeight);
         for (int x = 0; x < 8; x++) {
             for (int y = 0; y < 8; y++) {
-                Chunk chunk = chunkFactory.createChunk(x, y).chunk;
-                minecraftWorldObject.addChunk(chunk);
+                final ChunkFactory.ChunkCreationResult chunkCreationResult = chunkFactory.createChunk(x, y);
+                // No idea how this could be null, but that has been observed in the world. TODO: find out why and fix
+                //  the underlying cause
+                if (chunkCreationResult != null) {
+                    minecraftWorldObject.addChunk(chunkCreationResult.chunk);
+                }
             }
         }
         now = System.currentTimeMillis();
@@ -190,9 +182,12 @@ public class LayerPreviewCreator {
         if (! pass2Exporters.isEmpty()) {
             // Phase four: render the second pass layers, if any
             timestamp = now;
-            Rectangle area = new Rectangle(128, 128);
+            final Rectangle area = new Rectangle(128, 128);
             for (SecondPassLayerExporter exporter: pass2Exporters.values()) {
-                exporter.render(dimension, area, area, minecraftWorldObject, JAVA_ANVIL_1_17);
+                exporter.carve(area, area, minecraftWorldObject);
+            }
+            for (SecondPassLayerExporter exporter: pass2Exporters.values()) {
+                exporter.addFeatures(area, area, minecraftWorldObject);
             }
             now = System.currentTimeMillis();
             if (logger.isDebugEnabled()) {
@@ -291,7 +286,7 @@ public class LayerPreviewCreator {
         }
         Configuration.setInstance(config);
         WPPluginManager.initialise(config.getUuid());
-        Dimension dimension = WorldFactory.createDefaultWorldWithoutTiles(config, 0L).getDimension(DIM_NORMAL);
+        Dimension dimension = WorldFactory.createDefaultWorldWithoutTiles(config, 0L).getDimension(NORMAL_DETAIL);
 
         for (Layer layer: LayerManager.getInstance().getLayers()) {
 //            Layer layer = Caverns.INSTANCE;
@@ -301,7 +296,7 @@ public class LayerPreviewCreator {
             System.out.println("Total: " + (System.currentTimeMillis() - start) + " ms");
     //        JFrame frame = new JFrame("LayerPreviewCreator Test");
     //        frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-            DynMapPreviewer previewer = new DynMapPreviewer();
+            DynmapPreviewer previewer = new DynmapPreviewer();
             previewer.setZoom(-2);
             previewer.setInclination(30.0);
             previewer.setAzimuth(60.0);

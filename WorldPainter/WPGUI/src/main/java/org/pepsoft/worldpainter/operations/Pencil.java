@@ -25,6 +25,7 @@ import org.pepsoft.worldpainter.WorldPainterView;
 import org.pepsoft.worldpainter.painting.DimensionPainter;
 import org.pepsoft.worldpainter.painting.Paint;
 
+import javax.swing.*;
 import java.awt.*;
 
 /**
@@ -39,7 +40,11 @@ public class Pencil extends AbstractPaintOperation {
 
     @Override
     protected void tick(int centreX, int centreY, boolean undo, boolean first, float dynamicLevel) {
-        Dimension dimension = getDimension();
+        final Dimension dimension = getDimension();
+        if (dimension == null) {
+            // Probably some kind of race condition
+            return;
+        }
         dimension.setEventsInhibited(true);
         try {
             painter.setUndo(undo);
@@ -111,7 +116,7 @@ public class Pencil extends AbstractPaintOperation {
         } else if (angle < 0) {
             angle += Math.PI * 2;
         }
-        switch ((int) (angle * 4 / Math.PI + 0.5)) {
+        switch ((int) Math.round(angle * 4 / Math.PI)) {
             case 0:
             case 4:
             case 8:
@@ -181,7 +186,12 @@ public class Pencil extends AbstractPaintOperation {
 
         final double u = ((p3.getX() - p1.getX()) * xDelta + (p3.getY() - p1.getY()) * yDelta) / (xDelta * xDelta + yDelta * yDelta);
 
-        return new Point((int) (p1.getX() + u * xDelta + 0.5), (int) (p1.getY() + u * yDelta + 0.5));
+        return new Point((int) Math.round(p1.getX() + u * xDelta), (int) Math.round(p1.getY() + u * yDelta));
+    }
+
+    @Override
+    public JPanel getOptionsPanel() {
+        return OPTIONS_PANEL;
     }
 
     private final DimensionPainter painter = new DimensionPainter();
@@ -190,4 +200,15 @@ public class Pencil extends AbstractPaintOperation {
     private boolean inhibitDrag;
 
     enum Axis {W_E, NW_SE, N_S, NE_SW}
+
+    private static final JPanel OPTIONS_PANEL = new StandardOptionsPanel("Pencil", "<p>With the left mouse button do the following to apply the currently selected paint:\n" +
+            "<ul><li>Drag for freeform lines\n" +
+            "<li>Click for dots\n" +
+            "<li>Shift+click for straight lines from last dot or end of last line\n" +
+            "<li>Hold Ctrl to constrain to 45 degree angles</ul>\n" +
+            "<p>Use the right mouse button instead, to:\n" +
+            "<ul><li>With a Layer selected: remove the layer\n" +
+            "<li>With a Terrain selected: reset to the current theme\n" +
+            "<li>With a Biome selected: reset to Auto Biome" +
+            "</ul>");
 }

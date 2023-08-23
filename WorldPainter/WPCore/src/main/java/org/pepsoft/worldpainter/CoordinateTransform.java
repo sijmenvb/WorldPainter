@@ -4,10 +4,11 @@
  */
 package org.pepsoft.worldpainter;
 
-import java.awt.Point;
-import java.awt.Rectangle;
-import javax.vecmath.Point3i;
 import org.pepsoft.minecraft.Direction;
+import org.pepsoft.worldpainter.heightMaps.TransformingHeightMap;
+
+import javax.vecmath.Point3i;
+import java.awt.*;
 
 /**
  *
@@ -50,8 +51,79 @@ public abstract class CoordinateTransform {
     
     public abstract Direction inverseTransform(Direction direction);
     
-    public abstract float transform(float angle);
-    
+    public abstract float transformAngle(float angle);
+
+    public abstract float transformScalar(float scalar);
+
+    public abstract HeightMap transform(HeightMap heightMap);
+
+    public boolean isScaling() {
+        return false;
+    }
+
+    public boolean isRotating() {
+        return false;
+    }
+
+    public float getScale() {
+        return 1.0f;
+    }
+
+    public static CoordinateTransform getScalingInstance(float scale) {
+        if (scale == 1.0f) {
+            return NOOP;
+        } else {
+            return new CoordinateTransform() {
+                @Override
+                public void transformInPlace(Point coords) {
+                    coords.x = Math.round(coords.x * scale);
+                    coords.y = Math.round(coords.y * scale);
+                }
+
+                @Override
+                public void transformInPlace(Point3i coords) {
+                    coords.x = Math.round(coords.x * scale);
+                    coords.y = Math.round(coords.y * scale);
+                }
+
+                @Override
+                public Direction transform(Direction direction) {
+                    return direction;
+                }
+
+                @Override
+                public Direction inverseTransform(Direction direction) {
+                    return direction;
+                }
+
+                @Override
+                public float transformAngle(float angle) {
+                    return angle;
+                }
+
+                @Override
+                public float transformScalar(float scalar) {
+                    return scalar * scale;
+                }
+
+                @Override
+                public HeightMap transform(HeightMap heightMap) {
+                    return heightMap.scaled(scale);
+                }
+
+                @Override
+                public boolean isScaling() {
+                    return true;
+                }
+
+                @Override
+                public float getScale() {
+                    return scale;
+                }
+            };
+        }
+    }
+
     public static final CoordinateTransform ROTATE_CLOCKWISE_90_DEGREES = new CoordinateTransform() {
         @Override
         public Point transform(int x, int y) {
@@ -88,12 +160,27 @@ public abstract class CoordinateTransform {
         }
         
         @Override
-        public float transform(float angle) {
+        public float transformAngle(float angle) {
             angle = angle - HALF_PI;
             while (angle < 0) {
                 angle += TWO_PI;
             }
             return angle;
+        }
+
+        @Override
+        public float transformScalar(float scalar) {
+            return scalar;
+        }
+
+        @Override
+        public HeightMap transform(HeightMap heightMap) {
+            return TransformingHeightMap.build().withHeightMap(heightMap).withName(heightMap.getName()).withRotation(HALF_PI).now();
+        }
+
+        @Override
+        public boolean isRotating() {
+            return true;
         }
     };
 
@@ -131,12 +218,27 @@ public abstract class CoordinateTransform {
         }
 
         @Override
-        public float transform(float angle) {
+        public float transformAngle(float angle) {
             angle = angle + PI;
             while (angle >= TWO_PI) {
                 angle -= TWO_PI;
             }
             return angle;
+        }
+
+        @Override
+        public float transformScalar(float scalar) {
+            return scalar;
+        }
+
+        @Override
+        public HeightMap transform(HeightMap heightMap) {
+            return TransformingHeightMap.build().withHeightMap(heightMap).withName(heightMap.getName()).withRotation(PI).now();
+        }
+
+        @Override
+        public boolean isRotating() {
+            return true;
         }
     };
 
@@ -176,14 +278,85 @@ public abstract class CoordinateTransform {
         }
 
         @Override
-        public float transform(float angle) {
+        public float transformAngle(float angle) {
             angle = angle + HALF_PI;
             while (angle >= TWO_PI) {
                 angle -= TWO_PI;
             }
             return angle;
         }
-        
+
+        @Override
+        public float transformScalar(float scalar) {
+            return scalar;
+        }
+
+        @Override
+        public HeightMap transform(HeightMap heightMap) {
+            return TransformingHeightMap.build().withHeightMap(heightMap).withName(heightMap.getName()).withRotation(PI * 3 / 2).now();
+        }
+
+        @Override
+        public boolean isRotating() {
+            return true;
+        }
+    };
+
+    public static final CoordinateTransform NOOP = new CoordinateTransform() {
+        @Override
+        public Point transform(int x, int y) {
+            return new Point(x, y);
+        }
+
+        @Override
+        public Point3i transform(int x, int y, int z) {
+            return new Point3i(x, y, z);
+        }
+
+        @Override
+        public void transformInPlace(Point coords) {
+            // Do nothing
+        }
+
+        @Override
+        public void transformInPlace(Point3i coords) {
+            // Do nothing
+        }
+
+        @Override
+        public Rectangle transform(Rectangle rectangle) {
+            return rectangle;
+        }
+
+        @Override
+        public Direction transform(Direction direction) {
+            return direction;
+        }
+
+        @Override
+        public Direction inverseTransform(Direction direction) {
+            return direction;
+        }
+
+        @Override
+        public float transformAngle(float angle) {
+            return angle;
+        }
+
+        @Override
+        public float transformScalar(float scalar) {
+            return scalar;
+        }
+
+        @Override
+        public HeightMap transform(HeightMap heightMap) {
+            return heightMap;
+        }
+
+        @Override
+        public boolean isScaling() {
+            return false;
+        }
     };
 
     private static final float HALF_PI = (float) (Math.PI / 2);
